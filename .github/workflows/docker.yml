@@ -36,6 +36,7 @@ jobs:
       run: |
         kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml > /dev/null
         kubectl wait -n ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s > /dev/null
+        kubectl patch configmap -n ingress-nginx ingress-nginx-controller --type merge -p '{"data":{"upstream-keepalive-timeout":"5"}}' > /dev/null
 
     - name: Load image into kind
       run: kind load docker-image k8s-httpcache:test --name test -q
@@ -48,10 +49,12 @@ jobs:
         kubectl rollout status deployment/nodejs --timeout=120s > /dev/null
         kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
 
-    - name: Install hurl
+    - name: Install tools
       run: |
         curl -sfL -O https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
         sudo apt-get install -yqq ./hurl_7.1.0_amd64.deb > /dev/null
+        curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
+        chmod +x /usr/local/bin/oha
 
     - name: Smoke test
       run: |
@@ -60,6 +63,28 @@ jobs:
           sleep 2
         done
         hurl --test .github/test/smoke.hurl
+
+    - name: Zero-downtime rollout restart
+      run: |
+        oha -c 5 -q 10 -z 180s --no-tui --output-format json http://localhost:8080/nodejs/ > /tmp/oha.json 2>/dev/null &
+        OHA_PID=$!
+        sleep 3
+        kubectl rollout restart deployment/k8s-httpcache
+        kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
+        while kubectl get pods -l app=k8s-httpcache | grep -q Terminating; do sleep 1; done
+        kill -INT $OHA_PID
+        wait $OHA_PID || true
+        echo "Status code distribution:"
+        jq '.statusCodeDistribution' /tmp/oha.json
+        echo "Error distribution:"
+        jq '.errorDistribution' /tmp/oha.json
+        non200=$(jq '[.statusCodeDistribution | to_entries[] | select(.key != "200") | .value] | add // 0' /tmp/oha.json)
+        errors=$(jq '[.errorDistribution | to_entries[] | .value] | add // 0' /tmp/oha.json)
+        if [ "$non200" -gt 0 ] || [ "$errors" -gt 0 ]; then
+          echo "FAIL: $non200 non-200 responses, $errors connection errors"
+          exit 1
+        fi
+        echo "PASS: all requests returned 200 with no errors"
 
     - name: Show pod status on failure
       if: failure()
