@@ -223,7 +223,7 @@ func main() {
 
 			select {
 			case <-mgr.Done():
-			case <-time.After(10 * time.Second):
+			case <-time.After(cfg.ShutdownTimeout):
 				log.Printf("varnishd did not exit in time, forcing")
 				mgr.ForwardSignal(syscall.SIGKILL)
 			}

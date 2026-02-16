@@ -51,15 +51,16 @@ type Config struct {
 	ServiceName      string
 	ServiceNamespace string // resolved namespace for the frontend service
 	Namespace        string
-	VCLTemplate      string
-	AdminAddr        string
-	ListenAddr       string
-	VarnishdPath     string
-	VarnishadmPath   string
-	SecretPath       string
-	Debounce         time.Duration
-	Backends         []BackendSpec
-	ExtraVarnishd    []string // Additional args passed to varnishd (after --)
+	VCLTemplate    string
+	AdminAddr      string
+	ListenAddr     string
+	VarnishdPath   string
+	VarnishadmPath string
+	SecretPath     string
+	Debounce        time.Duration
+	ShutdownTimeout time.Duration
+	Backends        []BackendSpec
+	ExtraVarnishd  []string // Additional args passed to varnishd (after --)
 }
 
 // parseNamespacedService splits an optional "namespace/service" string into its
@@ -97,6 +98,7 @@ func Parse() (*Config, error) {
 	flag.StringVar(&c.VarnishadmPath, "varnishadm-path", "varnishadm", "Path to varnishadm binary")
 	flag.StringVar(&c.SecretPath, "secret-path", "", "Path to write the varnishadm secret file (default: auto-generated temp file)")
 	flag.DurationVar(&c.Debounce, "debounce", 2*time.Second, "Debounce duration for endpoint changes")
+	flag.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", 30*time.Second, "Time to wait for varnishd to exit before sending SIGKILL")
 	flag.Var(&backends, "backend", "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)")
 
 	flag.Parse()
@@ -144,4 +146,3 @@ func Parse() (*Config, error) {
 
 	return c, nil
 }
-
