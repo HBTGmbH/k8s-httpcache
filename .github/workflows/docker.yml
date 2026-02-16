@@ -24,8 +24,8 @@ jobs:
         context: .
         load: true
         tags: k8s-httpcache:test
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-from: type=gha,scope=test
+        cache-to: type=gha,scope=test,mode=max
 
     - uses: helm/kind-action@v1.13.0
       with:
@@ -38,14 +38,17 @@ jobs:
       run: kubectl apply -f .github/test/manifest.yaml
 
     - name: Wait for rollout
-      run: kubectl rollout status deployment/k8s-httpcache --timeout=120s
+      run: |
+        kubectl rollout status deployment/nodejs --timeout=120s
+        kubectl rollout status deployment/k8s-httpcache --timeout=120s
 
     - name: Show pod status on failure
       if: failure()
       run: |
-        kubectl get pods -l app=k8s-httpcache -o wide
+        kubectl get pods -o wide
         kubectl describe pods -l app=k8s-httpcache
         kubectl logs -l app=k8s-httpcache --tail=50
+        kubectl logs -l app=nodejs --tail=50
 
   build:
     needs: test
@@ -79,5 +82,7 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-from: |
+          type=gha,scope=build
+          type=gha,scope=test
+        cache-to: type=gha,scope=build,mode=max
