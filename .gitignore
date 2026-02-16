@@ -1,0 +1,17 @@
+# Binary
+k8s-httpcache
+k8s-httpcache.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage.out
+
