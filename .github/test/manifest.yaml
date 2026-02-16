@@ -230,23 +230,19 @@ data:
     import directors;
     import std;
 
-    <<- if .Frontends >>
     <<- range .Frontends >>
     backend << .Name >> {
       .host = "<< .IP >>";
       .port = "<< .Port >>";
     }
     <<- end >>
-    <<- end >>
 
-    <<- if .Backends >>
     <<- range $name, $eps := .Backends >>
     <<- range $eps >>
     backend << .Name >>_<< $name >> {
       .host = "<< .IP >>";
       .port = "<< .Port >>";
     }
-    <<- end >>
     <<- end >>
     <<- end >>
 
@@ -258,19 +254,20 @@ data:
     }
 
     sub vcl_init {
-    <<- if .Frontends >>
+      <<- if .Frontends >>
       new cluster = directors.shard();
       <<- range .Frontends >>
       cluster.add_backend(<< .Name >>);
       <<- end >>
       cluster.reconfigure();
-    <<- end >>
-    <<- range $name, $eps := .Backends >>
+      <<- end >>
+
+      <<- range $name, $eps := .Backends >>
       new backend_<< $name >> = directors.round_robin();
       <<- range $eps >>
       backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
       <<- end >>
-    <<- end >>
+      <<- end >>
     }
 
     sub handle_readiness {
@@ -287,22 +284,23 @@ data:
     sub vcl_recv {
       call handle_readiness;
 
-      if (!req.http.X-Shard-Routed) {
       <<- if .Frontends >>
+      if (!req.http.X-Shard-Routed) {
         set req.backend_hint = cluster.backend(by=URL);
         set req.http.x-shard = req.backend_hint;
         if (req.http.x-shard != server.identity) {
           set req.http.X-Shard-Routed = "true";
           return(pass);
         }
-      <<- end >>
       }
-    <<- range $name, $_ := .Backends >>
+      <<- end >>
+
+      <<- range $name, $_ := .Backends >>
       if (req.url ~ "^/<< $name >>/") {
         set req.backend_hint = backend_<< $name >>.backend();
         set req.url = regsub(req.url, "^/<< $name >>/", "/");
       }
-    <<- end >>
+      <<- end >>
     }
 
     sub handle_draining {
