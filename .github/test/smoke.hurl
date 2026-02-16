@@ -7,3 +7,30 @@ GET http://localhost:8080/nodejs/
 HTTP 200
 [Asserts]
 body == "ok"
+
+# Shard consistency: the same URL should always be routed to the same Varnish pod.
+# The first Via entry identifies the shard-selected pod and should be consistent.
+GET http://localhost:8080/nodejs/shard-test
+HTTP 200
+[Captures]
+via_shard: header "Via" regex "(1\\.1 [^,]+)"
+
+GET http://localhost:8080/nodejs/shard-test
+HTTP 200
+[Asserts]
+header "Via" startsWith "{{via_shard}}"
+
+GET http://localhost:8080/nodejs/shard-test
+HTTP 200
+[Asserts]
+header "Via" startsWith "{{via_shard}}"
+
+GET http://localhost:8080/nodejs/shard-test
+HTTP 200
+[Asserts]
+header "Via" startsWith "{{via_shard}}"
+
+GET http://localhost:8080/nodejs/shard-test
+HTTP 200
+[Asserts]
+header "Via" startsWith "{{via_shard}}"
