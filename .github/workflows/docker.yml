@@ -30,6 +30,12 @@ jobs:
     - uses: helm/kind-action@v1.13.0
       with:
         cluster_name: test
+        config: .github/test/kind-config.yaml
+
+    - name: Install ingress-nginx
+      run: |
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+        kubectl wait -n ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s
 
     - name: Load image into kind
       run: kind load docker-image k8s-httpcache:test --name test
@@ -41,6 +47,20 @@ jobs:
       run: |
         kubectl rollout status deployment/nodejs --timeout=120s
         kubectl rollout status deployment/k8s-httpcache --timeout=120s
+
+    - name: Install hurl
+      run: |
+        curl --location --remote-name https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
+        sudo apt-get install -y ./hurl_7.1.0_amd64.deb
+
+    - name: Smoke test
+      run: |
+        # Wait for ingress to be reachable.
+        for i in $(seq 1 30); do
+          curl -sf http://localhost:8080/ready && break
+          sleep 2
+        done
+        hurl --test .github/test/smoke.hurl
 
     - name: Show pod status on failure
       if: failure()
