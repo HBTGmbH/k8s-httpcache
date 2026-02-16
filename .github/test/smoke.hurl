@@ -16,26 +16,9 @@ HTTP 200
 via_shard: header "Via" regex "(1\\.1 [^,]+)"
 
 GET http://localhost:8080/nodejs/shard-test
+[Options]
+repeat: 500
 HTTP 200
 [Asserts]
 header "Via" startsWith "{{via_shard}}"
 
-GET http://localhost:8080/nodejs/shard-test
-HTTP 200
-[Asserts]
-header "Via" startsWith "{{via_shard}}"
-
-GET http://localhost:8080/nodejs/shard-test
-HTTP 200
-[Asserts]
-header "Via" startsWith "{{via_shard}}"
-
-GET http://localhost:8080/nodejs/shard-test
-HTTP 200
-[Asserts]
-header "Via" startsWith "{{via_shard}}"
-
-GET http://localhost:8080/nodejs/shard-test
-HTTP 200
-[Asserts]
-header "Via" startsWith "{{via_shard}}"
