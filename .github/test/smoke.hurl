@@ -34,3 +34,8 @@ GET http://localhost:8080/nodejs/shard-test
 HTTP 200
 [Asserts]
 header "Via" startsWith "{{via_shard}}"
+
+GET http://localhost:8080/nodejs/shard-test
+HTTP 200
+[Asserts]
+header "Via" startsWith "{{via_shard}}"
