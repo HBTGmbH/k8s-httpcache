@@ -12,7 +12,43 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: docker/setup-buildx-action@v3
+
+    - uses: docker/build-push-action@v6
+      with:
+        context: .
+        load: true
+        tags: k8s-httpcache:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - uses: helm/kind-action@v1
+      with:
+        cluster_name: test
+
+    - name: Load image into kind
+      run: kind load docker-image k8s-httpcache:test --name test
+
+    - name: Deploy
+      run: kubectl apply -f .github/test/manifest.yaml
+
+    - name: Wait for rollout
+      run: kubectl rollout status deployment/k8s-httpcache --timeout=120s
+
+    - name: Show pod status on failure
+      if: failure()
+      run: |
+        kubectl get pods -l app=k8s-httpcache -o wide
+        kubectl describe pods -l app=k8s-httpcache
+        kubectl logs -l app=k8s-httpcache --tail=50
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6

@@ -1,0 +1,304 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nodejs
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nodejs
+  template:
+    metadata:
+      labels:
+        app: nodejs
+    spec:
+      containers:
+      - name: nodejs
+        image: node:25.6.1-alpine3.23
+        command: ["node", "-e"]
+        args:
+        - |
+          require("http").createServer((req, res) => {
+            res.writeHead(200);
+            res.end("ok");
+          }).listen(3000);
+        ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodejs
+  namespace: default
+spec:
+  selector:
+    app: nodejs
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-httpcache
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-httpcache
+  namespace: default
+rules:
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-httpcache
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-httpcache
+subjects:
+- kind: ServiceAccount
+  name: k8s-httpcache
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-httpcache
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: k8s-httpcache
+  template:
+    metadata:
+      labels:
+        app: k8s-httpcache
+    spec:
+      serviceAccountName: k8s-httpcache
+      terminationGracePeriodSeconds: 90
+      containers:
+      - name: k8s-httpcache
+        image: k8s-httpcache:test
+        imagePullPolicy: Never
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sh
+              - -c
+              - |
+                varnishadm 2>/proc/1/fd/2 -T 127.0.0.1:6082 -S /var/lib/varnish/secrets/secret backend.set_health drain_flag sick
+                echo > /proc/1/fd/1 "preStop: Waiting 15s for new connections to stop coming in..."
+                sleep 15
+                if [ "30" -gt 0 ]; then
+                  deadline=$(( $(date +%s) + 30 ))
+                fi
+                echo > /proc/1/fd/1 "preStop: Waiting at most 30s for all connections to be drained..."
+                while :; do
+                  val=$(varnishstat 2>/proc/1/fd/2 -1 \
+                        | awk '/MEMPOOL\.sess[0-9]+\.live/ {a+=$2} END {print a+0}')
+                  if [ "$val" -eq 0 ]; then
+                    echo > /proc/1/fd/1 "preStop: All connections are gone. Telling Varnish to shut down now."
+                    break
+                  elif [ "30" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
+                    echo > /proc/1/fd/1 "preStop: Deadline reached while there are still connections. Telling Varnish to shut down now anyway."
+                    break
+                  fi
+                  echo > /proc/1/fd/1 "preStop: There are still $val client connections. Continue waiting..."
+                  sleep 1
+                done
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 1000 # <-- varnish user uses uid=1000 also in the container image
+          runAsGroup: 1000 # <-- varnish user uses gid=1000 also in the container image
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        args:
+        - --service-name=k8s-httpcache
+        - --namespace=default
+        - --vcl-template=/etc/k8s-httpcache/vcl.tmpl
+        - --secret-path=/var/lib/varnish/secrets/secret
+        - --backend=nodejs:nodejs
+        - --
+        - -s
+        - default,1M
+        - -t
+        - 5s
+        - -p
+        - default_grace=0s
+        - -p
+        - default_keep=0s
+        - -p
+        - timeout_idle=75s
+        - -p
+        - backend_idle_timeout=5s
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        startupProbe:
+          httpGet:
+            path: /ready
+            port: http
+          failureThreshold: 30
+          periodSeconds: 1
+        volumeMounts:
+        - name: vcl-template
+          mountPath: /etc/k8s-httpcache
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+          readOnly: false
+        - name: varlibvarnish
+          mountPath: /var/lib/varnish
+          readOnly: false
+        resources:
+          requests:
+            cpu: 10m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 256Mi
+          medium: Memory
+      - name: varlibvarnish
+        emptyDir:
+          sizeLimit: 512Mi
+          medium: Memory
+      - name: vcl-template
+        configMap:
+          name: k8s-httpcache-vcl
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-httpcache
+  namespace: default
+spec:
+  selector:
+    app: k8s-httpcache
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: http
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-httpcache-vcl
+  namespace: default
+data:
+  vcl.tmpl: |
+    vcl 4.1;
+
+    import directors;
+    import std;
+
+    <<- if .Frontends >>
+    << range .Frontends >>
+    backend << .Name >> {
+      .host = "<< .IP >>";
+      .port = "<< .Port >>";
+    }
+    << end >>
+    <<- end >>
+
+    <<- if .Backends >>
+    <<- range $name, $eps := .Backends >>
+    << range $eps >>
+    backend << .Name >>_<< $name >> {
+      .host = "<< .IP >>";
+      .port = "<< .Port >>";
+    }
+    << end >>
+    <<- end >>
+    <<- end >>
+
+    # Dummy backend to use as a drain flag. The preStop hook will set this backend to sick to trigger draining
+    # via varnishadm.
+    backend drain_flag {
+      .host = "127.0.0.1"; # <- any IP ist fine
+      .port = "9"; # <- any port ist fine
+    }
+
+    sub vcl_init {
+    <<- if .Frontends >>
+      new cluster = directors.shard();
+      <<- range .Frontends >>
+      cluster.add_backend(<< .Name >>);
+      <<- end >>
+      cluster.reconfigure();
+    <<- end >>
+    <<- range $name, $eps := .Backends >>
+      new backend_<< $name >> = directors.round_robin();
+      <<- range $eps >>
+      backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+      <<- end >>
+    <<- end >>
+    }
+
+    sub handle_readiness {
+      if (req.url == "/ready") {
+        # Return 200 if not draining, else 503.
+        if (std.healthy(drain_flag)) {
+          return (synth(200));
+        } else {
+          return (synth(503));
+        }
+      }
+    }
+
+    sub vcl_recv {
+      call handle_readiness;
+
+      if (!req.http.X-Shard-Routed) {
+      <<- if .Frontends >>
+        set req.backend_hint = cluster.backend(by=URL);
+        set req.http.x-shard = req.backend_hint;
+        if (req.http.x-shard != server.identity) {
+          set req.http.X-Shard-Routed = "true";
+          return(pass);
+        }
+      <<- end >>
+      }
+    <<- range $name, $_ := .Backends >>
+      if (req.url ~ "^/<< $name >>/") {
+        set req.backend_hint = backend_<< $name >>.backend();
+        set req.url = regsub(req.url, "^/<< $name >>/", "/");
+      }
+    <<- end >>
+    }
+
+    sub handle_draining {
+      # During draining, which is activated via varnishadm setting the backend health to sick,
+      # we respond with 'Connection: close' to inform clients not to reuse connections.
+      # This will eventually lead to all connections being closed and no new requests being accepted.
+      if (!std.healthy(drain_flag)) {
+        set resp.http.Connection = "close";
+      }
+    }
+
+    sub vcl_deliver {
+      # Check whether we are draining and adjust the Connection header in client responses accordingly.
+      call handle_draining;
+      unset resp.http.X-Shard-Routed;
+    }
