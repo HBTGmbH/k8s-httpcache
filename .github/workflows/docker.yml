@@ -46,7 +46,7 @@ jobs:
 
     - name: Wait for rollout
       run: |
-        kubectl rollout status deployment/nodejs --timeout=120s > /dev/null
+        kubectl rollout status deployment/backend --timeout=120s > /dev/null
         kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
 
     - name: Install tools
@@ -66,7 +66,7 @@ jobs:
 
     - name: Zero-downtime rollout restart
       run: |
-        oha -c 5 -q 10 -z 180s -u s -m POST --no-tui --output-format json http://localhost:8080/nodejs/ > /tmp/oha.json 2>/dev/null &
+        oha -c 5 -q 10 -z 180s -u s -m POST --no-tui --output-format json http://localhost:8080/backend/ > /tmp/oha.json 2>/dev/null &
         OHA_PID=$!
         sleep 3
         kubectl rollout restart deployment/k8s-httpcache
@@ -92,7 +92,7 @@ jobs:
         kubectl get pods -o wide
         kubectl describe pods -l app=k8s-httpcache
         kubectl logs -l app=k8s-httpcache --tail=50
-        kubectl logs -l app=nodejs --tail=50
+        kubectl logs -l app=backend --tail=50
 
   build:
     needs: test
