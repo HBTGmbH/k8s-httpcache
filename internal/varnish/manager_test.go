@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -695,4 +696,211 @@ func TestDiscardOldVCLsListError(t *testing.T) {
 
 	// Should not panic — just return silently on error.
 	m.discardOldVCLs("kv_reload_1")
+}
+
+func TestGenerateSecretTempFile(t *testing.T) {
+	m := &Manager{} // empty secretPath → temp file
+	path, err := m.generateSecret()
+	if err != nil {
+		t.Fatalf("generateSecret() error: %v", err)
+	}
+	defer func() { _ = os.Remove(path) }()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading secret: %v", err)
+	}
+
+	content := string(data)
+	// Should be hex-encoded 32 bytes (64 hex chars) + newline = 65 bytes.
+	if len(content) != 65 {
+		t.Errorf("secret length = %d, want 65 (64 hex chars + newline)", len(content))
+	}
+	if content[len(content)-1] != '\n' {
+		t.Error("secret should end with newline")
+	}
+
+	// Verify hex characters only (before the newline).
+	hex := content[:len(content)-1]
+	for _, c := range hex {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			t.Errorf("non-hex character %q in secret", c)
+			break
+		}
+	}
+}
+
+func TestGenerateSecretPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file permissions not enforced on Windows")
+	}
+
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "nested")
+	secretPath := filepath.Join(subdir, "secret")
+
+	m := &Manager{secretPath: secretPath}
+	path, err := m.generateSecret()
+	if err != nil {
+		t.Fatalf("generateSecret() error: %v", err)
+	}
+	defer func() { _ = os.Remove(path) }()
+
+	// Check file permissions.
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat secret: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("file permissions = %o, want 0600", fi.Mode().Perm())
+	}
+
+	// Check parent directory permissions.
+	di, err := os.Stat(subdir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if di.Mode().Perm() != 0o700 {
+		t.Errorf("dir permissions = %o, want 0700", di.Mode().Perm())
+	}
+}
+
+func TestGenerateSecretReadOnlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only directory enforcement differs on Windows")
+	}
+
+	dir := t.TempDir()
+	readOnlyDir := filepath.Join(dir, "readonly")
+	if err := os.Mkdir(readOnlyDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnlyDir, 0o700) })
+
+	secretPath := filepath.Join(readOnlyDir, "subdir", "secret")
+	m := &Manager{secretPath: secretPath}
+	_, err := m.generateSecret()
+	if err == nil {
+		t.Fatal("expected error writing to read-only directory, got nil")
+	}
+}
+
+func TestDiscardOldVCLsMalformedLines(t *testing.T) {
+	vclListOutput := strings.Join([]string{
+		"",                                    // empty line
+		"   ",                                 // whitespace-only
+		"short line",                          // fewer than 4 fields
+		"a b",                                 // only 2 fields
+		"available   0 warm          0 old_1", // valid
+		"active      0 warm          0 boot",  // active, should be skipped
+		"available",                           // single field
+	}, "\n")
+
+	var discarded []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for i, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" && i+1 < len(args) {
+					discarded = append(discarded, args[i+1])
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	// Should not panic despite malformed lines.
+	m.discardOldVCLs("current")
+
+	if len(discarded) != 1 {
+		t.Fatalf("discarded %d VCLs, want 1: %v", len(discarded), discarded)
+	}
+	if discarded[0] != "old_1" {
+		t.Errorf("discarded %q, want old_1", discarded[0])
+	}
+}
+
+func TestDiscardOldVCLsEmptyOutput(t *testing.T) {
+	var discardCalls int
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for _, a := range args {
+				if a == "vcl.list" {
+					return "", nil
+				}
+				if a == "vcl.discard" {
+					discardCalls++
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	m.discardOldVCLs("kv_reload_1")
+
+	if discardCalls != 0 {
+		t.Fatalf("expected 0 discard calls, got %d", discardCalls)
+	}
+}
+
+func TestDiscardOldVCLsDiscardError(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	vclListOutput := strings.Join([]string{
+		"available   0 warm          0 old_1",
+		"available   0 warm          0 old_2",
+		"active      0 warm          0 boot",
+	}, "\n")
+
+	var discarded []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for i, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" && i+1 < len(args) {
+					name := args[i+1]
+					discarded = append(discarded, name)
+					if name == "old_1" {
+						return "", fmt.Errorf("discard failed")
+					}
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	m.discardOldVCLs("current")
+
+	// Should have attempted to discard both old_1 and old_2, not stopping on error.
+	if len(discarded) != 2 {
+		t.Fatalf("expected 2 discard attempts, got %d: %v", len(discarded), discarded)
+	}
+
+	// Verify a warning was logged for the failed discard.
+	output := buf.String()
+	if !strings.Contains(output, "failed to discard VCL") {
+		t.Errorf("expected warning log for discard failure, got: %s", output)
+	}
 }

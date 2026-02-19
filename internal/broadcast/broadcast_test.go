@@ -1,6 +1,7 @@
 package broadcast
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -485,4 +486,141 @@ func TestDrainNoConnections(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("drain with no connections should complete quickly")
 	}
+}
+
+func TestShutdown(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	s := newTestServer()
+	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = s.srv.Serve(ln) }()
+
+	addr := ln.Addr().String()
+
+	// Verify the server is working.
+	resp, err := http.Get("http://" + addr + "/purge/foo")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Shutdown the server.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	// Subsequent requests should fail.
+	_, err = http.Get("http://" + addr + "/purge/foo")
+	if err == nil {
+		t.Fatal("expected error after shutdown, got nil")
+	}
+}
+
+func TestMaxBodySizeTruncation(t *testing.T) {
+	// Create a backend that returns more than maxBodySize (1 MiB).
+	bigBody := strings.Repeat("X", 2<<20) // 2 MiB
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(bigBody))
+	}))
+	defer backend.Close()
+
+	s := newTestServer()
+	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
+
+	req := httptest.NewRequest(http.MethodGet, "/big", nil)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var results map[string]PodResult
+	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	r := results["pod-0"]
+	if r.Status != 200 {
+		t.Fatalf("expected status 200, got %d", r.Status)
+	}
+	// Body should be truncated to maxBodySize (1 MiB = 1048576 bytes).
+	if len(r.Body) != maxBodySize {
+		t.Fatalf("expected body length %d, got %d", maxBodySize, len(r.Body))
+	}
+}
+
+func TestConcurrentSetFrontends(t *testing.T) {
+	b0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok-0"))
+	}))
+	defer b0.Close()
+
+	b1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok-1"))
+	}))
+	defer b1.Close()
+
+	s := newTestServer()
+
+	frontendSets := [][]watcher.Frontend{
+		{frontendFromServer("pod-0", b0)},
+		{frontendFromServer("pod-1", b1)},
+		{frontendFromServer("pod-0", b0), frontendFromServer("pod-1", b1)},
+		{},
+	}
+
+	var wg sync.WaitGroup
+	// Concurrently update frontends.
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s.SetFrontends(frontendSets[i%len(frontendSets)])
+		}(i)
+	}
+
+	// Concurrently make requests.
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, req)
+
+			// Status must be 200 (frontends present) or 503 (no frontends).
+			if rec.Code != http.StatusOK && rec.Code != http.StatusServiceUnavailable {
+				t.Errorf("unexpected status %d, want 200 or 503", rec.Code)
+			}
+			// Response must always be valid JSON.
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			var raw json.RawMessage
+			if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+				t.Errorf("response is not valid JSON: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
 }

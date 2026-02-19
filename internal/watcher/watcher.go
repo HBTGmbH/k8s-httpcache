@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"sync"
 
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +35,7 @@ type Watcher struct {
 	serviceName  string
 	portOverride string // numeric string, port name, or "" = first slice port
 	ch           chan []Endpoint
+	mu           sync.Mutex // protects previous and synced
 	previous     []Endpoint
 	synced       bool // true after the first send, so the initial state is always delivered
 }
@@ -140,6 +142,9 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		}
 		return endpoints[i].Port < endpoints[j].Port
 	})
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	if w.synced && endpointsEqual(endpoints, w.previous) {
 		return
