@@ -1,8 +1,0 @@
-# Ignore everything
-*
-
-# Except Go files
-!**/*.go
-!go.sum
-!go.mod
-

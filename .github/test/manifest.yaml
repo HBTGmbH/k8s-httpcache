@@ -256,11 +256,9 @@ data:
     <<- end >>
 
     acl purge {
-      "localhost";
-      "127.0.0.1";
-      "::1";
+      "127.0.0.0/8";
     }
-
+    
     # Dummy backend to use as a drain flag. The preStop hook will set this backend to sick to trigger draining
     # via varnishadm.
     backend drain_flag {

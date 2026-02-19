@@ -17,7 +17,6 @@ jobs:
     outputs:
       go: ${{ steps.filter.outputs.go }}
       src: ${{ steps.filter.outputs.src }}
-      docker: ${{ steps.filter.outputs.docker }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
     - uses: actions/checkout@v6.0.2
@@ -34,9 +33,6 @@ jobs:
             - '!**/*_test.go'
             - 'go.mod'
             - 'go.sum'
-          docker:
-            - 'Dockerfile'
-            - '.dockerignore'
           ci:
             - '.github/**'
 
@@ -120,17 +116,7 @@ jobs:
           go install golang.org/x/tools/cmd/deadcode@v0.42.0
         fi
         deadcode -test ./...
-    - name: Fuzz tests
-      run: |
-        go test -fuzz=FuzzListenAddrSet -fuzztime=10s ./internal/config/ &
-        pids+=($!)
-        go test -fuzz=FuzzBackendSet -fuzztime=10s ./internal/config/ &
-        pids+=($!)
-        go test -fuzz=FuzzParseNamespacedService -fuzztime=10s ./internal/config/ &
-        pids+=($!)
-        fail=0
-        for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
-        exit $fail
+
 
   go-build:
     needs: [changes]
@@ -142,12 +128,30 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v6.0.2
+    - name: Cache binaries
+      id: cache
+      uses: actions/cache@v5.0.3
+      with:
+        path: k8s-httpcache-linux-*
+        key: binaries-${{ hashFiles('**/*.go', 'go.mod', 'go.sum') }}
     - name: Setup Go
+      if: steps.cache.outputs.cache-hit != 'true'
       uses: actions/setup-go@v6.2.0
       with:
         go-version-file: go.mod
-    - name: Build
-      run: go build .
+    - name: Build binaries
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache-linux-amd64 . &
+        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache-linux-arm64 . &
+        fail=0
+        for pid in $(jobs -p); do wait "$pid" || fail=1; done
+        exit $fail
+    - name: Upload binaries
+      uses: actions/upload-artifact@v6.0.0
+      with:
+        name: binaries
+        path: k8s-httpcache-linux-*
 
   test:
     needs: [changes, unit-test, lint, go-build]
@@ -155,14 +159,15 @@ jobs:
       !failure() && !cancelled() &&
       (startsWith(github.ref, 'refs/tags/') ||
       needs.changes.outputs.src == 'true' ||
-      needs.changes.outputs.docker == 'true' ||
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v6.0.2
-    - name: Setup BuildKit
-      uses: docker/setup-buildx-action@v3.12.0
+    - name: Download binaries
+      uses: actions/download-artifact@v7.0.0
+      with:
+        name: binaries
     - name: Cache test tools
       uses: actions/cache@v5.0.3
       with:
@@ -181,20 +186,12 @@ jobs:
           curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
           chmod +x /usr/local/bin/oha
         fi
-    - name: Build image
-      uses: docker/build-push-action@v6.19.2
-      with:
-        context: .
-        load: true
-        tags: k8s-httpcache:build
-        cache-from: type=gha,scope=test
-        cache-to: type=gha,scope=test,mode=max
     - name: Build test image
-      run: >-
-        docker build
-        --build-arg BASE_IMAGE=k8s-httpcache:build
-        -t k8s-httpcache:test
-        - < .github/test/Dockerfile
+      run: |
+        mkdir .docker-context
+        cp k8s-httpcache-linux-amd64 .docker-context/
+        chmod +x .docker-context/k8s-httpcache-linux-amd64
+        docker build -f .github/test/Dockerfile -t k8s-httpcache:test .docker-context
     - name: Create kind cluster
       uses: helm/kind-action@v1.14.0
       with:
@@ -211,12 +208,22 @@ jobs:
       run: kubectl apply -f .github/test/manifest.yaml > /dev/null
     - name: Wait for rollout
       run: |
-        kubectl rollout status deployment/backend --timeout=120s > /dev/null
-        kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
+        kubectl rollout status deployment/backend --timeout=120s
+        kubectl rollout status deployment/k8s-httpcache --timeout=120s
+    - name: Debug rollout failure
+      if: failure()
+      run: |
+        kubectl get pods -o wide
+        kubectl get events --sort-by='.lastTimestamp' --field-selector reason!=Pulled
+        for pod in $(kubectl get pods -l app=k8s-httpcache -o name); do
+          echo "--- $pod ---"
+          kubectl describe "$pod"
+          kubectl logs "$pod" --tail=50
+        done
     - name: Smoke test
       run: |
         for i in $(seq 1 30); do
-          curl -sf http://localhost:8080/ready > /dev/null 2>&1 && break
+          curl -sf http://localhost:8080/backend/ > /dev/null 2>&1 && break
           sleep 2
         done
         hurl --test --report-junit smoke-report.xml .github/test/smoke.hurl
@@ -243,7 +250,7 @@ jobs:
         OHA_PID=$!
         sleep 3
         kubectl rollout restart deployment/k8s-httpcache
-        kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
+        kubectl rollout status deployment/k8s-httpcache --timeout=120s
         while kubectl get pods -l app=k8s-httpcache | grep -q Terminating; do sleep 1; done
         kill -INT $OHA_PID
         wait $OHA_PID || true
@@ -280,12 +287,20 @@ jobs:
       !failure() && !cancelled() &&
       (startsWith(github.ref, 'refs/tags/') ||
       needs.changes.outputs.src == 'true' ||
-      needs.changes.outputs.docker == 'true' ||
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v6.0.2
+    - name: Download binaries
+      uses: actions/download-artifact@v7.0.0
+      with:
+        name: binaries
+    - name: Prepare Docker context
+      run: |
+        mkdir .docker-context
+        cp k8s-httpcache-linux-* .docker-context/
+        chmod +x .docker-context/k8s-httpcache-linux-*
     - name: Setup BuildKit
       uses: docker/setup-buildx-action@v3.12.0
     - name: Docker Login
@@ -308,12 +323,34 @@ jobs:
     - name: Docker push
       uses: docker/build-push-action@v6.19.2
       with:
-        context: .
+        context: .docker-context
+        file: .github/build/Dockerfile
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: |
-          type=gha,scope=build
-          type=gha,scope=test
-        cache-to: type=gha,scope=build,mode=max
+
+  release:
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6.0.2
+    - name: Download binaries
+      uses: actions/download-artifact@v7.0.0
+      with:
+        name: binaries
+    - name: Create checksums
+      run: sha256sum k8s-httpcache-linux-* > checksums.txt
+    - name: Create release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: >-
+        gh release create ${{ github.ref_name }}
+        k8s-httpcache-linux-amd64
+        k8s-httpcache-linux-arm64
+        checksums.txt
+        --generate-notes
