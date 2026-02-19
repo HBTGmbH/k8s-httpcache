@@ -12,6 +12,45 @@ permissions:
   packages: write
 
 jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+    - uses: actions/setup-go@v6.2.0
+      with:
+        go-version-file: go.mod
+    - name: Install gotestsum
+      run: go install gotest.tools/gotestsum@latest
+    - name: Run tests with coverage
+      run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -coverprofile=coverage.out ./...
+    - name: Display coverage
+      run: go tool cover -func=coverage.out
+    - name: Generate coverage HTML
+      if: always()
+      run: go tool cover -html=coverage.out -o coverage.html
+    - name: Upload test results
+      uses: actions/upload-artifact@v6.0.0
+      if: always()
+      with:
+        name: unit-test-results
+        path: |
+          unit-tests.xml
+          coverage.out
+          coverage.html
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+    - uses: actions/setup-go@v6.2.0
+      with:
+        go-version-file: go.mod
+    - uses: golangci/golangci-lint-action@v9.2.0
+    - name: Check for vulnerabilities
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -66,7 +105,7 @@ jobs:
           curl -sf http://localhost:8080/ready > /dev/null 2>&1 && break
           sleep 2
         done
-        hurl --test .github/test/smoke.hurl
+        hurl --test --report-junit smoke-report.xml .github/test/smoke.hurl
 
     - name: Shard Distribution test
       run: |
@@ -108,6 +147,15 @@ jobs:
         fi
         echo "PASS: all requests returned 200 with no errors"
 
+    - name: Upload E2E test results
+      uses: actions/upload-artifact@v6.0.0
+      if: always()
+      with:
+        name: e2e-test-results
+        path: |
+          smoke-report.xml
+          /tmp/oha.json
+
     - name: Show pod status on failure
       if: failure()
       run: |
@@ -117,7 +165,7 @@ jobs:
         kubectl logs -l app=backend --tail=50
 
   build:
-    needs: test
+    needs: [unit-test, lint, test]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6.0.2
