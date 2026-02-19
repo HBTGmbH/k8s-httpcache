@@ -12,7 +12,40 @@ permissions:
   packages: write
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      src: ${{ steps.filter.outputs.src }}
+      docker: ${{ steps.filter.outputs.docker }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+    - uses: actions/checkout@v6.0.2
+    - uses: dorny/paths-filter@v3.0.2
+      id: filter
+      with:
+        filters: |
+          go:
+            - '**/*.go'
+            - 'go.mod'
+            - 'go.sum'
+          src:
+            - '**/*.go'
+            - '!**/*_test.go'
+            - 'go.mod'
+            - 'go.sum'
+          docker:
+            - 'Dockerfile'
+            - '.dockerignore'
+          ci:
+            - '.github/**'
+
   unit-test:
+    needs: [changes]
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      needs.changes.outputs.go == 'true' ||
+      needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -50,6 +83,11 @@ jobs:
           coverage.html
 
   lint:
+    needs: [changes]
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      needs.changes.outputs.go == 'true' ||
+      needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -89,6 +127,11 @@ jobs:
         go test -fuzz=FuzzParseNamespacedService -fuzztime=10s ./internal/config/
 
   go-build:
+    needs: [changes]
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      needs.changes.outputs.src == 'true' ||
+      needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -101,7 +144,13 @@ jobs:
       run: go build .
 
   test:
-    needs: [unit-test, lint, go-build]
+    needs: [changes, unit-test, lint, go-build]
+    if: >-
+      !failure() && !cancelled() &&
+      (startsWith(github.ref, 'refs/tags/') ||
+      needs.changes.outputs.src == 'true' ||
+      needs.changes.outputs.docker == 'true' ||
+      needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -214,7 +263,13 @@ jobs:
         kubectl logs -l app=backend --tail=50
 
   build:
-    needs: [test]
+    needs: [changes, test]
+    if: >-
+      !failure() && !cancelled() &&
+      (startsWith(github.ref, 'refs/tags/') ||
+      needs.changes.outputs.src == 'true' ||
+      needs.changes.outputs.docker == 'true' ||
+      needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
