@@ -2,7 +2,7 @@
 GET http://localhost:8080/ready
 HTTP 200
 
-# Backend request via /nodejs/ should return 200 with body "ok".
+# Backend request via /backend/ should return 200 with body "ok".
 GET http://localhost:8080/backend/
 HTTP 200
 [Asserts]
@@ -21,4 +21,15 @@ repeat: 500
 HTTP 200
 [Asserts]
 header "Via" startsWith "{{via_shard}}"
+
+# Via header must contain at most two entries, ensuring requests are never
+# forwarded more than once (no routing loops in the shard cluster).
+# Random UUIDs spread requests across different shard owners; some are served
+# directly (1 Via entry), others are forwarded once to the owning shard (2 entries).
+GET http://localhost:8080/backend/{{newUuid}}
+[Options]
+repeat: 100
+HTTP 200
+[Asserts]
+header "Via" matches "^[^,]+(, [^,]+)?$"
 
