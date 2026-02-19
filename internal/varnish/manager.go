@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -114,13 +114,15 @@ func (m *Manager) Start(initialVCL string) error {
 	)
 	args = append(args, m.extraArgs...)
 
+	slog.Debug("exec", "cmd", m.varnishdPath, "args", args)
+
 	p, err := m.run.Start(m.varnishdPath, args)
 	if err != nil {
 		return fmt.Errorf("starting varnishd: %w", err)
 	}
 	m.proc = p
 
-	log.Printf("varnish: started varnishd pid=%d", m.proc.Pid())
+	slog.Info("started varnishd", "pid", m.proc.Pid())
 
 	// Monitor the process in the background.
 	go func() {
@@ -133,7 +135,7 @@ func (m *Manager) Start(initialVCL string) error {
 		return fmt.Errorf("waiting for varnish admin: %w", err)
 	}
 
-	log.Printf("varnish: admin port %s is ready", m.adminAddr)
+	slog.Info("varnish admin ready", "addr", m.adminAddr)
 	return nil
 }
 
@@ -154,7 +156,7 @@ func (m *Manager) Reload(vclPath string) error {
 		return fmt.Errorf("vcl.use: %w: %s", err, resp)
 	}
 
-	log.Printf("varnish: activated VCL %s", name)
+	slog.Info("activated VCL", "name", name)
 
 	// Discard old available VCLs in the background (best-effort).
 	m.discardOldVCLs(name)
@@ -246,6 +248,8 @@ func (m *Manager) adm(args ...string) (string, error) {
 	cmdArgs := []string{"-T", m.adminAddr, "-S", m.secretFile}
 	cmdArgs = append(cmdArgs, args...)
 
+	slog.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
+
 	return m.run.Run(m.varnishadmPath, cmdArgs)
 }
 
@@ -267,7 +271,7 @@ func (m *Manager) discardOldVCLs(currentName string) {
 		// Only discard "available" VCLs that are not the current one.
 		if state == "available" && name != currentName {
 			if _, err := m.adm("vcl.discard", name); err != nil {
-				log.Printf("varnish: failed to discard VCL %s: %v", name, err)
+				slog.Warn("failed to discard VCL", "name", name, "error", err)
 			}
 		}
 	}

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -213,7 +213,7 @@ func (s *Server) ListenAndServe() error {
 // up to timeout for all client connections to close before shutting down.
 func (s *Server) Drain(timeout time.Duration) error {
 	s.draining.Store(true)
-	log.Printf("broadcast: draining connections (timeout %v)", timeout)
+	slog.Info("draining broadcast connections", "timeout", timeout)
 
 	if s.conns.Load() <= 0 {
 		s.signalDrained()
@@ -221,9 +221,9 @@ func (s *Server) Drain(timeout time.Duration) error {
 
 	select {
 	case <-s.connsDrained:
-		log.Printf("broadcast: all connections drained")
+		slog.Info("all broadcast connections drained")
 	case <-time.After(timeout):
-		log.Printf("broadcast: drain timeout reached, %d connections remaining", s.conns.Load())
+		slog.Warn("broadcast drain timeout reached", "remaining", s.conns.Load())
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)

@@ -3,7 +3,7 @@ package watcher
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strconv"
 
@@ -95,7 +95,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	// EndpointSlices (so no Add events fired during cache sync).
 	w.sync(lister)
 
-	log.Printf("watcher: watching EndpointSlices for service %s/%s", w.namespace, w.serviceName)
+	slog.Info("watching EndpointSlices", "namespace", w.namespace, "service", w.serviceName)
 	<-ctx.Done()
 	return nil
 }
@@ -103,7 +103,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	slices, err := lister.EndpointSlices(w.namespace).List(labels.Everything())
 	if err != nil {
-		log.Printf("watcher: failed to list EndpointSlices: %v", err)
+		slog.Error("failed to list EndpointSlices", "error", err)
 		return
 	}
 
@@ -144,6 +144,19 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	if w.synced && endpointsEqual(endpoints, w.previous) {
 		return
 	}
+
+	if w.synced {
+		added, removed := diffEndpoints(w.previous, endpoints)
+		for _, ep := range added {
+			slog.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
+				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+		}
+		for _, ep := range removed {
+			slog.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
+				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+		}
+	}
+
 	w.synced = true
 	w.previous = endpoints
 
@@ -176,6 +189,28 @@ func resolvePort(ports []discoveryv1.EndpointPort, override string) int32 {
 		return *ports[0].Port
 	}
 	return 0
+}
+
+func diffEndpoints(old, new []Endpoint) (added, removed []Endpoint) {
+	oldSet := make(map[Endpoint]struct{}, len(old))
+	for _, e := range old {
+		oldSet[e] = struct{}{}
+	}
+	newSet := make(map[Endpoint]struct{}, len(new))
+	for _, e := range new {
+		newSet[e] = struct{}{}
+	}
+	for _, e := range new {
+		if _, ok := oldSet[e]; !ok {
+			added = append(added, e)
+		}
+	}
+	for _, e := range old {
+		if _, ok := newSet[e]; !ok {
+			removed = append(removed, e)
+		}
+	}
+	return
 }
 
 func endpointsEqual(a, b []Endpoint) bool {

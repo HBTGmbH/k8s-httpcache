@@ -1,7 +1,9 @@
 package varnish
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -474,5 +476,84 @@ func TestParseAdminPort(t *testing.T) {
 				t.Errorf("ParseAdminPort(%q) = %d, want %d", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDebugLogging(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
+	defer close(mp.waitCh)
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return mp, nil },
+		runFn:   func(string, []string) (string, error) { return "200", nil },
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	// Test varnishd start logging.
+	err := m.Start("/tmp/test.vcl")
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "/usr/sbin/varnishd") {
+		t.Errorf("expected varnishd exec log, got: %s", output)
+	}
+	if !strings.Contains(output, "-F") {
+		t.Errorf("expected -F flag in log, got: %s", output)
+	}
+
+	// Test varnishadm logging via Reload.
+	buf.Reset()
+	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	output = buf.String()
+	if !strings.Contains(output, "/usr/bin/varnishadm") {
+		t.Errorf("expected varnishadm exec log, got: %s", output)
+	}
+	if !strings.Contains(output, "vcl.load") {
+		t.Errorf("expected vcl.load in log, got: %s", output)
+	}
+	if !strings.Contains(output, "vcl.use") {
+		t.Errorf("expected vcl.use in log, got: %s", output)
+	}
+}
+
+func TestDebugLoggingDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
+	defer close(mp.waitCh)
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return mp, nil },
+		runFn:   func(string, []string) (string, error) { return "200", nil },
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	if err := m.Start("/tmp/test.vcl"); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "level=DEBUG") {
+		t.Errorf("expected no debug log lines when level is Info, got: %s", output)
 	}
 }

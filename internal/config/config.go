@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strconv"
@@ -124,6 +125,7 @@ type Config struct {
 	ShutdownTimeout            time.Duration
 	Backends                   []BackendSpec
 	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
+	LogLevel                   slog.Level
 }
 
 // parseNamespacedService splits an optional "namespace/service" string into its
@@ -174,6 +176,7 @@ func Parse() (*Config, error) {
 	flag.DurationVar(&c.BroadcastClientIdleTimeout, "broadcast-client-idle-timeout", 90*time.Second, "Max time an idle connection to a Varnish pod is kept in the broadcast client pool")
 	flag.DurationVar(&c.BroadcastClientTimeout, "broadcast-client-timeout", 10*time.Second, "Timeout for each fan-out request to a Varnish pod")
 	flag.Var(&backends, "backend", "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)")
+	flag.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "Log level (DEBUG, INFO, WARN, ERROR)")
 
 	flag.Parse()
 

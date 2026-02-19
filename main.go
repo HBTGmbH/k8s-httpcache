@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,13 +23,12 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmsgprefix)
-	log.SetPrefix("k8s-httpcache: ")
-
 	cfg, err := config.Parse()
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
 	// Build Kubernetes client.
 	clientset, err := buildClientset()
@@ -49,7 +49,7 @@ func main() {
 	w := watcher.New(clientset, cfg.ServiceNamespace, cfg.ServiceName, "")
 	go func() {
 		if err := w.Run(ctx); err != nil {
-			log.Printf("watcher error: %v", err)
+			slog.Error("watcher error", "error", err)
 		}
 	}()
 
@@ -63,7 +63,7 @@ func main() {
 		name := b.Name
 		go func() {
 			if err := bw.Run(ctx); err != nil {
-				log.Printf("backend watcher %s error: %v", name, err)
+				slog.Error("backend watcher error", "backend", name, "error", err)
 			}
 		}()
 		bwNames = append(bwNames, name)
@@ -74,13 +74,13 @@ func main() {
 	// starting varnishd, so it launches with a complete configuration.
 	// The watcher guarantees at least one send after cache sync (even if
 	// the endpoint list is empty), so this will not deadlock.
-	log.Printf("waiting for initial endpoint data")
+	slog.Info("waiting for initial endpoint data")
 	latestFrontends := <-w.Changes()
 	latestBackends := make(map[string][]watcher.Endpoint)
 	for i, bw := range bwWatchers {
 		latestBackends[bwNames[i]] = <-bw.Changes()
 	}
-	log.Printf("received initial endpoints: %d frontends, %d backend groups", len(latestFrontends), len(latestBackends))
+	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends))
 
 	// Start broadcast server if configured.
 	var bcast *broadcast.Server
@@ -152,7 +152,7 @@ func main() {
 	for {
 		select {
 		case <-templateCh:
-			log.Printf("VCL template changed on disk, scheduling reload")
+			slog.Info("VCL template changed on disk, scheduling reload")
 			pendingReload = true
 			templateChanged = true
 
@@ -194,7 +194,7 @@ func main() {
 			reloadedTemplate := false
 			if templateChanged {
 				if err := rend.Reload(); err != nil {
-					log.Printf("template parse error (keeping old template): %v", err)
+					slog.Error("template parse error, keeping old template", "error", err)
 					templateChanged = false
 				} else {
 					reloadedTemplate = true
@@ -203,14 +203,14 @@ func main() {
 
 			if len(latestFrontends) == 0 && !templateChanged {
 				templateChanged = false
-				log.Printf("skipping reload: no ready endpoints")
+				slog.Warn("skipping reload: no ready endpoints")
 				continue
 			}
 			templateChanged = false
 
 			vclPath, err := rend.RenderToFile(latestFrontends, latestBackends)
 			if err != nil {
-				log.Printf("render error: %v", err)
+				slog.Error("render error", "error", err)
 				if reloadedTemplate {
 					rend.Rollback()
 				}
@@ -218,7 +218,7 @@ func main() {
 			}
 
 			if err := mgr.Reload(vclPath); err != nil {
-				log.Printf("reload error: %v", err)
+				slog.Error("reload error", "error", err)
 				_ = os.Remove(vclPath)
 
 				if !reloadedTemplate {
@@ -229,15 +229,15 @@ func main() {
 				// retry so that any concurrent frontend/backend changes still
 				// take effect with the old (known-good) template.
 				rend.Rollback()
-				log.Printf("rolled back to previous template")
+				slog.Warn("rolled back to previous template")
 
 				vclPath, err = rend.RenderToFile(latestFrontends, latestBackends)
 				if err != nil {
-					log.Printf("render error after rollback: %v", err)
+					slog.Error("render error after rollback", "error", err)
 					continue
 				}
 				if err := mgr.Reload(vclPath); err != nil {
-					log.Printf("reload error after rollback: %v", err)
+					slog.Error("reload error after rollback", "error", err)
 				}
 				_ = os.Remove(vclPath)
 				continue
@@ -246,7 +246,7 @@ func main() {
 			_ = os.Remove(vclPath)
 
 		case sig := <-sigCh:
-			log.Printf("received signal %v, shutting down", sig)
+			slog.Info("received signal, shutting down", "signal", sig)
 			if bcast != nil {
 				_ = bcast.Drain(cfg.BroadcastDrainTimeout)
 			}
@@ -256,18 +256,18 @@ func main() {
 			select {
 			case <-mgr.Done():
 			case <-time.After(cfg.ShutdownTimeout):
-				log.Printf("varnishd did not exit in time, forcing")
+				slog.Warn("varnishd did not exit in time, forcing")
 				mgr.ForwardSignal(syscall.SIGKILL)
 			}
 
 			if err := mgr.Err(); err != nil {
-				log.Printf("varnishd exited with error: %v", err)
+				slog.Error("varnishd exited with error", "error", err)
 				os.Exit(1)
 			}
 			os.Exit(0)
 
 		case <-mgr.Done():
-			log.Printf("varnishd exited unexpectedly: %v", mgr.Err())
+			slog.Error("varnishd exited unexpectedly", "error", mgr.Err())
 			cancel()
 			os.Exit(1)
 		}
