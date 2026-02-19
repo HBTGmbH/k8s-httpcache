@@ -17,7 +17,7 @@ func writeTempTemplate(t *testing.T, content string) string {
 	if _, err := f.WriteString(content); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	return f.Name()
 }
 
@@ -421,7 +421,7 @@ func TestRenderToFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderToFile error: %v", err)
 	}
-	defer os.Remove(outPath)
+	defer func() { _ = os.Remove(outPath) }()
 
 	data, err := os.ReadFile(outPath)
 	if err != nil {
@@ -504,4 +504,3 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 		t.Errorf("expected backend 10.1.0.1/api, got: %s", out)
 	}
 }
-

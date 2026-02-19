@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"k8s-httpcache/internal/broadcast"
 	"k8s-httpcache/internal/config"
 	"k8s-httpcache/internal/renderer"
 	"k8s-httpcache/internal/varnish"
@@ -80,14 +82,38 @@ func main() {
 	}
 	log.Printf("received initial endpoints: %d frontends, %d backend groups", len(latestFrontends), len(latestBackends))
 
+	// Start broadcast server if configured.
+	var bcast *broadcast.Server
+	if cfg.BroadcastAddr != "" {
+		bcast = broadcast.New(broadcast.Options{
+			Addr:              cfg.BroadcastAddr,
+			TargetPort:        cfg.BroadcastTargetPort,
+			ServerIdleTimeout: cfg.BroadcastServerIdleTimeout,
+			ReadHeaderTimeout: cfg.BroadcastReadHeaderTimeout,
+			ClientTimeout:     cfg.BroadcastClientTimeout,
+			ClientIdleTimeout: cfg.BroadcastClientIdleTimeout,
+			ShutdownTimeout:   cfg.BroadcastShutdownTimeout,
+		})
+		bcast.SetFrontends(latestFrontends)
+		go func() {
+			if err := bcast.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("broadcast server: %v", err)
+			}
+		}()
+	}
+
 	// Render VCL with real endpoint data and start varnishd.
 	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends)
 	if err != nil {
 		log.Fatalf("initial render: %v", err)
 	}
-	defer os.Remove(initialVCL)
+	defer func() { _ = os.Remove(initialVCL) }()
 
-	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, cfg.AdminAddr, cfg.ListenAddr, cfg.SecretPath, cfg.ExtraVarnishd)
+	listenAddrs := make([]string, len(cfg.ListenAddrs))
+	for i, la := range cfg.ListenAddrs {
+		listenAddrs[i] = la.Raw
+	}
+	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, cfg.AdminAddr, listenAddrs, cfg.SecretPath, cfg.ExtraVarnishd)
 	defer mgr.Cleanup()
 
 	if err := mgr.Start(initialVCL); err != nil {
@@ -137,6 +163,9 @@ func main() {
 
 		case frontends := <-w.Changes():
 			latestFrontends = frontends
+			if bcast != nil {
+				bcast.SetFrontends(latestFrontends)
+			}
 			pendingReload = true
 
 			// Reset debounce timer.
@@ -190,7 +219,7 @@ func main() {
 
 			if err := mgr.Reload(vclPath); err != nil {
 				log.Printf("reload error: %v", err)
-				os.Remove(vclPath)
+				_ = os.Remove(vclPath)
 
 				if !reloadedTemplate {
 					continue
@@ -210,14 +239,17 @@ func main() {
 				if err := mgr.Reload(vclPath); err != nil {
 					log.Printf("reload error after rollback: %v", err)
 				}
-				os.Remove(vclPath)
+				_ = os.Remove(vclPath)
 				continue
 			}
 
-			os.Remove(vclPath)
+			_ = os.Remove(vclPath)
 
 		case sig := <-sigCh:
 			log.Printf("received signal %v, shutting down", sig)
+			if bcast != nil {
+				_ = bcast.Drain(cfg.BroadcastDrainTimeout)
+			}
 			cancel()
 			mgr.ForwardSignal(sig)
 

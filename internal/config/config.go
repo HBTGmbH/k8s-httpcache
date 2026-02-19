@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +18,53 @@ type BackendSpec struct {
 	Namespace   string // Kubernetes namespace (resolved from [namespace/]service or --namespace)
 }
 
+// ListenAddrSpec describes a Varnish listen address parsed from the
+// varnishd -a flag format: [name=][bind-ip]:port[,proto[,proto...]].
+type ListenAddrSpec struct {
+	Name string // optional name (e.g. "http")
+	Host string // bind IP (e.g. "0.0.0.0", "127.0.0.1", or "" for all interfaces)
+	Port int32  // numeric port extracted from the address
+	Raw  string // original flag value passed through to varnishd
+}
+
+// listenAddrFlags implements flag.Value for repeatable --listen-addr flags.
+type listenAddrFlags []ListenAddrSpec
+
+func (l *listenAddrFlags) String() string { return fmt.Sprintf("%v", *l) }
+
+func (l *listenAddrFlags) Set(val string) error {
+	spec := ListenAddrSpec{Raw: val}
+
+	rest := val
+	if idx := strings.IndexByte(val, '='); idx >= 0 {
+		spec.Name = val[:idx]
+		if spec.Name == "" {
+			return fmt.Errorf("empty name in --listen-addr %q", val)
+		}
+		rest = val[idx+1:]
+	}
+
+	// Strip protocol suffixes: ":8080,HTTP" → ":8080"
+	addr := rest
+	if idx := strings.IndexByte(rest, ','); idx >= 0 {
+		addr = rest[:idx]
+	}
+
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid address in --listen-addr %q: %w", val, err)
+	}
+	spec.Host = host
+	p, err := strconv.ParseInt(portStr, 10, 32)
+	if err != nil || p <= 0 || p > 65535 {
+		return fmt.Errorf("invalid port in --listen-addr %q", val)
+	}
+	spec.Port = int32(p)
+
+	*l = append(*l, spec)
+	return nil
+}
+
 // backendFlags implements flag.Value for repeatable --backend flags.
 type backendFlags []BackendSpec
 
@@ -26,6 +74,12 @@ func (b *backendFlags) Set(val string) error {
 	parts := strings.SplitN(val, ":", 3)
 	if len(parts) < 2 {
 		return fmt.Errorf("invalid --backend %q: expected name:service-name[:port]", val)
+	}
+	if parts[0] == "" {
+		return fmt.Errorf("empty name in --backend %q", val)
+	}
+	if parts[1] == "" {
+		return fmt.Errorf("empty service in --backend %q", val)
 	}
 	spec := BackendSpec{
 		Name:        parts[0],
@@ -48,19 +102,28 @@ func (b *backendFlags) Set(val string) error {
 }
 
 type Config struct {
-	ServiceName      string
-	ServiceNamespace string // resolved namespace for the frontend service
-	Namespace        string
-	VCLTemplate    string
-	AdminAddr      string
-	ListenAddr     string
-	VarnishdPath   string
-	VarnishadmPath string
-	SecretPath     string
-	Debounce        time.Duration
-	ShutdownTimeout time.Duration
-	Backends        []BackendSpec
-	ExtraVarnishd  []string // Additional args passed to varnishd (after --)
+	ServiceName                string
+	ServiceNamespace           string // resolved namespace for the frontend service
+	Namespace                  string
+	VCLTemplate                string
+	AdminAddr                  string
+	ListenAddrs                []ListenAddrSpec
+	VarnishdPath               string
+	VarnishadmPath             string
+	SecretPath                 string
+	BroadcastAddr              string
+	BroadcastTargetListenAddr  string
+	BroadcastTargetPort        int32 // resolved from BroadcastTargetListenAddr
+	BroadcastDrainTimeout      time.Duration
+	BroadcastShutdownTimeout   time.Duration
+	BroadcastServerIdleTimeout time.Duration
+	BroadcastReadHeaderTimeout time.Duration
+	BroadcastClientIdleTimeout time.Duration
+	BroadcastClientTimeout     time.Duration
+	Debounce                   time.Duration
+	ShutdownTimeout            time.Duration
+	Backends                   []BackendSpec
+	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
 }
 
 // parseNamespacedService splits an optional "namespace/service" string into its
@@ -87,18 +150,29 @@ func parseNamespacedService(s, defaultNS string) (namespace, service string, err
 func Parse() (*Config, error) {
 	c := &Config{}
 
-	var backends backendFlags
+	var (
+		backends    backendFlags
+		listenAddrs listenAddrFlags
+	)
 
 	flag.StringVar(&c.ServiceName, "service-name", "", "Kubernetes Service to watch: [namespace/]service (required)")
 	flag.StringVar(&c.Namespace, "namespace", "", "Kubernetes namespace (required, used as default for services without a namespace/ prefix)")
 	flag.StringVar(&c.VCLTemplate, "vcl-template", "", "Path to VCL Go template file (required)")
 	flag.StringVar(&c.AdminAddr, "admin-addr", "127.0.0.1:6082", "Varnish admin listen address")
-	flag.StringVar(&c.ListenAddr, "listen-addr", "http=:8080,HTTP", "Varnish client listen address")
+	flag.Var(&listenAddrs, "listen-addr", "Varnish listen address: [name=]address[,proto] (repeatable, default: http=:8080,HTTP)")
 	flag.StringVar(&c.VarnishdPath, "varnishd-path", "varnishd", "Path to varnishd binary")
 	flag.StringVar(&c.VarnishadmPath, "varnishadm-path", "varnishadm", "Path to varnishadm binary")
 	flag.StringVar(&c.SecretPath, "secret-path", "", "Path to write the varnishadm secret file (default: auto-generated temp file)")
 	flag.DurationVar(&c.Debounce, "debounce", 2*time.Second, "Debounce duration for endpoint changes")
 	flag.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", 30*time.Second, "Time to wait for varnishd to exit before sending SIGKILL")
+	flag.StringVar(&c.BroadcastAddr, "broadcast-addr", ":8088", "Listen address for the broadcast HTTP server (set empty to disable)")
+	flag.StringVar(&c.BroadcastTargetListenAddr, "broadcast-target-listen-addr", "", "Name of the --listen-addr to target for fan-out (default: first --listen-addr)")
+	flag.DurationVar(&c.BroadcastDrainTimeout, "broadcast-drain-timeout", 30*time.Second, "Time to wait for broadcast connections to drain before shutting down")
+	flag.DurationVar(&c.BroadcastShutdownTimeout, "broadcast-shutdown-timeout", 5*time.Second, "Time to wait for in-flight broadcast requests to finish after draining")
+	flag.DurationVar(&c.BroadcastServerIdleTimeout, "broadcast-server-idle-timeout", 120*time.Second, "Max time a client keep-alive connection to the broadcast server can stay idle")
+	flag.DurationVar(&c.BroadcastReadHeaderTimeout, "broadcast-read-header-timeout", 10*time.Second, "Max time to read request headers on the broadcast server")
+	flag.DurationVar(&c.BroadcastClientIdleTimeout, "broadcast-client-idle-timeout", 90*time.Second, "Max time an idle connection to a Varnish pod is kept in the broadcast client pool")
+	flag.DurationVar(&c.BroadcastClientTimeout, "broadcast-client-timeout", 10*time.Second, "Timeout for each fan-out request to a Varnish pod")
 	flag.Var(&backends, "backend", "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)")
 
 	flag.Parse()
@@ -115,6 +189,44 @@ func Parse() (*Config, error) {
 
 	if _, err := os.Stat(c.VCLTemplate); err != nil {
 		return nil, fmt.Errorf("vcl-template file %q: %w", c.VCLTemplate, err)
+	}
+
+	// Default listen address if none provided.
+	if len(listenAddrs) == 0 {
+		if err := listenAddrs.Set("http=:8080,HTTP"); err != nil {
+			return nil, fmt.Errorf("default --listen-addr: %w", err)
+		}
+	}
+
+	// Validate listen address name uniqueness.
+	seenLA := make(map[string]bool, len(listenAddrs))
+	for _, la := range listenAddrs {
+		if la.Name != "" {
+			if seenLA[la.Name] {
+				return nil, fmt.Errorf("duplicate --listen-addr name %q", la.Name)
+			}
+			seenLA[la.Name] = true
+		}
+	}
+	c.ListenAddrs = []ListenAddrSpec(listenAddrs)
+
+	// Resolve broadcast target port from the named listen address.
+	if c.BroadcastAddr != "" {
+		if c.BroadcastTargetListenAddr == "" {
+			c.BroadcastTargetPort = c.ListenAddrs[0].Port
+		} else {
+			found := false
+			for _, la := range c.ListenAddrs {
+				if la.Name == c.BroadcastTargetListenAddr {
+					c.BroadcastTargetPort = la.Port
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("--broadcast-target-listen-addr %q does not match any --listen-addr name", c.BroadcastTargetListenAddr)
+			}
+		}
 	}
 
 	// Resolve frontend service namespace.

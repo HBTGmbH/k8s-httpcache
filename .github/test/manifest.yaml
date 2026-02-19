@@ -129,6 +129,7 @@ spec:
         - --namespace=$(NAMESPACE)
         - --vcl-template=/etc/k8s-httpcache/vcl.tmpl
         - --secret-path=/var/lib/varnish/secrets/secret
+        - --broadcast-addr=:8088
         - --backend=backend:backend
         - --
         - -s
@@ -151,6 +152,9 @@ spec:
         ports:
         - name: http
           containerPort: 8080
+          protocol: TCP
+        - name: http-b
+          containerPort: 8088
           protocol: TCP
         startupProbe:
           httpGet:
@@ -201,6 +205,10 @@ spec:
     protocol: TCP
     port: 80
     targetPort: http
+  - name: http-b
+    protocol: TCP
+    port: 8088
+    targetPort: http-b
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -247,6 +255,12 @@ data:
     <<- end >>
     <<- end >>
 
+    acl purge {
+      "localhost";
+      "127.0.0.1";
+      "::1";
+    }
+
     # Dummy backend to use as a drain flag. The preStop hook will set this backend to sick to trigger draining
     # via varnishadm.
     backend drain_flag {
@@ -285,6 +299,13 @@ data:
     sub vcl_recv {
       call handle_readiness;
 
+      if (req.method == "PURGE") {
+        if (!client.ip ~ purge) {
+          return (synth(405, "Not allowed"));
+        }
+        return (purge);
+      }
+
       <<- if .Frontends >>
       if (!req.http.X-Shard-Routed) {
         set req.backend_hint = cluster.backend(by=URL);
@@ -311,6 +332,10 @@ data:
       if (!std.healthy(drain_flag)) {
         set resp.http.Connection = "close";
       }
+    }
+
+    sub vcl_purge {
+      return (synth(200, "Purged"));
     }
 
     sub vcl_deliver {

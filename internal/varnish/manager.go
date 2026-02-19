@@ -15,32 +15,80 @@ import (
 	"time"
 )
 
+// runner abstracts external command execution for testing.
+type runner interface {
+	// Start starts a long-running process and returns a handle.
+	Start(name string, args []string) (proc, error)
+	// Run runs a command to completion and returns its combined output.
+	Run(name string, args []string) (string, error)
+}
+
+// proc represents a running process.
+type proc interface {
+	Wait() error
+	Signal(os.Signal) error
+	Pid() int
+}
+
+// execRunner is the real implementation that uses os/exec.
+type execRunner struct{}
+
+func (execRunner) Start(name string, args []string) (proc, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &execProc{cmd: cmd}, nil
+}
+
+func (execRunner) Run(name string, args []string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// execProc wraps an exec.Cmd as a proc.
+type execProc struct{ cmd *exec.Cmd }
+
+func (p *execProc) Wait() error                { return p.cmd.Wait() }
+func (p *execProc) Signal(sig os.Signal) error { return p.cmd.Process.Signal(sig) }
+func (p *execProc) Pid() int                   { return p.cmd.Process.Pid }
+
 // Manager manages the varnishd process and performs VCL reloads via varnishadm.
 type Manager struct {
 	varnishdPath   string
 	varnishadmPath string
 	adminAddr      string
-	listenAddr     string
+	listenAddrs    []string
 	extraArgs      []string
 	secretPath     string
 	secretFile     string
-	cmd            *exec.Cmd
+	run            runner
+	proc           proc
+	dialFn         func(addr string, timeout time.Duration) (net.Conn, error)
 	done           chan struct{}
 	err            error
 	reloadCounter  atomic.Int64
 }
 
-// New creates a new varnish Manager. extraArgs are appended to the varnishd command line.
+// New creates a new varnish Manager. listenAddrs are passed as individual -a
+// flags to varnishd. extraArgs are appended to the varnishd command line.
 // If secretPath is non-empty, the secret is written to that fixed path; otherwise a temp file is used.
-func New(varnishdPath, varnishadmPath, adminAddr, listenAddr, secretPath string, extraArgs []string) *Manager {
+func New(varnishdPath, varnishadmPath, adminAddr string, listenAddrs []string, secretPath string, extraArgs []string) *Manager {
 	return &Manager{
 		varnishdPath:   varnishdPath,
 		varnishadmPath: varnishadmPath,
 		adminAddr:      adminAddr,
-		listenAddr:     listenAddr,
+		listenAddrs:    listenAddrs,
 		secretPath:     secretPath,
 		extraArgs:      extraArgs,
-		done:           make(chan struct{}),
+		run:            execRunner{},
+		dialFn: func(addr string, timeout time.Duration) (net.Conn, error) {
+			return net.DialTimeout("tcp", addr, timeout)
+		},
+		done: make(chan struct{}),
 	}
 }
 
@@ -55,25 +103,28 @@ func (m *Manager) Start(initialVCL string) error {
 
 	args := []string{
 		"-F",
-		"-a", m.listenAddr,
+	}
+	for _, la := range m.listenAddrs {
+		args = append(args, "-a", la)
+	}
+	args = append(args,
 		"-T", m.adminAddr,
 		"-f", initialVCL,
 		"-S", m.secretFile,
-	}
+	)
 	args = append(args, m.extraArgs...)
-	m.cmd = exec.Command(m.varnishdPath, args...)
-	m.cmd.Stdout = os.Stdout
-	m.cmd.Stderr = os.Stderr
 
-	if err := m.cmd.Start(); err != nil {
+	p, err := m.run.Start(m.varnishdPath, args)
+	if err != nil {
 		return fmt.Errorf("starting varnishd: %w", err)
 	}
+	m.proc = p
 
-	log.Printf("varnish: started varnishd pid=%d", m.cmd.Process.Pid)
+	log.Printf("varnish: started varnishd pid=%d", m.proc.Pid())
 
 	// Monitor the process in the background.
 	go func() {
-		m.err = m.cmd.Wait()
+		m.err = m.proc.Wait()
 		close(m.done)
 	}()
 
@@ -113,8 +164,8 @@ func (m *Manager) Reload(vclPath string) error {
 
 // ForwardSignal sends a signal to the varnishd process.
 func (m *Manager) ForwardSignal(sig os.Signal) {
-	if m.cmd != nil && m.cmd.Process != nil {
-		m.cmd.Process.Signal(sig)
+	if m.proc != nil {
+		_ = m.proc.Signal(sig)
 	}
 }
 
@@ -131,7 +182,7 @@ func (m *Manager) Err() error {
 // Cleanup removes temporary files.
 func (m *Manager) Cleanup() {
 	if m.secretFile != "" {
-		os.Remove(m.secretFile)
+		_ = os.Remove(m.secretFile)
 	}
 }
 
@@ -158,13 +209,13 @@ func (m *Manager) generateSecret() (string, error) {
 	}
 
 	if _, err := fmt.Fprintf(f, "%x\n", b); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return "", err
 	}
 
 	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return "", err
 	}
 
@@ -181,9 +232,9 @@ func (m *Manager) waitForAdmin(timeout time.Duration) error {
 		default:
 		}
 
-		conn, err := net.DialTimeout("tcp", m.adminAddr, time.Second)
+		conn, err := m.dialFn(m.adminAddr, time.Second)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -195,9 +246,7 @@ func (m *Manager) adm(args ...string) (string, error) {
 	cmdArgs := []string{"-T", m.adminAddr, "-S", m.secretFile}
 	cmdArgs = append(cmdArgs, args...)
 
-	cmd := exec.Command(m.varnishadmPath, cmdArgs...)
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return m.run.Run(m.varnishadmPath, cmdArgs)
 }
 
 func (m *Manager) discardOldVCLs(currentName string) {

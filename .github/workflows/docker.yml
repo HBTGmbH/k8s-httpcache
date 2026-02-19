@@ -19,8 +19,17 @@ jobs:
     - uses: actions/setup-go@v6.2.0
       with:
         go-version-file: go.mod
+    - name: Cache gotestsum
+      uses: actions/cache@v4
+      with:
+        path: ~/go/bin/gotestsum
+        key: gotestsum-1.13.0-linux-amd64
     - name: Install gotestsum
-      run: go install gotest.tools/gotestsum@latest
+      run: |
+        if [ ! -f ~/go/bin/gotestsum ]; then
+          curl -sfL https://github.com/gotestyourself/gotestsum/releases/download/v1.13.0/gotestsum_1.13.0_linux_amd64.tar.gz \
+            | tar -xz -C ~/go/bin gotestsum
+        fi
     - name: Run tests with coverage
       run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -coverprofile=coverage.out ./...
     - name: Display coverage
@@ -46,9 +55,16 @@ jobs:
       with:
         go-version-file: go.mod
     - uses: golangci/golangci-lint-action@v9.2.0
-    - name: Check for vulnerabilities
+    - name: Cache govulncheck
+      uses: actions/cache@v4
+      with:
+        path: ~/go/bin/govulncheck
+        key: govulncheck-1.1.4-linux-amd64
+    - name: Install and run govulncheck
       run: |
-        go install golang.org/x/vuln/cmd/govulncheck@latest
+        if [ ! -f ~/go/bin/govulncheck ]; then
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        fi
         govulncheck ./...
 
   test:
@@ -70,7 +86,7 @@ jobs:
         cache-to: type=gha,scope=test,mode=max
 
     - name: Create kind cluster
-      uses: helm/kind-action@v1.13.0
+      uses: helm/kind-action@v1.14.0
       with:
         cluster_name: test
         config: .github/test/kind-config.yaml
@@ -92,12 +108,24 @@ jobs:
         kubectl rollout status deployment/backend --timeout=120s > /dev/null
         kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
 
+    - name: Cache test tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/tools
+          /usr/local/bin/oha
+        key: test-tools-hurl-7.1.0-oha-1.13.0
     - name: Install tools
       run: |
-        curl -sfL -O https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
-        sudo apt-get install -yqq ./hurl_7.1.0_amd64.deb > /dev/null
-        curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
-        chmod +x /usr/local/bin/oha
+        mkdir -p ~/tools
+        if [ ! -f ~/tools/hurl_7.1.0_amd64.deb ]; then
+          curl -sfL -o ~/tools/hurl_7.1.0_amd64.deb https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
+        fi
+        sudo apt-get install -yqq ~/tools/hurl_7.1.0_amd64.deb > /dev/null
+        if [ ! -f /usr/local/bin/oha ]; then
+          curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
+          chmod +x /usr/local/bin/oha
+        fi
 
     - name: Smoke test
       run: |

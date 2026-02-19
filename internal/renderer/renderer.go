@@ -93,13 +93,13 @@ func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[strin
 	}
 
 	if _, err := f.WriteString(vcl); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return "", fmt.Errorf("writing temp file: %w", err)
 	}
 
 	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return "", fmt.Errorf("closing temp file: %w", err)
 	}
 
