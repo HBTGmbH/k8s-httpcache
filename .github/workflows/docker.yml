@@ -68,6 +68,7 @@ jobs:
         govulncheck ./...
 
   test:
+    needs: [unit-test, lint]
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -75,6 +76,25 @@ jobs:
 
     - name: Setup BuildKit
       uses: docker/setup-buildx-action@v3.12.0
+
+    - name: Cache test tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/tools
+          /usr/local/bin/oha
+        key: test-tools-hurl-7.1.0-oha-1.13.0
+    - name: Install tools
+      run: |
+        mkdir -p ~/tools
+        if [ ! -f ~/tools/hurl_7.1.0_amd64.deb ]; then
+          curl -sfL -o ~/tools/hurl_7.1.0_amd64.deb https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
+        fi
+        sudo apt-get install -yqq ~/tools/hurl_7.1.0_amd64.deb > /dev/null
+        if [ ! -f /usr/local/bin/oha ]; then
+          curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
+          chmod +x /usr/local/bin/oha
+        fi
 
     - name: Build test image
       uses: docker/build-push-action@v6.19.2
@@ -107,25 +127,6 @@ jobs:
       run: |
         kubectl rollout status deployment/backend --timeout=120s > /dev/null
         kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
-
-    - name: Cache test tools
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/tools
-          /usr/local/bin/oha
-        key: test-tools-hurl-7.1.0-oha-1.13.0
-    - name: Install tools
-      run: |
-        mkdir -p ~/tools
-        if [ ! -f ~/tools/hurl_7.1.0_amd64.deb ]; then
-          curl -sfL -o ~/tools/hurl_7.1.0_amd64.deb https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
-        fi
-        sudo apt-get install -yqq ~/tools/hurl_7.1.0_amd64.deb > /dev/null
-        if [ ! -f /usr/local/bin/oha ]; then
-          curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
-          chmod +x /usr/local/bin/oha
-        fi
 
     - name: Smoke test
       run: |
@@ -193,7 +194,7 @@ jobs:
         kubectl logs -l app=backend --tail=50
 
   build:
-    needs: [unit-test, lint, test]
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6.0.2
