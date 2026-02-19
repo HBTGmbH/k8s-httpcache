@@ -20,6 +20,8 @@ jobs:
       ci: ${{ steps.filter.outputs.ci }}
     steps:
     - uses: actions/checkout@v6.0.2
+      with:
+        fetch-depth: 2
     - uses: dorny/paths-filter@v3.0.2
       id: filter
       with:
