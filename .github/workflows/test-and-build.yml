@@ -1,4 +1,4 @@
-name: Docker
+name: Test and Build
 
 on:
   push:
@@ -15,8 +15,10 @@ jobs:
   unit-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6.0.2
-    - uses: actions/setup-go@v6.2.0
+    - name: Checkout
+      uses: actions/checkout@v6.0.2
+    - name: Setup Go
+      uses: actions/setup-go@v6.2.0
       with:
         go-version-file: go.mod
     - name: Cache gotestsum
@@ -50,11 +52,14 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6.0.2
-    - uses: actions/setup-go@v6.2.0
+    - name: Checkout
+      uses: actions/checkout@v6.0.2
+    - name: Setup Go
+      uses: actions/setup-go@v6.2.0
       with:
         go-version-file: go.mod
-    - uses: golangci/golangci-lint-action@v9.2.0
+    - name: Go Lint
+      uses: golangci/golangci-lint-action@v9.2.0
     - name: Cache govulncheck
       uses: actions/cache@v5.0.3
       with:
@@ -83,16 +88,26 @@ jobs:
         go test -fuzz=FuzzBackendSet -fuzztime=10s ./internal/config/
         go test -fuzz=FuzzParseNamespacedService -fuzztime=10s ./internal/config/
 
-  test:
-    needs: [unit-test, lint]
+  go-build:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v6.0.2
+    - name: Setup Go
+      uses: actions/setup-go@v6.2.0
+      with:
+        go-version-file: go.mod
+    - name: Build
+      run: go build .
 
+  test:
+    needs: [unit-test, lint, go-build]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6.0.2
     - name: Setup BuildKit
       uses: docker/setup-buildx-action@v3.12.0
-
     - name: Cache test tools
       uses: actions/cache@v5.0.3
       with:
@@ -111,7 +126,6 @@ jobs:
           curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
           chmod +x /usr/local/bin/oha
         fi
-
     - name: Build test image
       uses: docker/build-push-action@v6.19.2
       with:
@@ -120,30 +134,24 @@ jobs:
         tags: k8s-httpcache:test
         cache-from: type=gha,scope=test
         cache-to: type=gha,scope=test,mode=max
-
     - name: Create kind cluster
       uses: helm/kind-action@v1.14.0
       with:
         cluster_name: test
         config: .github/test/kind-config.yaml
-
     - name: Install ingress-nginx
       run: |
         kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml > /dev/null
         kubectl wait -n ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s > /dev/null
         kubectl patch configmap -n ingress-nginx ingress-nginx-controller --type merge -p '{"data":{"upstream-keepalive-timeout":"5"}}' > /dev/null
-
     - name: Load image into kind
       run: kind load docker-image k8s-httpcache:test --name test -q
-
     - name: Deploy
       run: kubectl apply -f .github/test/manifest.yaml > /dev/null
-
     - name: Wait for rollout
       run: |
         kubectl rollout status deployment/backend --timeout=120s > /dev/null
         kubectl rollout status deployment/k8s-httpcache --timeout=120s > /dev/null
-
     - name: Smoke test
       run: |
         for i in $(seq 1 30); do
@@ -151,7 +159,6 @@ jobs:
           sleep 2
         done
         hurl --test --report-junit smoke-report.xml .github/test/smoke.hurl
-
     - name: Shard Distribution test
       run: |
         # Verify that different URL paths are routed to different Varnish shard pods.
@@ -169,7 +176,6 @@ jobs:
           exit 1
         fi
         echo "PASS: $unique unique shard pods seen across $N different URLs"
-
     - name: Zero-downtime rollout restart
       run: |
         oha -c 5 -q 10 -z 180s -u s -m POST --no-tui --output-format json http://localhost:8080/backend/ > /tmp/oha.json 2>/dev/null &
@@ -191,7 +197,6 @@ jobs:
           exit 1
         fi
         echo "PASS: all requests returned 200 with no errors"
-
     - name: Upload E2E test results
       uses: actions/upload-artifact@v6.0.0
       if: always()
@@ -200,7 +205,6 @@ jobs:
         path: |
           smoke-report.xml
           /tmp/oha.json
-
     - name: Show pod status on failure
       if: failure()
       run: |
@@ -213,18 +217,19 @@ jobs:
     needs: [test]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6.0.2
-
-    - uses: docker/setup-buildx-action@v3.12.0
-
-    - uses: docker/login-action@v3.7.0
+    - name: Checkout
+      uses: actions/checkout@v6.0.2
+    - name: Setup BuildKit
+      uses: docker/setup-buildx-action@v3.12.0
+    - name: Docker Login
+      uses: docker/login-action@v3.7.0
       if: github.event_name != 'pull_request'
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-
-    - uses: docker/metadata-action@v5.10.0
+    - name: Extract Metadata
+      uses: docker/metadata-action@v5.10.0
       id: meta
       with:
         images: ghcr.io/${{ github.repository }}
@@ -233,8 +238,8 @@ jobs:
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=sha
-
-    - uses: docker/build-push-action@v6.19.2
+    - name: Docker push
+      uses: docker/build-push-action@v6.19.2
       with:
         context: .
         platforms: linux/amd64,linux/arm64
