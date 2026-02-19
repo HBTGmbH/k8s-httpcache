@@ -348,3 +348,21 @@ func TestBackendFlagsSet(t *testing.T) {
 		})
 	}
 }
+
+func TestListenAddrFlagsString(t *testing.T) {
+	var lf listenAddrFlags
+	_ = lf.Set("http=:8080,HTTP")
+	s := lf.String()
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}
+
+func TestBackendFlagsString(t *testing.T) {
+	var bf backendFlags
+	_ = bf.Set("api:my-svc:3000")
+	s := bf.String()
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}

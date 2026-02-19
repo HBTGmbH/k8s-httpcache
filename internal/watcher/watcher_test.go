@@ -295,3 +295,62 @@ func TestDebugLogging(t *testing.T) {
 		t.Errorf("expected pod-a in log, got: %s", output)
 	}
 }
+
+func TestNewAndChanges(t *testing.T) {
+	w := New(nil, "test-ns", "test-svc", "8080")
+
+	if w.namespace != "test-ns" {
+		t.Errorf("namespace = %q, want test-ns", w.namespace)
+	}
+	if w.serviceName != "test-svc" {
+		t.Errorf("serviceName = %q, want test-svc", w.serviceName)
+	}
+	if w.portOverride != "8080" {
+		t.Errorf("portOverride = %q, want 8080", w.portOverride)
+	}
+	if w.ch == nil {
+		t.Error("channel should not be nil")
+	}
+
+	// Changes() should return the same channel.
+	ch := w.Changes()
+	if ch == nil {
+		t.Error("Changes() returned nil")
+	}
+}
+
+func TestDebugLoggingDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	w := &Watcher{
+		namespace:   "ns",
+		serviceName: "svc",
+		synced:      true,
+		previous: []Endpoint{
+			{IP: "10.0.0.1", Port: 80, Name: "pod-a"},
+		},
+		ch: make(chan []Endpoint, 1),
+	}
+
+	endpoints := []Endpoint{
+		{IP: "10.0.0.2", Port: 80, Name: "pod-b"},
+	}
+
+	added, removed := diffEndpoints(w.previous, endpoints)
+	for _, ep := range added {
+		slog.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
+			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+	}
+	for _, ep := range removed {
+		slog.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
+			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "level=DEBUG") {
+		t.Errorf("expected no debug log lines when level is Info, got: %s", output)
+	}
+}

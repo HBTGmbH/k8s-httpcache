@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -556,4 +557,142 @@ func TestDebugLoggingDisabled(t *testing.T) {
 	if strings.Contains(output, "level=DEBUG") {
 		t.Errorf("expected no debug log lines when level is Info, got: %s", output)
 	}
+}
+
+func TestNew(t *testing.T) {
+	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm", "127.0.0.1:6082",
+		[]string{":8080", ":8443"}, "/tmp/secret", []string{"-p", "default_ttl=3600"})
+
+	if m.varnishdPath != "/usr/sbin/varnishd" {
+		t.Errorf("varnishdPath = %q, want /usr/sbin/varnishd", m.varnishdPath)
+	}
+	if m.varnishadmPath != "/usr/bin/varnishadm" {
+		t.Errorf("varnishadmPath = %q, want /usr/bin/varnishadm", m.varnishadmPath)
+	}
+	if m.adminAddr != "127.0.0.1:6082" {
+		t.Errorf("adminAddr = %q, want 127.0.0.1:6082", m.adminAddr)
+	}
+	if len(m.listenAddrs) != 2 {
+		t.Errorf("listenAddrs length = %d, want 2", len(m.listenAddrs))
+	}
+	if m.secretPath != "/tmp/secret" {
+		t.Errorf("secretPath = %q, want /tmp/secret", m.secretPath)
+	}
+	if len(m.extraArgs) != 2 {
+		t.Errorf("extraArgs length = %d, want 2", len(m.extraArgs))
+	}
+	if m.done == nil {
+		t.Error("done channel should not be nil")
+	}
+}
+
+func TestDoneAndErr(t *testing.T) {
+	m := &Manager{done: make(chan struct{}), err: fmt.Errorf("test error")}
+
+	// Done should return the channel.
+	select {
+	case <-m.Done():
+		t.Fatal("done channel should not be closed yet")
+	default:
+	}
+
+	// Err should return the stored error.
+	if m.Err() == nil || m.Err().Error() != "test error" {
+		t.Errorf("Err() = %v, want 'test error'", m.Err())
+	}
+}
+
+func TestGenerateSecretWithPath(t *testing.T) {
+	dir := t.TempDir()
+	secretPath := filepath.Join(dir, "subdir", "secret")
+
+	m := &Manager{secretPath: secretPath}
+	path, err := m.generateSecret()
+	if err != nil {
+		t.Fatalf("generateSecret() error: %v", err)
+	}
+	defer func() { _ = os.Remove(path) }()
+
+	if path != secretPath {
+		t.Errorf("path = %q, want %q", path, secretPath)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading secret: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("secret file is empty")
+	}
+}
+
+func TestStartRunnerError(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			return nil, fmt.Errorf("exec failed")
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+
+	err := m.Start("/tmp/test.vcl")
+	if m.secretFile != "" {
+		defer func() { _ = os.Remove(m.secretFile) }()
+	}
+	if err == nil {
+		t.Fatal("expected error from Start, got nil")
+	}
+	if !strings.Contains(err.Error(), "starting varnishd") {
+		t.Errorf("error = %q, want substring 'starting varnishd'", err.Error())
+	}
+}
+
+func TestWaitForAdminProcessExited(t *testing.T) {
+	mp := &mockProc{pid: 1, waitErr: fmt.Errorf("exit status 1")}
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return mp, nil },
+		runFn:   func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.dialFn = func(string, time.Duration) (net.Conn, error) {
+		return nil, fmt.Errorf("connection refused")
+	}
+
+	m.secretFile = "/dev/null"
+	m.proc = mp
+	go func() {
+		m.err = mp.Wait()
+		close(m.done)
+	}()
+
+	err := m.waitForAdmin(5 * time.Second)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "exited before admin port") {
+		t.Errorf("error = %q, want substring 'exited before admin port'", err.Error())
+	}
+}
+
+func TestDiscardOldVCLsListError(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for _, a := range args {
+				if a == "vcl.list" {
+					return "", fmt.Errorf("admin error")
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	// Should not panic — just return silently on error.
+	m.discardOldVCLs("kv_reload_1")
 }

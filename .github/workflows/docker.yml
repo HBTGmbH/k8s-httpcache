@@ -31,7 +31,7 @@ jobs:
             | tar -xz -C ~/go/bin gotestsum
         fi
     - name: Run tests with coverage
-      run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -coverprofile=coverage.out ./...
+      run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -coverprofile=coverage.out -coverpkg=./internal/... ./...
     - name: Display coverage
       run: go tool cover -func=coverage.out
     - name: Generate coverage HTML

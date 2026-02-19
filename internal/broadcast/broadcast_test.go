@@ -452,6 +452,22 @@ func TestDrainTimeoutWithHeldConnection(t *testing.T) {
 	}
 }
 
+func TestNoFrontendsDraining(t *testing.T) {
+	s := newTestServer()
+	s.draining.Store(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if rec.Header().Get("Connection") != "close" {
+		t.Fatal("expected Connection: close during drain with no frontends")
+	}
+}
+
 func TestDrainNoConnections(t *testing.T) {
 	s := newTestServer()
 

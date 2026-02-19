@@ -474,6 +474,70 @@ func TestRender_WithBackends(t *testing.T) {
 	}
 }
 
+func TestRenderToFile_RenderError(t *testing.T) {
+	// Template that will fail during execution (call undefined method).
+	tmpl := `<< range .Frontends >><< .Nonexistent >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	frontends := []watcher.Frontend{
+		{IP: "10.0.0.1", Port: 80, Name: "a"},
+	}
+
+	_, err = r.RenderToFile(frontends, nil)
+	if err == nil {
+		t.Fatal("expected error from RenderToFile with broken template execution")
+	}
+}
+
+func TestReload_FileRemoved(t *testing.T) {
+	path := writeTempTemplate(t, `VALID`)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Remove the template file.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing template: %v", err)
+	}
+
+	if err := r.Reload(); err == nil {
+		t.Fatal("expected error when template file is missing")
+	}
+
+	// Old template should still work.
+	out, err := r.Render(nil, nil)
+	if err != nil {
+		t.Fatalf("render should still work: %v", err)
+	}
+	if out != "VALID" {
+		t.Errorf("expected VALID, got: %s", out)
+	}
+}
+
+func TestRollback_NoOp(t *testing.T) {
+	path := writeTempTemplate(t, `ONLY`)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Rollback without prior Reload should be a no-op.
+	r.Rollback()
+
+	out, err := r.Render(nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "ONLY" {
+		t.Errorf("expected ONLY, got: %s", out)
+	}
+}
+
 func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	tmpl := `frontends:<< range .Frontends >> << .IP >><< end >>` +
 		` backends:<< range $name, $eps := .Backends >><< range $eps >> << .IP >>/<< $name >><< end >><< end >>`
