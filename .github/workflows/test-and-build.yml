@@ -122,9 +122,15 @@ jobs:
         deadcode -test ./...
     - name: Fuzz tests
       run: |
-        go test -fuzz=FuzzListenAddrSet -fuzztime=10s ./internal/config/
-        go test -fuzz=FuzzBackendSet -fuzztime=10s ./internal/config/
-        go test -fuzz=FuzzParseNamespacedService -fuzztime=10s ./internal/config/
+        go test -fuzz=FuzzListenAddrSet -fuzztime=10s ./internal/config/ &
+        pids+=($!)
+        go test -fuzz=FuzzBackendSet -fuzztime=10s ./internal/config/ &
+        pids+=($!)
+        go test -fuzz=FuzzParseNamespacedService -fuzztime=10s ./internal/config/ &
+        pids+=($!)
+        fail=0
+        for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+        exit $fail
 
   go-build:
     needs: [changes]
