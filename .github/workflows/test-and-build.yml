@@ -181,14 +181,20 @@ jobs:
           curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
           chmod +x /usr/local/bin/oha
         fi
-    - name: Build test image
+    - name: Build image
       uses: docker/build-push-action@v6.19.2
       with:
         context: .
         load: true
-        tags: k8s-httpcache:test
+        tags: k8s-httpcache:build
         cache-from: type=gha,scope=test
         cache-to: type=gha,scope=test,mode=max
+    - name: Build test image
+      run: >-
+        docker build
+        --build-arg BASE_IMAGE=k8s-httpcache:build
+        -t k8s-httpcache:test
+        - < .github/test/Dockerfile
     - name: Create kind cluster
       uses: helm/kind-action@v1.14.0
       with:
