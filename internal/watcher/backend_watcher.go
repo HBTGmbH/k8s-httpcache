@@ -225,6 +225,10 @@ func (bw *BackendWatcher) send(endpoints []Endpoint) {
 		}
 	}
 
+	if len(endpoints) == 0 {
+		slog.Warn("backend has no ready endpoints", "namespace", bw.namespace, "service", bw.serviceName)
+	}
+
 	bw.synced = true
 	bw.previous = endpoints
 
