@@ -290,10 +290,6 @@ backend << replace .Name "-" "_" >>_<< $name >> {
 sub vcl_backend_response {
     set beresp.ttl = 120s;
     set beresp.grace = 60s;
-}
-
-sub vcl_deliver {
-    unset resp.http.X-Shard-Routed;
 }`
 	path := writeTempTemplate(t, exampleVCL)
 	r, err := New(path)

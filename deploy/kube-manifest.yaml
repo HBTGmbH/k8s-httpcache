@@ -290,5 +290,4 @@ data:
     sub vcl_deliver {
       # Check whether we are draining and adjust the Connection header in client responses accordingly.
       call handle_draining;
-      unset resp.http.X-Shard-Routed;
     }
