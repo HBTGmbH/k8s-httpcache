@@ -1,5 +1,9 @@
 # k8s-httpcache
 
+[![Test and Build](https://github.com/HBTGmbH/k8s-httpcache/actions/workflows/test-and-build.yml/badge.svg)](https://github.com/HBTGmbH/k8s-httpcache/actions/workflows/test-and-build.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/HBTGmbH/k8s-httpcache)](https://goreportcard.com/report/github.com/HBTGmbH/k8s-httpcache)
+[![License](https://img.shields.io/github/license/HBTGmbH/k8s-httpcache)](https://github.com/HBTGmbH/k8s-httpcache/blob/main/LICENSE)
+
 Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
 
 ## Features
