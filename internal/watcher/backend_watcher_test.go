@@ -1,7 +1,10 @@
 package watcher
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +88,8 @@ func TestBackendWatcherExternalNameService(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameDefaultPort(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "")
@@ -99,9 +104,16 @@ func TestBackendWatcherExternalNameDefaultPort(t *testing.T) {
 	if eps[0].Port != 80 {
 		t.Errorf("Port = %d, want 80 (default)", eps[0].Port)
 	}
+
+	output := buf.String()
+	if !strings.Contains(output, "no port specified for ExternalName service, defaulting to 80") {
+		t.Errorf("expected default port warning, got:\n%s", output)
+	}
 }
 
 func TestBackendWatcherExternalNameNamedPort(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "http")
@@ -114,6 +126,14 @@ func TestBackendWatcherExternalNameNamedPort(t *testing.T) {
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints for named port on ExternalName, got %d: %v", len(eps), eps)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "cannot resolve port for ExternalName service") {
+		t.Errorf("expected port resolution error, got:\n%s", output)
+	}
+	if !strings.Contains(output, "backend has no ready endpoints") {
+		t.Errorf("expected 'backend has no ready endpoints' warning, got:\n%s", output)
 	}
 }
 
@@ -326,6 +346,48 @@ func TestBackendWatcherServiceDeleted(t *testing.T) {
 	}
 }
 
+func TestBackendWatcherDebugLogging(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	clientset := fake.NewClientset(svc)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initial: one endpoint.
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(eps))
+	}
+
+	// Update to a different hostname → triggers added + removed.
+	buf.Reset()
+	current := getService(t, ctx, clientset)
+	current.Spec.ExternalName = "api-v2.example.com"
+	_, err := clientset.CoreV1().Services("default").Update(ctx, current, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	readBackendChanges(t, bw)
+
+	output := buf.String()
+	if !strings.Contains(output, "backend endpoint added") {
+		t.Errorf("expected 'backend endpoint added' log, got:\n%s", output)
+	}
+	if !strings.Contains(output, "api-v2.example.com:8080") {
+		t.Errorf("expected new endpoint address in log, got:\n%s", output)
+	}
+	if !strings.Contains(output, "backend endpoint removed") {
+		t.Errorf("expected 'backend endpoint removed' log, got:\n%s", output)
+	}
+	if !strings.Contains(output, "api.example.com:8080") {
+		t.Errorf("expected old endpoint address in log, got:\n%s", output)
+	}
+}
+
 func TestBackendWatcherExternalNameUpdated(t *testing.T) {
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
@@ -500,6 +562,8 @@ func TestBackendWatcherClusterIPAppearsLate(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+
 	svc := makeService(corev1.ServiceTypeExternalName, "")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -511,6 +575,14 @@ func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints for empty externalName, got %d: %v", len(eps), eps)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "ExternalName service has empty externalName") {
+		t.Errorf("expected empty externalName warning, got:\n%s", output)
+	}
+	if !strings.Contains(output, "backend has no ready endpoints") {
+		t.Errorf("expected 'backend has no ready endpoints' warning, got:\n%s", output)
 	}
 
 	// Fix the hostname via Get-then-Update.
@@ -527,5 +599,138 @@ func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
 	}
 	if eps[0].IP != "api.example.com" {
 		t.Errorf("IP = %q, want api.example.com", eps[0].IP)
+	}
+}
+
+// captureLogs redirects slog to a buffer at the given level and returns
+// the buffer. The original logger is restored via t.Cleanup.
+func captureLogs(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func TestBackendWatcherWarnServiceNotFound(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+
+	clientset := fake.NewClientset()
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// No Service exists → empty endpoints.
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints, got %d", len(eps))
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "backend Service not found") {
+		t.Errorf("expected 'backend Service not found' warning, got:\n%s", output)
+	}
+	if !strings.Contains(output, "backend has no ready endpoints") {
+		t.Errorf("expected 'backend has no ready endpoints' warning, got:\n%s", output)
+	}
+}
+
+func TestBackendWatcherWarnEndpointsBecomeEmpty(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	clientset := fake.NewClientset(svc)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initial: 1 endpoint — no empty-endpoint warning expected.
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(eps))
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "backend has no ready endpoints") {
+		t.Errorf("unexpected 'no ready endpoints' warning when endpoints exist:\n%s", output)
+	}
+
+	// Delete the Service → endpoints become empty.
+	buf.Reset()
+	err := clientset.CoreV1().Services("default").Delete(ctx, "svc", metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("deleting Service: %v", err)
+	}
+
+	eps = readBackendChanges(t, bw)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints after delete, got %d: %v", len(eps), eps)
+	}
+
+	output = buf.String()
+	if !strings.Contains(output, "backend Service not found") {
+		t.Errorf("expected 'backend Service not found' warning after delete, got:\n%s", output)
+	}
+	if !strings.Contains(output, "backend has no ready endpoints") {
+		t.Errorf("expected 'backend has no ready endpoints' warning after delete, got:\n%s", output)
+	}
+}
+
+func TestBackendWatcherWarnReappearsAndDisappears(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+
+	clientset := fake.NewClientset()
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initial: no Service → warns.
+	readBackendChanges(t, bw)
+
+	output := buf.String()
+	if count := strings.Count(output, "backend Service not found"); count != 1 {
+		t.Errorf("expected exactly 1 'backend Service not found' warning, got %d:\n%s", count, output)
+	}
+
+	// Service appears → endpoints arrive, no more "not found" warnings.
+	buf.Reset()
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	_, err := clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating Service: %v", err)
+	}
+
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(eps))
+	}
+
+	output = buf.String()
+	if strings.Contains(output, "backend Service not found") {
+		t.Errorf("unexpected 'Service not found' warning after Service appeared:\n%s", output)
+	}
+
+	// Service disappears again → should warn again (flag was reset).
+	buf.Reset()
+	err = clientset.CoreV1().Services("default").Delete(ctx, "svc", metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("deleting Service: %v", err)
+	}
+
+	eps = readBackendChanges(t, bw)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints, got %d", len(eps))
+	}
+
+	output = buf.String()
+	if !strings.Contains(output, "backend Service not found") {
+		t.Errorf("expected 'backend Service not found' warning after second disappearance, got:\n%s", output)
+	}
+	if !strings.Contains(output, "backend has no ready endpoints") {
+		t.Errorf("expected 'backend has no ready endpoints' warning after second disappearance, got:\n%s", output)
 	}
 }
