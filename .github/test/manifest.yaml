@@ -1,3 +1,73 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-ns
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-xns
+  namespace: test-ns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-xns
+  template:
+    metadata:
+      labels:
+        app: backend-xns
+    spec:
+      containers:
+      - name: backend
+        image: hashicorp/http-echo
+        args: ["-listen=:8080", "-text=ok-xns"]
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-xns
+  namespace: test-ns
+spec:
+  selector:
+    app: backend-xns
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: http
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-httpcache
+  namespace: test-ns
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-httpcache
+  namespace: test-ns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-httpcache
+subjects:
+- kind: ServiceAccount
+  name: k8s-httpcache
+  namespace: default
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,6 +105,15 @@ spec:
     protocol: TCP
     port: 80
     targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-external
+  namespace: default
+spec:
+  type: ExternalName
+  externalName: backend.default.svc.cluster.local
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -134,6 +213,10 @@ spec:
         - --secret-path=/var/lib/varnish/secrets/secret
         - --broadcast-addr=:8088
         - --backend=backend:backend
+        - --backend=backend-port:backend:8080
+        - --backend=backend-named:backend:http
+        - --backend=backend-xns:test-ns/backend-xns
+        - --backend=backend-ext:backend-external:80
         - --
         - -s
         - default,1M
@@ -321,7 +404,6 @@ data:
       <<- range $name, $_ := .Backends >>
       if (req.url ~ "^/<< $name >>/") {
         set req.backend_hint = backend_<< $name >>.backend();
-        set req.url = regsub(req.url, "^/<< $name >>/", "/");
       }
       <<- end >>
     }
@@ -342,5 +424,4 @@ data:
     sub vcl_deliver {
       # Check whether we are draining and adjust the Connection header in client responses accordingly.
       call handle_draining;
-      unset resp.http.X-Shard-Routed;
     }

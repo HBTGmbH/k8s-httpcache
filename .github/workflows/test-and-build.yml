@@ -211,12 +211,14 @@ jobs:
     - name: Wait for rollout
       run: |
         kubectl rollout status deployment/backend --timeout=120s
+        kubectl rollout status -n test-ns deployment/backend-xns --timeout=120s
         kubectl rollout status deployment/k8s-httpcache --timeout=120s
     - name: Debug rollout failure
       if: failure()
       run: |
-        kubectl get pods -o wide
+        kubectl get pods -A -o wide
         kubectl get events --sort-by='.lastTimestamp' --field-selector reason!=Pulled
+        kubectl get events -n test-ns --sort-by='.lastTimestamp' --field-selector reason!=Pulled
         for pod in $(kubectl get pods -l app=k8s-httpcache -o name); do
           echo "--- $pod ---"
           kubectl describe "$pod"
@@ -278,10 +280,11 @@ jobs:
     - name: Show pod status on failure
       if: failure()
       run: |
-        kubectl get pods -o wide
+        kubectl get pods -A -o wide
         kubectl describe pods -l app=k8s-httpcache
         kubectl logs -l app=k8s-httpcache --tail=50
         kubectl logs -l app=backend --tail=50
+        kubectl logs -n test-ns -l app=backend-xns --tail=50
 
   build:
     needs: [changes, test]

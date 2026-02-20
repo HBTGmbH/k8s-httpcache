@@ -8,6 +8,30 @@ HTTP 200
 [Asserts]
 body == "ok\n"
 
+# Backend with explicit numeric port.
+GET http://localhost:8080/backend-port/
+HTTP 200
+[Asserts]
+body == "ok\n"
+
+# Backend with named port.
+GET http://localhost:8080/backend-named/
+HTTP 200
+[Asserts]
+body == "ok\n"
+
+# Backend in a different namespace.
+GET http://localhost:8080/backend-xns/
+HTTP 200
+[Asserts]
+body == "ok-xns\n"
+
+# ExternalName backend.
+GET http://localhost:8080/backend-ext/
+HTTP 200
+[Asserts]
+body == "ok\n"
+
 # Shard consistency: the same URL should always be routed to the same Varnish pod.
 # The first Via entry identifies the shard-selected pod and should be consistent.
 GET http://localhost:8080/backend/shard-test
