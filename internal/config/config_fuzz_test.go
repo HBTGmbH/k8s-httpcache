@@ -67,6 +67,10 @@ func FuzzParseNamespacedService(f *testing.F) {
 		{"ns/svc/extra", "default"},
 		{"my-service", ""},
 		{"my-service", "kube-system"},
+		{"MyService", "default"},
+		{"-svc", "default"},
+		{"svc-", "default"},
+		{"my_svc", "default"},
 	}
 	for _, s := range seeds {
 		f.Add(s.s, s.defaultNS)

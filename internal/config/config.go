@@ -128,14 +128,39 @@ type Config struct {
 	LogLevel                   slog.Level
 }
 
+// isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
+// 1-63 lowercase alphanumeric characters or hyphens, starting and ending
+// with an alphanumeric character. Kubernetes uses this for Service and
+// Namespace names.
+func isValidDNSLabel(s string) bool {
+	if len(s) == 0 || len(s) > 63 {
+		return false
+	}
+	for i, c := range s {
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		isHyphen := c == '-'
+		if !isAlnum && !isHyphen {
+			return false
+		}
+		if isHyphen && (i == 0 || i == len(s)-1) {
+			return false
+		}
+	}
+	return true
+}
+
 // parseNamespacedService splits an optional "namespace/service" string into its
 // components. When no "/" is present, defaultNS is used as the namespace.
+// Both namespace and service must be valid RFC 1123 DNS labels.
 func parseNamespacedService(s, defaultNS string) (namespace, service string, err error) {
 	if s == "" {
 		return "", "", fmt.Errorf("empty service reference")
 	}
 	idx := strings.IndexByte(s, '/')
 	if idx < 0 {
+		if !isValidDNSLabel(s) {
+			return "", "", fmt.Errorf("invalid service name %q: must be a valid RFC 1123 DNS label", s)
+		}
 		return defaultNS, s, nil
 	}
 	namespace = s[:idx]
@@ -145,6 +170,12 @@ func parseNamespacedService(s, defaultNS string) (namespace, service string, err
 	}
 	if service == "" {
 		return "", "", fmt.Errorf("empty service name in %q", s)
+	}
+	if !isValidDNSLabel(namespace) {
+		return "", "", fmt.Errorf("invalid namespace %q in %q: must be a valid RFC 1123 DNS label", namespace, s)
+	}
+	if !isValidDNSLabel(service) {
+		return "", "", fmt.Errorf("invalid service name %q in %q: must be a valid RFC 1123 DNS label", service, s)
 	}
 	return namespace, service, nil
 }
