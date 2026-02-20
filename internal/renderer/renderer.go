@@ -5,8 +5,9 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"strings"
 	"text/template"
+
+	"github.com/Masterminds/sprig/v3"
 
 	"k8s-httpcache/internal/watcher"
 )
@@ -26,9 +27,7 @@ type Renderer struct {
 
 // New parses the template file and returns a Renderer.
 func New(templatePath string) (*Renderer, error) {
-	funcMap := template.FuncMap{
-		"replace": strings.ReplaceAll,
-	}
+	funcMap := sprig.TxtFuncMap()
 
 	raw, err := os.ReadFile(templatePath)
 	if err != nil {

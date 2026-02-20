@@ -105,28 +105,143 @@ func TestRender_WithFrontends(t *testing.T) {
 	}
 }
 
-func TestRender_ReplaceFunc(t *testing.T) {
-	tmpl := `<< range .Frontends >><< replace .Name "-" "_" >>
-<< end >>`
-	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
+func TestRender_SprigFunctions(t *testing.T) {
 	frontends := []watcher.Frontend{
 		{IP: "10.0.0.1", Port: 80, Name: "my-cool-pod"},
 	}
 
-	out, err := r.Render(frontends, nil)
-	if err != nil {
-		t.Fatalf("render error: %v", err)
+	tests := []struct {
+		name     string
+		tmpl     string
+		expected string
+	}{
+		{
+			name:     "replace",
+			tmpl:     `<< range .Frontends >><< replace "-" "_" .Name >><< end >>`,
+			expected: "my_cool_pod",
+		},
+		{
+			name:     "upper",
+			tmpl:     `<< range .Frontends >><< upper .Name >><< end >>`,
+			expected: "MY-COOL-POD",
+		},
+		{
+			name:     "lower",
+			tmpl:     `<< range .Frontends >><< lower .Name >><< end >>`,
+			expected: "my-cool-pod",
+		},
+		{
+			name:     "title",
+			tmpl:     `<< range .Frontends >><< title .Name >><< end >>`,
+			expected: "My-Cool-Pod",
+		},
+		{
+			name:     "contains",
+			tmpl:     `<< range .Frontends >><< if contains "cool" .Name >>yes<< end >><< end >>`,
+			expected: "yes",
+		},
+		{
+			name:     "hasPrefix",
+			tmpl:     `<< range .Frontends >><< if hasPrefix "my-" .Name >>yes<< end >><< end >>`,
+			expected: "yes",
+		},
+		{
+			name:     "hasSuffix",
+			tmpl:     `<< range .Frontends >><< if hasSuffix "-pod" .Name >>yes<< end >><< end >>`,
+			expected: "yes",
+		},
+		{
+			name:     "trimPrefix",
+			tmpl:     `<< range .Frontends >><< trimPrefix "my-" .Name >><< end >>`,
+			expected: "cool-pod",
+		},
+		{
+			name:     "trimSuffix",
+			tmpl:     `<< range .Frontends >><< trimSuffix "-pod" .Name >><< end >>`,
+			expected: "my-cool",
+		},
+		{
+			name:     "trim",
+			tmpl:     `<< "  hello  " | trim >>`,
+			expected: "hello",
+		},
+		{
+			name:     "default",
+			tmpl:     `<< "" | default "fallback" >>`,
+			expected: "fallback",
+		},
+		{
+			name:     "default_nonempty",
+			tmpl:     `<< range .Frontends >><< .Name | default "fallback" >><< end >>`,
+			expected: "my-cool-pod",
+		},
+		{
+			name:     "quote",
+			tmpl:     `<< range .Frontends >><< .IP | quote >><< end >>`,
+			expected: `"10.0.0.1"`,
+		},
+		{
+			name:     "squote",
+			tmpl:     `<< range .Frontends >><< .IP | squote >><< end >>`,
+			expected: `'10.0.0.1'`,
+		},
+		{
+			name:     "ternary",
+			tmpl:     `<< range .Frontends >><< ternary "found" "missing" (contains "cool" .Name) >><< end >>`,
+			expected: "found",
+		},
+		{
+			name:     "add",
+			tmpl:     `<< range .Frontends >><< add .Port 1000 >><< end >>`,
+			expected: "1080",
+		},
+		{
+			name:     "mul",
+			tmpl:     `<< range .Frontends >><< mul .Port 2 >><< end >>`,
+			expected: "160",
+		},
+		{
+			name:     "len",
+			tmpl:     `<< len .Frontends >>`,
+			expected: "1",
+		},
+		{
+			name:     "substr",
+			tmpl:     `<< range .Frontends >><< substr 0 7 .Name >><< end >>`,
+			expected: "my-cool",
+		},
+		{
+			name:     "repeat",
+			tmpl:     `<< "ab" | repeat 3 >>`,
+			expected: "ababab",
+		},
+		{
+			name:     "nospace",
+			tmpl:     `<< "a b c" | nospace >>`,
+			expected: "abc",
+		},
+		{
+			name:     "pipeline",
+			tmpl:     `<< range .Frontends >><< .Name | trimPrefix "my-" | upper >><< end >>`,
+			expected: "COOL-POD",
+		},
 	}
-	if !strings.Contains(out, "my_cool_pod") {
-		t.Errorf("expected dashes replaced with underscores, got: %s", out)
-	}
-	if strings.Contains(out, "my-cool-pod") {
-		t.Errorf("original dashed name should not appear, got: %s", out)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempTemplate(t, tt.tmpl)
+			r, err := New(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			out, err := r.Render(frontends, nil)
+			if err != nil {
+				t.Fatalf("render error: %v", err)
+			}
+			if !strings.Contains(out, tt.expected) {
+				t.Errorf("expected %q in output, got: %s", tt.expected, out)
+			}
+		})
 	}
 }
 
@@ -226,7 +341,7 @@ backend origin {
 
 <<- if .Frontends >>
 << range .Frontends >>
-backend << replace .Name "-" "_" >> {
+backend << .Name >> {
     .host = "<< .IP >>";
     .port = "<< .Port >>";
 }
@@ -242,14 +357,14 @@ sub vcl_init {
 <<- if .Frontends >>
     new cluster = directors.shard();
     << range .Frontends ->>
-    cluster.add_backend(<< replace .Name "-" "_" >>);
+    cluster.add_backend(<< .Name >>);
     << end >>
     cluster.reconfigure();
 <<- end >>
 <<- range $name, $eps := .Backends >>
     new backend_<< $name >> = directors.round_robin();
     <<- range $eps >>
-    backend_<< $name >>.add_backend(<< replace .Name "-" "_" >>_<< $name >>);
+    backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
     <<- end >>
 <<- end >>
 }
@@ -279,7 +394,7 @@ sub vcl_recv {
 <<- if .Backends >>
 <<- range $name, $eps := .Backends >>
 << range $eps >>
-backend << replace .Name "-" "_" >>_<< $name >> {
+backend << .Name >>_<< $name >> {
     .host = "<< .IP >>";
     .port = "<< .Port >>";
 }
@@ -322,12 +437,12 @@ sub vcl_backend_response {
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
-		// Peer backends declared with sanitized names.
-		if !strings.Contains(out, `backend web_pod_0`) {
-			t.Error("expected backend web_pod_0 (dashes replaced)")
+		// Peer backends declared.
+		if !strings.Contains(out, `backend web-pod-0`) {
+			t.Error("expected backend web-pod-0")
 		}
-		if !strings.Contains(out, `backend web_pod_1`) {
-			t.Error("expected backend web_pod_1 (dashes replaced)")
+		if !strings.Contains(out, `backend web-pod-1`) {
+			t.Error("expected backend web-pod-1")
 		}
 		if !strings.Contains(out, `.host = "10.0.0.1"`) {
 			t.Error("expected host 10.0.0.1")
@@ -339,8 +454,8 @@ sub vcl_backend_response {
 		if !strings.Contains(out, "directors.shard()") {
 			t.Error("expected shard director")
 		}
-		if !strings.Contains(out, "cluster.add_backend(web_pod_0)") {
-			t.Error("expected cluster.add_backend with sanitized name")
+		if !strings.Contains(out, "cluster.add_backend(web-pod-0)") {
+			t.Error("expected cluster.add_backend with pod name")
 		}
 		if !strings.Contains(out, "cluster.reconfigure()") {
 			t.Error("expected cluster.reconfigure() after adding backends")
@@ -368,12 +483,12 @@ sub vcl_backend_response {
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
-		// Backend declarations with sanitized names.
-		if !strings.Contains(out, "backend api_pod_0_api") {
-			t.Error("expected backend api_pod_0_api")
+		// Backend declarations.
+		if !strings.Contains(out, "backend api-pod-0_api") {
+			t.Error("expected backend api-pod-0_api")
 		}
-		if !strings.Contains(out, "backend api_pod_1_api") {
-			t.Error("expected backend api_pod_1_api")
+		if !strings.Contains(out, "backend api-pod-1_api") {
+			t.Error("expected backend api-pod-1_api")
 		}
 		if !strings.Contains(out, `.host = "10.1.0.1"`) {
 			t.Error("expected host 10.1.0.1")
@@ -385,11 +500,11 @@ sub vcl_backend_response {
 		if !strings.Contains(out, "directors.round_robin()") {
 			t.Error("expected round_robin director for api backend")
 		}
-		if !strings.Contains(out, "backend_api.add_backend(api_pod_0_api)") {
-			t.Error("expected backend_api.add_backend(api_pod_0_api)")
+		if !strings.Contains(out, "backend_api.add_backend(api-pod-0_api)") {
+			t.Error("expected backend_api.add_backend(api-pod-0_api)")
 		}
-		if !strings.Contains(out, "backend_api.add_backend(api_pod_1_api)") {
-			t.Error("expected backend_api.add_backend(api_pod_1_api)")
+		if !strings.Contains(out, "backend_api.add_backend(api-pod-1_api)") {
+			t.Error("expected backend_api.add_backend(api-pod-1_api)")
 		}
 		// URL routing.
 		if !strings.Contains(out, `req.url ~ "^/api/"`) {
@@ -430,7 +545,7 @@ func TestRenderToFile(t *testing.T) {
 
 func TestRender_WithBackends(t *testing.T) {
 	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< range $eps >>backend << replace .Name "-" "_" >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
+		`<< range $eps >>backend << .Name >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path)
@@ -453,14 +568,14 @@ func TestRender_WithBackends(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	if !strings.Contains(out, "api_pod_0_api") {
-		t.Errorf("expected api_pod_0_api in output, got: %s", out)
+	if !strings.Contains(out, "api-pod-0_api") {
+		t.Errorf("expected api-pod-0_api in output, got: %s", out)
 	}
-	if !strings.Contains(out, "api_pod_1_api") {
-		t.Errorf("expected api_pod_1_api in output, got: %s", out)
+	if !strings.Contains(out, "api-pod-1_api") {
+		t.Errorf("expected api-pod-1_api in output, got: %s", out)
 	}
-	if !strings.Contains(out, "auth_pod_0_auth") {
-		t.Errorf("expected auth_pod_0_auth in output, got: %s", out)
+	if !strings.Contains(out, "auth-pod-0_auth") {
+		t.Errorf("expected auth-pod-0_auth in output, got: %s", out)
 	}
 	if !strings.Contains(out, "10.1.0.1") {
 		t.Errorf("expected IP 10.1.0.1 in output")

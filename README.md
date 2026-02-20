@@ -205,9 +205,19 @@ Each `Frontend` / `Endpoint` has:
 
 ### Template functions
 
+All [Sprig](https://masterminds.github.io/sprig/) template functions are available (the same library used by Helm). A few commonly useful ones for VCL templates:
+
 | Function | Description |
 |----------|-------------|
-| `replace` | `strings.ReplaceAll` — e.g. `<< replace .Name "-" "_" >>` to sanitize pod names for VCL identifiers |
+| `replace` | `replace old new src` — e.g. `<< replace "http" "https" .URL >>` |
+| `upper` / `lower` | Convert to upper/lower case |
+| `trimPrefix` / `trimSuffix` | Strip a prefix or suffix |
+| `contains` / `hasPrefix` / `hasSuffix` | String predicates for `if` guards |
+| `default` | `default "fallback" .Val` — use a default when a value is empty |
+| `join` | `join ", " .List` — join a list with a separator |
+| `quote` / `squote` | Wrap in double/single quotes |
+
+See the [full Sprig function reference](https://masterminds.github.io/sprig/) for the complete list.
 
 ### Runtime reload and rollback
 
