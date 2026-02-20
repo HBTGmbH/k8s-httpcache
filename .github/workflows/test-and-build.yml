@@ -192,7 +192,6 @@ jobs:
       run: |
         mkdir .docker-context
         cp k8s-httpcache-linux-amd64 .docker-context/
-        chmod +x .docker-context/k8s-httpcache-linux-amd64
         docker build -f .github/test/Dockerfile -t k8s-httpcache:test .docker-context
     - name: Create kind cluster
       uses: helm/kind-action@v1.14.0
@@ -306,7 +305,6 @@ jobs:
       run: |
         mkdir .docker-context
         cp k8s-httpcache-linux-* .docker-context/
-        chmod +x .docker-context/k8s-httpcache-linux-*
     - name: Setup BuildKit
       uses: docker/setup-buildx-action@v3.12.0
     - name: Docker Login

@@ -1,0 +1,81 @@
+name: Bug Report
+description: Report a bug in k8s-httpcache
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the sections below so we can reproduce and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Deploy k8s-httpcache with the following args: ...
+        2. Send a request to ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output from k8s-httpcache (run with `--log-level=DEBUG` if possible).
+      render: text
+
+  - type: textarea
+    id: vcl
+    attributes:
+      label: VCL template
+      description: Your VCL template, if relevant to the issue.
+      render: vcl
+
+  - type: input
+    id: version
+    attributes:
+      label: k8s-httpcache version
+      description: Image tag or commit SHA.
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: varnish-version
+    attributes:
+      label: Varnish version
+      description: Base image used (e.g. `varnish:8.0.0-alpine`).
+      placeholder: varnish:8.0.0-alpine
+
+  - type: input
+    id: k8s-version
+    attributes:
+      label: Kubernetes version
+      description: Output of `kubectl version --short`.
+      placeholder: v1.35.0

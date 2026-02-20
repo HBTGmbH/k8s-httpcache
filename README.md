@@ -29,7 +29,7 @@ The published image at `ghcr.io/hbtgmbh/k8s-httpcache` is a distroless (`FROM sc
 Build your own image by copying the binary into a Varnish base image of your choice:
 
 ```dockerfile
-FROM varnish:8.0-alpine
+FROM varnish:8.0.0-alpine
 COPY --from=ghcr.io/hbtgmbh/k8s-httpcache:<version> /usr/local/bin/k8s-httpcache /usr/local/bin/k8s-httpcache
 ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
 ```
