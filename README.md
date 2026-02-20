@@ -103,6 +103,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--debounce` | `2s` | Debounce duration for endpoint changes |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
 | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| `--log-format` | `text` | Log format: `text`, `json` |
 
 ### Passing arguments to varnishd
 

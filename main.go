@@ -30,7 +30,14 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	logOpts := &slog.HandlerOptions{Level: cfg.LogLevel}
+	var logHandler slog.Handler
+	if cfg.LogFormat == "json" {
+		logHandler = slog.NewJSONHandler(os.Stderr, logOpts)
+	} else {
+		logHandler = slog.NewTextHandler(os.Stderr, logOpts)
+	}
+	slog.SetDefault(slog.New(logHandler))
 
 	// Build Kubernetes client.
 	clientset, err := buildClientset()

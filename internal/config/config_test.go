@@ -1141,6 +1141,64 @@ func TestParseLogLevelDefault(t *testing.T) {
 	}
 }
 
+func TestParseLogFormat(t *testing.T) {
+	tests := []struct {
+		name   string
+		format string
+	}{
+		{"text", "text"},
+		{"json", "json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vcl := makeTempVCL(t)
+			setupParse(t, []string{
+				"--service-name=my-svc",
+				"--namespace=default",
+				"--vcl-template=" + vcl,
+				"--log-format=" + tt.format,
+			})
+			cfg, err := Parse()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.LogFormat != tt.format {
+				t.Errorf("LogFormat = %q, want %q", cfg.LogFormat, tt.format)
+			}
+		})
+	}
+}
+
+func TestParseLogFormatDefault(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LogFormat != "text" {
+		t.Errorf("LogFormat = %q, want \"text\"", cfg.LogFormat)
+	}
+}
+
+func TestParseLogFormatInvalid(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--log-format=yaml",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for invalid log format")
+	}
+}
+
 func TestParseNoBackends(t *testing.T) {
 	vcl := makeTempVCL(t)
 	setupParse(t, []string{

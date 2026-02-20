@@ -126,6 +126,7 @@ type Config struct {
 	Backends                   []BackendSpec
 	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
 	LogLevel                   slog.Level
+	LogFormat                  string // "text" or "json"
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -207,8 +208,15 @@ func Parse() (*Config, error) {
 	flag.DurationVar(&c.BroadcastClientTimeout, "broadcast-client-timeout", 3*time.Second, "Timeout for each fan-out request to a Varnish pod")
 	flag.Var(&backends, "backend", "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)")
 	flag.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "Log level (DEBUG, INFO, WARN, ERROR)")
+	flag.StringVar(&c.LogFormat, "log-format", "text", "Log format (text, json)")
 
 	flag.Parse()
+
+	switch c.LogFormat {
+	case "text", "json":
+	default:
+		return nil, fmt.Errorf("--log-format must be \"text\" or \"json\", got %q", c.LogFormat)
+	}
 
 	if c.ServiceName == "" {
 		return nil, errors.New("--service-name is required")
