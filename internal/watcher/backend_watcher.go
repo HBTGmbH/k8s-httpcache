@@ -121,7 +121,13 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 			return
 		}
 
-		port := bw.resolveExternalPort()
+		port, err := bw.resolveExternalPort()
+		if err != nil {
+			slog.Error("cannot resolve port for ExternalName service, emitting empty endpoints",
+				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
+			bw.send(nil)
+			return
+		}
 		endpoints := []Endpoint{{
 			IP:   svc.Spec.ExternalName,
 			Port: port,
@@ -139,18 +145,17 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 	bw.mu.Unlock()
 }
 
-func (bw *BackendWatcher) resolveExternalPort() int32 {
+func (bw *BackendWatcher) resolveExternalPort() (int32, error) {
 	if bw.portOverride == "" {
 		slog.Warn("no port specified for ExternalName service, defaulting to 80",
 			"namespace", bw.namespace, "service", bw.serviceName)
-		return 80
+		return 80, nil
 	}
 	if p, err := strconv.ParseInt(bw.portOverride, 10, 32); err == nil {
-		return int32(p)
+		return int32(p), nil
 	}
-	slog.Warn("named port not supported for ExternalName service, using port 0",
-		"namespace", bw.namespace, "service", bw.serviceName, "port", bw.portOverride)
-	return 0
+	return 0, fmt.Errorf("named port %q is not supported for ExternalName service %s/%s: ExternalName services have no EndpointSlice to resolve named ports from",
+		bw.portOverride, bw.namespace, bw.serviceName)
 }
 
 func (bw *BackendWatcher) startEndpointSliceWatcherLocked(ctx context.Context) {

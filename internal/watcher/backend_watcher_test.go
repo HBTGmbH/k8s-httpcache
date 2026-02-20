@@ -112,12 +112,11 @@ func TestBackendWatcherExternalNameNamedPort(t *testing.T) {
 	defer cancel()
 	go func() { _ = bw.Run(ctx) }()
 
+	// Named ports cannot be resolved for ExternalName services (no EndpointSlice),
+	// so the watcher should emit empty endpoints.
 	eps := readBackendChanges(t, bw, 5*time.Second)
-	if len(eps) != 1 {
-		t.Fatalf("expected 1 endpoint, got %d", len(eps))
-	}
-	if eps[0].Port != 0 {
-		t.Errorf("Port = %d, want 0 (named port unsupported for ExternalName)", eps[0].Port)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints for named port on ExternalName, got %d: %v", len(eps), eps)
 	}
 }
 
