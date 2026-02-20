@@ -26,9 +26,10 @@ type BackendWatcher struct {
 	portOverride string
 	ch           chan []Endpoint
 
-	mu       sync.Mutex // protects fields below
-	previous []Endpoint
-	synced   bool
+	mu              sync.Mutex // protects fields below
+	previous        []Endpoint
+	synced          bool
+	serviceNotFound bool
 
 	// EndpointSlice child watcher state (protected by mu).
 	childWatcher *Watcher
@@ -101,13 +102,22 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 	svc, err := lister.Services(bw.namespace).Get(bw.serviceName)
 	if err != nil {
 		// Service not found or error — emit empty endpoints.
-		slog.Debug("service not found, emitting empty endpoints", "namespace", bw.namespace, "service", bw.serviceName, "error", err)
 		bw.mu.Lock()
+		if !bw.serviceNotFound {
+			bw.serviceNotFound = true
+			slog.Warn("backend Service not found, emitting empty endpoints",
+				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
+		}
 		bw.stopEndpointSliceWatcherLocked()
 		bw.mu.Unlock()
 		bw.send(nil)
 		return
 	}
+
+	// Service exists — reset the warning flag so we warn again if it disappears.
+	bw.mu.Lock()
+	bw.serviceNotFound = false
+	bw.mu.Unlock()
 
 	if svc.Spec.Type == corev1.ServiceTypeExternalName {
 		bw.mu.Lock()

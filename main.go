@@ -78,6 +78,10 @@ func main() {
 	// the endpoint list is empty), so this will not deadlock.
 	slog.Info("waiting for initial endpoint data")
 	latestFrontends := <-w.Changes()
+	if len(latestFrontends) == 0 {
+		slog.Warn("frontend Service has no ready endpoints at startup",
+			"namespace", cfg.ServiceNamespace, "service", cfg.ServiceName)
+	}
 	latestBackends := make(map[string][]watcher.Endpoint)
 	for i, bw := range bwWatchers {
 		latestBackends[bwNames[i]] = <-bw.Changes()
