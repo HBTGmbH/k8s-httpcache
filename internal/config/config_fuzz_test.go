@@ -23,7 +23,7 @@ func FuzzListenAddrSet(f *testing.F) {
 	for _, s := range seeds {
 		f.Add(s)
 	}
-	f.Fuzz(func(t *testing.T, val string) {
+	f.Fuzz(func(_ *testing.T, val string) {
 		var lf listenAddrFlags
 		lf.Set(val) //nolint:errcheck // fuzz: we only care about panics
 	})
@@ -48,7 +48,7 @@ func FuzzBackendSet(f *testing.F) {
 	for _, s := range seeds {
 		f.Add(s)
 	}
-	f.Fuzz(func(t *testing.T, val string) {
+	f.Fuzz(func(_ *testing.T, val string) {
 		var bf backendFlags
 		bf.Set(val) //nolint:errcheck // fuzz: we only care about panics
 	})
@@ -75,7 +75,7 @@ func FuzzParseNamespacedService(f *testing.F) {
 	for _, s := range seeds {
 		f.Add(s.s, s.defaultNS)
 	}
-	f.Fuzz(func(t *testing.T, s, defaultNS string) {
+	f.Fuzz(func(_ *testing.T, s, defaultNS string) {
 		parseNamespacedService(s, defaultNS) //nolint:errcheck // fuzz: we only care about panics
 	})
 }

@@ -2,12 +2,13 @@ package varnish
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -158,7 +159,7 @@ func TestStartAdminWait(t *testing.T) {
 	m.dialFn = func(string, time.Duration) (net.Conn, error) {
 		dialCount++
 		if dialCount < 3 {
-			return nil, fmt.Errorf("connection refused")
+			return nil, errors.New("connection refused")
 		}
 		c1, c2 := net.Pipe()
 		_ = c2.Close()
@@ -188,7 +189,7 @@ func TestStartAdminTimeout(t *testing.T) {
 
 	m := newTestManager(r)
 	m.dialFn = func(string, time.Duration) (net.Conn, error) {
-		return nil, fmt.Errorf("connection refused")
+		return nil, errors.New("connection refused")
 	}
 
 	// Use a very short timeout by calling waitForAdmin directly.
@@ -271,10 +272,8 @@ func TestReloadLoadError(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
-			for _, a := range args {
-				if a == "vcl.load" {
-					return "VCL compilation failed", fmt.Errorf("exit status 1")
-				}
+			if slices.Contains(args, "vcl.load") {
+				return "VCL compilation failed", errors.New("exit status 1")
 			}
 			return "", nil
 		},
@@ -307,10 +306,8 @@ func TestReloadUseError(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
-			for _, a := range args {
-				if a == "vcl.use" {
-					return "VCL in use", fmt.Errorf("exit status 1")
-				}
+			if slices.Contains(args, "vcl.use") {
+				return "VCL in use", errors.New("exit status 1")
 			}
 			return "200", nil
 		},
@@ -391,14 +388,14 @@ func TestForwardSignal(t *testing.T) {
 	}
 }
 
-func TestForwardSignalNilProc(t *testing.T) {
+func TestForwardSignalNilProc(_ *testing.T) {
 	m := &Manager{}
 	// Should not panic.
 	m.ForwardSignal(os.Interrupt)
 }
 
 func TestCleanup(t *testing.T) {
-	f, err := os.CreateTemp("", "varnish-test-secret-*")
+	f, err := os.CreateTemp(t.TempDir(), "varnish-test-secret-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +585,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestDoneAndErr(t *testing.T) {
-	m := &Manager{done: make(chan struct{}), err: fmt.Errorf("test error")}
+	m := &Manager{done: make(chan struct{}), err: errors.New("test error")}
 
 	// Done should return the channel.
 	select {
@@ -630,7 +627,7 @@ func TestGenerateSecretWithPath(t *testing.T) {
 func TestStartRunnerError(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) {
-			return nil, fmt.Errorf("exec failed")
+			return nil, errors.New("exec failed")
 		},
 		runFn: func(string, []string) (string, error) { return "", nil },
 	}
@@ -650,7 +647,7 @@ func TestStartRunnerError(t *testing.T) {
 }
 
 func TestWaitForAdminProcessExited(t *testing.T) {
-	mp := &mockProc{pid: 1, waitErr: fmt.Errorf("exit status 1")}
+	mp := &mockProc{pid: 1, waitErr: errors.New("exit status 1")}
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return mp, nil },
@@ -659,7 +656,7 @@ func TestWaitForAdminProcessExited(t *testing.T) {
 
 	m := newTestManager(r)
 	m.dialFn = func(string, time.Duration) (net.Conn, error) {
-		return nil, fmt.Errorf("connection refused")
+		return nil, errors.New("connection refused")
 	}
 
 	m.secretFile = "/dev/null"
@@ -678,14 +675,12 @@ func TestWaitForAdminProcessExited(t *testing.T) {
 	}
 }
 
-func TestDiscardOldVCLsListError(t *testing.T) {
+func TestDiscardOldVCLsListError(_ *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
-			for _, a := range args {
-				if a == "vcl.list" {
-					return "", fmt.Errorf("admin error")
-				}
+			if slices.Contains(args, "vcl.list") {
+				return "", errors.New("admin error")
 			}
 			return "", nil
 		},
@@ -768,6 +763,9 @@ func TestGenerateSecretPermissions(t *testing.T) {
 func TestGenerateSecretReadOnlyDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("read-only directory enforcement differs on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks")
 	}
 
 	dir := t.TempDir()
@@ -879,7 +877,7 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 					name := args[i+1]
 					discarded = append(discarded, name)
 					if name == "old_1" {
-						return "", fmt.Errorf("discard failed")
+						return "", errors.New("discard failed")
 					}
 					return "", nil
 				}

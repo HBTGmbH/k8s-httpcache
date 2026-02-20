@@ -1,3 +1,4 @@
+// Package varnish manages the varnishd process lifecycle.
 package varnish
 
 import (
@@ -230,7 +231,7 @@ func (m *Manager) waitForAdmin(timeout time.Duration) error {
 		// Check if varnishd already exited.
 		select {
 		case <-m.done:
-			return fmt.Errorf("varnishd exited before admin port was ready: %v", m.err)
+			return fmt.Errorf("varnishd exited before admin port was ready: %w", m.err)
 		default:
 		}
 

@@ -1,6 +1,8 @@
+// Package config parses and validates command-line flags for k8s-httpcache.
 package config
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -37,19 +39,16 @@ func (l *listenAddrFlags) Set(val string) error {
 	spec := ListenAddrSpec{Raw: val}
 
 	rest := val
-	if idx := strings.IndexByte(val, '='); idx >= 0 {
-		spec.Name = val[:idx]
+	if name, after, ok := strings.Cut(val, "="); ok {
+		spec.Name = name
 		if spec.Name == "" {
 			return fmt.Errorf("empty name in --listen-addr %q", val)
 		}
-		rest = val[idx+1:]
+		rest = after
 	}
 
 	// Strip protocol suffixes: ":8080,HTTP" → ":8080"
-	addr := rest
-	if idx := strings.IndexByte(rest, ','); idx >= 0 {
-		addr = rest[:idx]
-	}
+	addr, _, _ := strings.Cut(rest, ",")
 
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -102,6 +101,7 @@ func (b *backendFlags) Set(val string) error {
 	return nil
 }
 
+// Config holds the parsed configuration for the k8s-httpcache process.
 type Config struct {
 	ServiceName                string
 	ServiceNamespace           string // resolved namespace for the frontend service
@@ -154,17 +154,15 @@ func isValidDNSLabel(s string) bool {
 // Both namespace and service must be valid RFC 1123 DNS labels.
 func parseNamespacedService(s, defaultNS string) (namespace, service string, err error) {
 	if s == "" {
-		return "", "", fmt.Errorf("empty service reference")
+		return "", "", errors.New("empty service reference")
 	}
-	idx := strings.IndexByte(s, '/')
-	if idx < 0 {
+	namespace, service, hasSep := strings.Cut(s, "/")
+	if !hasSep {
 		if !isValidDNSLabel(s) {
 			return "", "", fmt.Errorf("invalid service name %q: must be a valid RFC 1123 DNS label", s)
 		}
 		return defaultNS, s, nil
 	}
-	namespace = s[:idx]
-	service = s[idx+1:]
 	if namespace == "" {
 		return "", "", fmt.Errorf("empty namespace in %q", s)
 	}
@@ -180,6 +178,7 @@ func parseNamespacedService(s, defaultNS string) (namespace, service string, err
 	return namespace, service, nil
 }
 
+// Parse parses command-line flags and returns a validated Config.
 func Parse() (*Config, error) {
 	c := &Config{}
 
@@ -212,13 +211,13 @@ func Parse() (*Config, error) {
 	flag.Parse()
 
 	if c.ServiceName == "" {
-		return nil, fmt.Errorf("--service-name is required")
+		return nil, errors.New("--service-name is required")
 	}
 	if c.Namespace == "" {
-		return nil, fmt.Errorf("--namespace is required")
+		return nil, errors.New("--namespace is required")
 	}
 	if c.VCLTemplate == "" {
-		return nil, fmt.Errorf("--vcl-template is required")
+		return nil, errors.New("--vcl-template is required")
 	}
 
 	if _, err := os.Stat(c.VCLTemplate); err != nil {

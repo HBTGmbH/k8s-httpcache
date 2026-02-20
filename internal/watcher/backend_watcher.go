@@ -66,13 +66,13 @@ func (bw *BackendWatcher) Run(ctx context.Context) error {
 	lister := factory.Core().V1().Services().Lister()
 
 	handler := cache.ResourceEventHandlerFuncs{
-		AddFunc: func(_ interface{}) {
+		AddFunc: func(_ any) {
 			bw.syncService(ctx, lister)
 		},
-		UpdateFunc: func(_, _ interface{}) {
+		UpdateFunc: func(_, _ any) {
 			bw.syncService(ctx, lister)
 		},
-		DeleteFunc: func(_ interface{}) {
+		DeleteFunc: func(_ any) {
 			bw.syncService(ctx, lister)
 		},
 	}

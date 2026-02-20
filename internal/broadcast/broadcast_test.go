@@ -34,7 +34,7 @@ func frontendFromServer(name string, ts *httptest.Server) watcher.Frontend {
 	parts := strings.SplitN(host, ":", 2)
 	var port int32
 	for _, c := range parts[1] {
-		port = port*10 + int32(c-'0')
+		port = port*10 + (c - '0')
 	}
 	return watcher.Frontend{
 		Name: name,
@@ -64,7 +64,7 @@ func TestNoFrontends(t *testing.T) {
 }
 
 func TestSingleFrontend(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("purged"))
 	}))
@@ -100,7 +100,7 @@ func TestSingleFrontend(t *testing.T) {
 
 func TestMultipleFrontends(t *testing.T) {
 	makeBackend := func(resp string) *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(resp))
 		}))
@@ -148,14 +148,14 @@ func TestMultipleFrontends(t *testing.T) {
 }
 
 func TestFrontendDown(t *testing.T) {
-	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer healthy.Close()
 
 	// Create and immediately close a server to get a dead endpoint.
-	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	dead := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	deadFe := frontendFromServer("pod-dead", dead)
 	dead.Close()
 
@@ -274,7 +274,7 @@ func TestRequestBodyForwarded(t *testing.T) {
 func TestTargetPortOverride(t *testing.T) {
 	// Start a backend on a specific port. The frontend's Port field will
 	// differ from the TargetPort, verifying the override works.
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("reached"))
 	}))
@@ -317,7 +317,7 @@ func TestTargetPortOverride(t *testing.T) {
 }
 
 func TestDrainingConnectionClose(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -349,7 +349,7 @@ func TestDrainingConnectionClose(t *testing.T) {
 }
 
 func TestDrainWaitsForConnections(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -399,7 +399,7 @@ func TestDrainWaitsForConnections(t *testing.T) {
 }
 
 func TestDrainTimeoutWithHeldConnection(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -489,7 +489,7 @@ func TestDrainNoConnections(t *testing.T) {
 }
 
 func TestShutdown(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -525,8 +525,9 @@ func TestShutdown(t *testing.T) {
 	}
 
 	// Subsequent requests should fail.
-	_, err = http.Get("http://" + addr + "/purge/foo")
+	resp, err = http.Get("http://" + addr + "/purge/foo")
 	if err == nil {
+		_ = resp.Body.Close()
 		t.Fatal("expected error after shutdown, got nil")
 	}
 }
@@ -534,7 +535,7 @@ func TestShutdown(t *testing.T) {
 func TestMaxBodySizeTruncation(t *testing.T) {
 	// Create a backend that returns more than maxBodySize (1 MiB).
 	bigBody := strings.Repeat("X", 2<<20) // 2 MiB
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(bigBody))
 	}))
@@ -567,13 +568,13 @@ func TestMaxBodySizeTruncation(t *testing.T) {
 }
 
 func TestConcurrentSetFrontends(t *testing.T) {
-	b0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	b0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok-0"))
 	}))
 	defer b0.Close()
 
-	b1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	b1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok-1"))
 	}))
@@ -590,19 +591,15 @@ func TestConcurrentSetFrontends(t *testing.T) {
 
 	var wg sync.WaitGroup
 	// Concurrently update frontends.
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+	for i := range 20 {
+		wg.Go(func() {
 			s.SetFrontends(frontendSets[i%len(frontendSets)])
-		}(i)
+		})
 	}
 
 	// Concurrently make requests.
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
 			rec := httptest.NewRecorder()
 			s.ServeHTTP(rec, req)
@@ -619,7 +616,7 @@ func TestConcurrentSetFrontends(t *testing.T) {
 			if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
 				t.Errorf("response is not valid JSON: %v", err)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

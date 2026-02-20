@@ -1,3 +1,4 @@
+// Package watcher watches Kubernetes EndpointSlices and Services for changes.
 package watcher
 
 import (
@@ -75,13 +76,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 	lister := factory.Discovery().V1().EndpointSlices().Lister()
 
 	handler := cache.ResourceEventHandlerFuncs{
-		AddFunc: func(_ interface{}) {
+		AddFunc: func(_ any) {
 			w.sync(lister)
 		},
-		UpdateFunc: func(_, _ interface{}) {
+		UpdateFunc: func(_, _ any) {
 			w.sync(lister)
 		},
-		DeleteFunc: func(_ interface{}) {
+		DeleteFunc: func(_ any) {
 			w.sync(lister)
 		},
 	}
@@ -196,22 +197,22 @@ func resolvePort(ports []discoveryv1.EndpointPort, override string) int32 {
 	return 0
 }
 
-func diffEndpoints(old, new []Endpoint) (added, removed []Endpoint) {
+func diffEndpoints(old, cur []Endpoint) (added, removed []Endpoint) {
 	oldSet := make(map[Endpoint]struct{}, len(old))
 	for _, e := range old {
 		oldSet[e] = struct{}{}
 	}
-	newSet := make(map[Endpoint]struct{}, len(new))
-	for _, e := range new {
-		newSet[e] = struct{}{}
+	curSet := make(map[Endpoint]struct{}, len(cur))
+	for _, e := range cur {
+		curSet[e] = struct{}{}
 	}
-	for _, e := range new {
+	for _, e := range cur {
 		if _, ok := oldSet[e]; !ok {
 			added = append(added, e)
 		}
 	}
 	for _, e := range old {
-		if _, ok := newSet[e]; !ok {
+		if _, ok := curSet[e]; !ok {
 			removed = append(removed, e)
 		}
 	}

@@ -54,20 +54,19 @@ func TestTimerChanNonNil(t *testing.T) {
 }
 
 func TestWatchFileDetectsChange(t *testing.T) {
-	f, err := os.CreateTemp("", "watchfile-test-*")
+	f, err := os.CreateTemp(t.TempDir(), "watchfile-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := f.Name()
 	defer func() { _ = os.Remove(path) }()
 
-	if _, err := f.Write([]byte("initial")); err != nil {
+	if _, err := f.WriteString("initial"); err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	ch := watchFile(ctx, path, 50*time.Millisecond)
 
@@ -88,20 +87,19 @@ func TestWatchFileDetectsChange(t *testing.T) {
 }
 
 func TestWatchFileNoChangeNoNotification(t *testing.T) {
-	f, err := os.CreateTemp("", "watchfile-test-*")
+	f, err := os.CreateTemp(t.TempDir(), "watchfile-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := f.Name()
 	defer func() { _ = os.Remove(path) }()
 
-	if _, err := f.Write([]byte("stable")); err != nil {
+	if _, err := f.WriteString("stable"); err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	ch := watchFile(ctx, path, 50*time.Millisecond)
 
@@ -115,7 +113,7 @@ func TestWatchFileNoChangeNoNotification(t *testing.T) {
 }
 
 func TestWatchFileStopsOnContextCancel(t *testing.T) {
-	f, err := os.CreateTemp("", "watchfile-test-*")
+	f, err := os.CreateTemp(t.TempDir(), "watchfile-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,3 +1,4 @@
+// Package renderer renders VCL templates with endpoint data.
 package renderer
 
 import (

@@ -15,8 +15,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func ptr[T any](v T) *T { return &v }
-
 func TestResolvePort(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -26,7 +24,7 @@ func TestResolvePort(t *testing.T) {
 	}{
 		{
 			name:     "numeric override ignores port list",
-			ports:    []discoveryv1.EndpointPort{{Name: ptr("http"), Port: ptr(int32(80))}},
+			ports:    []discoveryv1.EndpointPort{{Name: new("http"), Port: new(int32(80))}},
 			override: "3000",
 			want:     3000,
 		},
@@ -39,8 +37,8 @@ func TestResolvePort(t *testing.T) {
 		{
 			name: "named override matches port",
 			ports: []discoveryv1.EndpointPort{
-				{Name: ptr("metrics"), Port: ptr(int32(9090))},
-				{Name: ptr("http"), Port: ptr(int32(80))},
+				{Name: new("metrics"), Port: new(int32(9090))},
+				{Name: new("http"), Port: new(int32(80))},
 			},
 			override: "http",
 			want:     80,
@@ -48,7 +46,7 @@ func TestResolvePort(t *testing.T) {
 		{
 			name: "named override no match returns zero",
 			ports: []discoveryv1.EndpointPort{
-				{Name: ptr("http"), Port: ptr(int32(80))},
+				{Name: new("http"), Port: new(int32(80))},
 			},
 			override: "grpc",
 			want:     0,
@@ -56,8 +54,8 @@ func TestResolvePort(t *testing.T) {
 		{
 			name: "named override skips port with nil name",
 			ports: []discoveryv1.EndpointPort{
-				{Name: nil, Port: ptr(int32(80))},
-				{Name: ptr("http"), Port: ptr(int32(8080))},
+				{Name: nil, Port: new(int32(80))},
+				{Name: new("http"), Port: new(int32(8080))},
 			},
 			override: "http",
 			want:     8080,
@@ -65,7 +63,7 @@ func TestResolvePort(t *testing.T) {
 		{
 			name: "named override skips port with nil port value",
 			ports: []discoveryv1.EndpointPort{
-				{Name: ptr("http"), Port: nil},
+				{Name: new("http"), Port: nil},
 			},
 			override: "http",
 			want:     0,
@@ -73,8 +71,8 @@ func TestResolvePort(t *testing.T) {
 		{
 			name: "empty override uses first port",
 			ports: []discoveryv1.EndpointPort{
-				{Name: ptr("http"), Port: ptr(int32(80))},
-				{Name: ptr("metrics"), Port: ptr(int32(9090))},
+				{Name: new("http"), Port: new(int32(80))},
+				{Name: new("metrics"), Port: new(int32(9090))},
 			},
 			override: "",
 			want:     80,
@@ -88,7 +86,7 @@ func TestResolvePort(t *testing.T) {
 		{
 			name: "empty override with nil first port value returns zero",
 			ports: []discoveryv1.EndpointPort{
-				{Name: ptr("http"), Port: nil},
+				{Name: new("http"), Port: nil},
 			},
 			override: "",
 			want:     0,
@@ -363,13 +361,13 @@ func TestDebugLoggingDisabled(t *testing.T) {
 // --- Run() integration tests using fake clientset ---
 
 // makeEndpointSlice builds a discoveryv1.EndpointSlice for testing.
-func makeEndpointSlice(name, namespace, serviceName string, addressType discoveryv1.AddressType, endpoints []discoveryv1.Endpoint, ports []discoveryv1.EndpointPort) *discoveryv1.EndpointSlice {
+func makeEndpointSlice(name string, addressType discoveryv1.AddressType, endpoints []discoveryv1.Endpoint, ports []discoveryv1.EndpointPort) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: "default",
 			Labels: map[string]string{
-				discoveryv1.LabelServiceName: serviceName,
+				discoveryv1.LabelServiceName: "svc",
 			},
 		},
 		AddressType: addressType,
@@ -379,12 +377,12 @@ func makeEndpointSlice(name, namespace, serviceName string, addressType discover
 }
 
 // readChanges reads from the watcher's Changes channel with a timeout.
-func readChanges(t *testing.T, w *Watcher, timeout time.Duration) []Endpoint {
+func readChanges(t *testing.T, w *Watcher) []Endpoint {
 	t.Helper()
 	select {
 	case eps := <-w.Changes():
 		return eps
-	case <-time.After(timeout):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for endpoint change")
 		return nil
 	}
@@ -402,27 +400,26 @@ func assertNoChanges(t *testing.T, w *Watcher, timeout time.Duration) {
 }
 
 func TestRunDeliversInitialEndpoints(t *testing.T) {
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 
 	clientset := fake.NewClientset(slice)
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -440,11 +437,10 @@ func TestRunDeliversInitialEndpoints(t *testing.T) {
 func TestRunDeliversEmptyInitialState(t *testing.T) {
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints, got %d: %v", len(eps), eps)
 	}
@@ -453,25 +449,24 @@ func TestRunDeliversEmptyInitialState(t *testing.T) {
 func TestRunDetectsAddedEndpointSlice(t *testing.T) {
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
 	// Consume the initial empty state.
-	readChanges(t, w, 5*time.Second)
+	readChanges(t, w)
 
 	// Now create an EndpointSlice via the fake client.
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.5"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-x"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(9090))},
+			{Name: new("http"), Port: new(int32(9090))},
 		},
 	)
 	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
@@ -479,7 +474,7 @@ func TestRunDetectsAddedEndpointSlice(t *testing.T) {
 		t.Fatalf("creating EndpointSlice: %v", err)
 	}
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -493,25 +488,24 @@ func TestRunDetectsUpdatedEndpointSlice(t *testing.T) {
 	// the informer's initial list+watch and the pre-loaded objects.
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
 	// Consume initial empty state.
-	readChanges(t, w, 5*time.Second)
+	readChanges(t, w)
 
 	// Create the slice with one endpoint.
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
@@ -519,7 +513,7 @@ func TestRunDetectsUpdatedEndpointSlice(t *testing.T) {
 		t.Fatalf("creating EndpointSlice: %v", err)
 	}
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after create, got %d", len(eps))
 	}
@@ -533,7 +527,7 @@ func TestRunDetectsUpdatedEndpointSlice(t *testing.T) {
 	// Update the slice to add a second endpoint.
 	current.Endpoints = append(current.Endpoints, discoveryv1.Endpoint{
 		Addresses:  []string{"10.0.0.2"},
-		Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+		Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 		TargetRef:  &corev1.ObjectReference{Name: "pod-b"},
 	})
 	_, err = clientset.DiscoveryV1().EndpointSlices("default").Update(ctx, current, metav1.UpdateOptions{})
@@ -541,7 +535,7 @@ func TestRunDetectsUpdatedEndpointSlice(t *testing.T) {
 		t.Fatalf("updating EndpointSlice: %v", err)
 	}
 
-	eps = readChanges(t, w, 5*time.Second)
+	eps = readChanges(t, w)
 	if len(eps) != 2 {
 		t.Fatalf("expected 2 endpoints after update, got %d", len(eps))
 	}
@@ -553,28 +547,27 @@ func TestRunDetectsDeletedEndpointSlice(t *testing.T) {
 	// and the subsequent delete.
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
 	// Consume initial empty state.
-	initial := readChanges(t, w, 5*time.Second)
+	initial := readChanges(t, w)
 	if len(initial) != 0 {
 		t.Fatalf("expected 0 initial endpoints, got %d", len(initial))
 	}
 
 	// Create a slice.
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
@@ -582,7 +575,7 @@ func TestRunDetectsDeletedEndpointSlice(t *testing.T) {
 		t.Fatalf("creating EndpointSlice: %v", err)
 	}
 
-	added := readChanges(t, w, 5*time.Second)
+	added := readChanges(t, w)
 	if len(added) != 1 {
 		t.Fatalf("expected 1 endpoint after add, got %d", len(added))
 	}
@@ -593,24 +586,24 @@ func TestRunDetectsDeletedEndpointSlice(t *testing.T) {
 		t.Fatalf("deleting EndpointSlice: %v", err)
 	}
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints after delete, got %d: %v", len(eps), eps)
 	}
 }
 
 func TestRunFiltersNonReadyEndpoints(t *testing.T) {
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-ready"},
 			},
 			{
 				Addresses:  []string{"10.0.0.2"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(false)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(false)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-not-ready"},
 			},
 			{
@@ -620,17 +613,16 @@ func TestRunFiltersNonReadyEndpoints(t *testing.T) {
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 
 	clientset := fake.NewClientset(slice)
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 ready endpoint, got %d: %v", len(eps), eps)
 	}
@@ -640,54 +632,52 @@ func TestRunFiltersNonReadyEndpoints(t *testing.T) {
 }
 
 func TestRunFiltersNonIPv4v6AddressTypes(t *testing.T) {
-	fqdnSlice := makeEndpointSlice("svc-fqdn", "default", "svc",
+	fqdnSlice := makeEndpointSlice("svc-fqdn",
 		discoveryv1.AddressTypeFQDN,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"my-host.example.com"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 
 	clientset := fake.NewClientset(fqdnSlice)
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints for FQDN address type, got %d: %v", len(eps), eps)
 	}
 }
 
 func TestRunPortOverrideName(t *testing.T) {
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("metrics"), Port: ptr(int32(9090))},
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("metrics"), Port: new(int32(9090))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 
 	clientset := fake.NewClientset(slice)
 	w := New(clientset, "default", "svc", "http")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
-	eps := readChanges(t, w, 5*time.Second)
+	eps := readChanges(t, w)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -707,7 +697,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	}()
 
 	// Let Run start and deliver initial state.
-	readChanges(t, w, 5*time.Second)
+	readChanges(t, w)
 
 	cancel()
 
@@ -722,28 +712,27 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 }
 
 func TestRunDeduplicatesUnchangedEndpoints(t *testing.T) {
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 
 	clientset := fake.NewClientset(slice)
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
 	// Consume initial state.
-	readChanges(t, w, 5*time.Second)
+	readChanges(t, w)
 
 	// Update an unrelated field (annotation) — endpoints stay the same.
 	slice.Annotations = map[string]string{"unrelated": "change"}

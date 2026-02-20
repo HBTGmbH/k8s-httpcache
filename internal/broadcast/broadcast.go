@@ -1,3 +1,4 @@
+// Package broadcast fans out HTTP requests to Varnish frontends.
 package broadcast
 
 import (
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -114,6 +116,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Connection", "close")
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
+		//nolint:errchkjson // best-effort error response; nothing to do if encoding fails
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "no frontends available"})
 		return
 	}
@@ -125,6 +128,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Connection", "close")
 		}
 		w.WriteHeader(http.StatusBadRequest)
+		//nolint:errchkjson // best-effort error response; nothing to do if encoding fails
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to read request body"})
 		return
 	}
@@ -160,6 +164,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "close")
 	}
 	w.WriteHeader(http.StatusOK)
+	//nolint:errchkjson // best-effort JSON response; nothing to do if encoding fails
 	_ = json.NewEncoder(w).Encode(out)
 }
 
@@ -169,7 +174,7 @@ func (s *Server) forward(origReq *http.Request, fe watcher.Frontend, body []byte
 	if s.targetPort > 0 {
 		port = s.targetPort
 	}
-	url := fmt.Sprintf("http://%s:%d%s", fe.IP, port, origReq.RequestURI)
+	url := "http://" + net.JoinHostPort(fe.IP, strconv.FormatInt(int64(port), 10)) + origReq.RequestURI
 
 	ctx := origReq.Context()
 	req, err := http.NewRequestWithContext(ctx, origReq.Method, url, nil)

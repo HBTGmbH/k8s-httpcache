@@ -12,12 +12,12 @@ import (
 )
 
 // readBackendChanges reads from the BackendWatcher's Changes channel with a timeout.
-func readBackendChanges(t *testing.T, bw *BackendWatcher, timeout time.Duration) []Endpoint {
+func readBackendChanges(t *testing.T, bw *BackendWatcher) []Endpoint {
 	t.Helper()
 	select {
 	case eps := <-bw.Changes():
 		return eps
-	case <-time.After(timeout):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for backend endpoint change")
 		return nil
 	}
@@ -34,11 +34,11 @@ func assertNoBackendChanges(t *testing.T, bw *BackendWatcher, timeout time.Durat
 	}
 }
 
-func makeService(name, namespace string, serviceType corev1.ServiceType, externalName string) *corev1.Service {
+func makeService(serviceType corev1.ServiceType, externalName string) *corev1.Service {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:      "svc",
+			Namespace: "default",
 		},
 		Spec: corev1.ServiceSpec{
 			Type: serviceType,
@@ -52,25 +52,24 @@ func makeService(name, namespace string, serviceType corev1.ServiceType, externa
 
 // getService fetches the latest Service from the fake clientset (returns a deep
 // copy, safe to mutate without affecting the informer's cache).
-func getService(t *testing.T, clientset *fake.Clientset, ctx context.Context, namespace, name string) *corev1.Service {
+func getService(t *testing.T, ctx context.Context, clientset *fake.Clientset) *corev1.Service {
 	t.Helper()
-	svc, err := clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	svc, err := clientset.CoreV1().Services("default").Get(ctx, "svc", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("getting Service %s/%s: %v", namespace, name, err)
+		t.Fatalf("getting Service default/svc: %v", err)
 	}
 	return svc
 }
 
 func TestBackendWatcherExternalNameService(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -86,15 +85,14 @@ func TestBackendWatcherExternalNameService(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameDefaultPort(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -104,46 +102,44 @@ func TestBackendWatcherExternalNameDefaultPort(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameNamedPort(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "http")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Named ports cannot be resolved for ExternalName services (no EndpointSlice),
 	// so the watcher should emit empty endpoints.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints for named port on ExternalName, got %d: %v", len(eps), eps)
 	}
 }
 
 func TestBackendWatcherClusterIPService(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeClusterIP, "")
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 
 	clientset := fake.NewClientset(svc, slice)
 	bw := NewBackendWatcher(clientset, "default", "svc", "")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -162,11 +158,10 @@ func TestBackendWatcherServiceNotExists(t *testing.T) {
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints, got %d: %v", len(eps), eps)
 	}
@@ -176,24 +171,23 @@ func TestBackendWatcherServiceAppearsLate(t *testing.T) {
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initially no Service → empty endpoints.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints initially, got %d: %v", len(eps), eps)
 	}
 
 	// Service appears after startup.
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	_, err := clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("creating Service: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after late Service creation, got %d", len(eps))
 	}
@@ -206,22 +200,21 @@ func TestBackendWatcherServiceAppearsLate(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ExternalName endpoint.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "api.example.com" {
 		t.Fatalf("expected ExternalName endpoint, got %v", eps)
 	}
 
 	// Transition to ClusterIP via Get-then-Update to avoid shared-pointer issues.
-	current := getService(t, clientset, ctx, "default", "svc")
+	current := getService(t, ctx, clientset)
 	current.Spec.Type = corev1.ServiceTypeClusterIP
 	current.Spec.ExternalName = ""
 	current.Spec.ClusterIP = "10.96.0.1"
@@ -231,17 +224,17 @@ func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
 	}
 
 	// Create an EndpointSlice for the ClusterIP service.
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.5"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-x"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 	_, err = clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
@@ -250,44 +243,43 @@ func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
 	}
 
 	// Should eventually get the ClusterIP endpoints.
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "10.0.0.5" {
 		t.Fatalf("expected ClusterIP endpoint 10.0.0.5, got %v", eps)
 	}
 }
 
 func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeClusterIP, "")
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
 	svc.Spec.ClusterIP = "10.96.0.1"
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(8080))},
+			{Name: new("http"), Port: new(int32(8080))},
 		},
 	)
 
 	clientset := fake.NewClientset(svc, slice)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ClusterIP endpoint.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "10.0.0.1" {
 		t.Fatalf("expected ClusterIP endpoint, got %v", eps)
 	}
 
 	// Transition to ExternalName via Get-then-Update.
-	current := getService(t, clientset, ctx, "default", "svc")
+	current := getService(t, ctx, clientset)
 	current.Spec.Type = corev1.ServiceTypeExternalName
 	current.Spec.ExternalName = "cdn.example.com"
 	current.Spec.ClusterIP = ""
@@ -296,7 +288,7 @@ func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
 		t.Fatalf("updating Service: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -309,16 +301,15 @@ func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
 }
 
 func TestBackendWatcherServiceDeleted(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ExternalName endpoint.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -329,36 +320,35 @@ func TestBackendWatcherServiceDeleted(t *testing.T) {
 		t.Fatalf("deleting Service: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints after delete, got %d: %v", len(eps), eps)
 	}
 }
 
 func TestBackendWatcherExternalNameUpdated(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "api.example.com" {
 		t.Fatalf("expected api.example.com, got %v", eps)
 	}
 
 	// Update hostname via Get-then-Update.
-	current := getService(t, clientset, ctx, "default", "svc")
+	current := getService(t, ctx, clientset)
 	current.Spec.ExternalName = "api-v2.example.com"
 	_, err := clientset.CoreV1().Services("default").Update(ctx, current, metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("updating Service: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -368,7 +358,7 @@ func TestBackendWatcherExternalNameUpdated(t *testing.T) {
 }
 
 func TestBackendWatcherStopsOnContextCancel(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
@@ -380,7 +370,7 @@ func TestBackendWatcherStopsOnContextCancel(t *testing.T) {
 	}()
 
 	// Let Run start and deliver initial state.
-	readBackendChanges(t, bw, 5*time.Second)
+	readBackendChanges(t, bw)
 
 	cancel()
 
@@ -395,19 +385,18 @@ func TestBackendWatcherStopsOnContextCancel(t *testing.T) {
 }
 
 func TestBackendWatcherDeduplicatesUnchanged(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Consume initial state.
-	readBackendChanges(t, bw, 5*time.Second)
+	readBackendChanges(t, bw)
 
 	// Update an unrelated field (annotation) via Get-then-Update — endpoints stay the same.
-	current := getService(t, clientset, ctx, "default", "svc")
+	current := getService(t, ctx, clientset)
 	current.Annotations = map[string]string{"unrelated": "change"}
 	_, err := clientset.CoreV1().Services("default").Update(ctx, current, metav1.UpdateOptions{})
 	if err != nil {
@@ -419,16 +408,15 @@ func TestBackendWatcherDeduplicatesUnchanged(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameDeletedAndRecreated(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "api.example.com")
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ExternalName endpoint.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "api.example.com" {
 		t.Fatalf("expected api.example.com, got %v", eps)
 	}
@@ -439,19 +427,19 @@ func TestBackendWatcherExternalNameDeletedAndRecreated(t *testing.T) {
 		t.Fatalf("deleting Service: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints after delete, got %d: %v", len(eps), eps)
 	}
 
 	// Re-create with a different hostname.
-	svc2 := makeService("svc", "default", corev1.ServiceTypeExternalName, "api-v2.example.com")
+	svc2 := makeService(corev1.ServiceTypeExternalName, "api-v2.example.com")
 	_, err = clientset.CoreV1().Services("default").Create(ctx, svc2, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("re-creating Service: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after re-create, got %d", len(eps))
 	}
@@ -464,35 +452,34 @@ func TestBackendWatcherClusterIPAppearsLate(t *testing.T) {
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initially no Service → empty endpoints.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints initially, got %d: %v", len(eps), eps)
 	}
 
 	// ClusterIP Service appears.
-	svc := makeService("svc", "default", corev1.ServiceTypeClusterIP, "")
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
 	_, err := clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("creating Service: %v", err)
 	}
 
 	// Create an EndpointSlice for the service.
-	slice := makeEndpointSlice("svc-abc", "default", "svc",
+	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
 			{
 				Addresses:  []string{"10.0.0.1"},
-				Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
-			{Name: ptr("http"), Port: ptr(int32(9090))},
+			{Name: new("http"), Port: new(int32(9090))},
 		},
 	)
 	_, err = clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
@@ -500,7 +487,7 @@ func TestBackendWatcherClusterIPAppearsLate(t *testing.T) {
 		t.Fatalf("creating EndpointSlice: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
@@ -513,29 +500,28 @@ func TestBackendWatcherClusterIPAppearsLate(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
-	svc := makeService("svc", "default", corev1.ServiceTypeExternalName, "")
+	svc := makeService(corev1.ServiceTypeExternalName, "")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
 	// Empty externalName should be treated as no endpoints.
-	eps := readBackendChanges(t, bw, 5*time.Second)
+	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints for empty externalName, got %d: %v", len(eps), eps)
 	}
 
 	// Fix the hostname via Get-then-Update.
-	current := getService(t, clientset, ctx, "default", "svc")
+	current := getService(t, ctx, clientset)
 	current.Spec.ExternalName = "api.example.com"
 	_, err := clientset.CoreV1().Services("default").Update(ctx, current, metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("updating Service: %v", err)
 	}
 
-	eps = readBackendChanges(t, bw, 5*time.Second)
+	eps = readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after fix, got %d", len(eps))
 	}

@@ -1,8 +1,10 @@
+// k8s-httpcache is a Kubernetes-native HTTP caching proxy built on Varnish.
 package main
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
@@ -96,7 +98,7 @@ func main() {
 		})
 		bcast.SetFrontends(latestFrontends)
 		go func() {
-			if err := bcast.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := bcast.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Fatalf("broadcast server: %v", err)
 			}
 		}()
@@ -105,7 +107,7 @@ func main() {
 	// Render VCL with real endpoint data and start varnishd.
 	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends)
 	if err != nil {
-		log.Fatalf("initial render: %v", err)
+		log.Fatalf("initial render: %v", err) //nolint:gocritic // startup fatal; process exits, no cleanup needed
 	}
 	defer func() { _ = os.Remove(initialVCL) }()
 
@@ -129,7 +131,6 @@ func main() {
 		backendCh = make(chan backendChange, len(bwWatchers))
 		for i, bw := range bwWatchers {
 			name := bwNames[i]
-			bw := bw
 			go func() {
 				for eps := range bw.Changes() {
 					backendCh <- backendChange{name: name, endpoints: eps}

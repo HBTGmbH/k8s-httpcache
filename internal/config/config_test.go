@@ -592,11 +592,11 @@ func setupParse(t *testing.T, args []string) {
 // makeTempVCL creates a temporary VCL template file and returns its path.
 func makeTempVCL(t *testing.T) string {
 	t.Helper()
-	f, err := os.CreateTemp("", "vcl-*.vcl")
+	f, err := os.CreateTemp(t.TempDir(), "vcl-*.vcl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Write([]byte("vcl 4.0;")); err != nil {
+	if _, err := f.WriteString("vcl 4.0;"); err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
