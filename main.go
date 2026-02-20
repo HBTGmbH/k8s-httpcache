@@ -56,10 +56,10 @@ func main() {
 	// Start backend watchers.
 	var (
 		bwNames    []string
-		bwWatchers []*watcher.Watcher
+		bwWatchers []*watcher.BackendWatcher
 	)
 	for _, b := range cfg.Backends {
-		bw := watcher.New(clientset, b.Namespace, b.ServiceName, b.Port)
+		bw := watcher.NewBackendWatcher(clientset, b.Namespace, b.ServiceName, b.Port)
 		name := b.Name
 		go func() {
 			if err := bw.Run(ctx); err != nil {
