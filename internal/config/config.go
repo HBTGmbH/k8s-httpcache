@@ -124,6 +124,7 @@ type Config struct {
 	Debounce                   time.Duration
 	ShutdownTimeout            time.Duration
 	Backends                   []BackendSpec
+	MetricsAddr                string
 	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
 	LogLevel                   slog.Level
 	LogFormat                  string // "text" or "json"
@@ -209,6 +210,7 @@ func Parse() (*Config, error) {
 	flag.Var(&backends, "backend", "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)")
 	flag.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "Log level (DEBUG, INFO, WARN, ERROR)")
 	flag.StringVar(&c.LogFormat, "log-format", "text", "Log format (text, json)")
+	flag.StringVar(&c.MetricsAddr, "metrics-addr", ":9101", "Listen address for Prometheus metrics (set empty to disable)")
 
 	flag.Parse()
 

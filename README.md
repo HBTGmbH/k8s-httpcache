@@ -96,6 +96,28 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--broadcast-client-idle-timeout` | `4s` | Max idle time for connections to Varnish pods in the broadcast client pool |
 | `--broadcast-client-timeout` | `3s` | Timeout for each fan-out request to a Varnish pod |
 
+### Metrics flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--metrics-addr` | `:9101` | Listen address for Prometheus metrics (set to `""` to disable) |
+
+The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`, `process_*`) plus the following application metrics, all prefixed with `k8s_httpcache_`:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vcl_reloads_total` | Counter | `result` | VCL reload attempts (`success` or `error`) |
+| `vcl_render_errors_total` | Counter | | VCL template render failures |
+| `vcl_template_changes_total` | Counter | | VCL template file changes detected on disk |
+| `vcl_template_parse_errors_total` | Counter | | VCL template parse failures |
+| `vcl_rollbacks_total` | Counter | | Template rollbacks to previous known-good version |
+| `endpoint_updates_total` | Counter | `role`, `service` | EndpointSlice updates received (`frontend` or `backend`) |
+| `endpoints` | Gauge | `role`, `service` | Current ready endpoint count per service |
+| `varnishd_up` | Gauge | | Whether the varnishd process is running (1/0) |
+| `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
+| `broadcast_fanout_targets` | Gauge | | Number of frontend pods targeted by the last broadcast |
+| `build_info` | Gauge | `version`, `goversion` | Build metadata (always 1) |
+
 ### Timing and logging flags
 
 | Flag | Default | Description |

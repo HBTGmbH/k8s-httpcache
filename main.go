@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -20,9 +22,13 @@ import (
 	"k8s-httpcache/internal/broadcast"
 	"k8s-httpcache/internal/config"
 	"k8s-httpcache/internal/renderer"
+	"k8s-httpcache/internal/telemetry"
 	"k8s-httpcache/internal/varnish"
 	"k8s-httpcache/internal/watcher"
 )
+
+// version is set at build time via -ldflags.
+var version = "dev"
 
 func main() {
 	cfg, err := config.Parse()
@@ -38,6 +44,22 @@ func main() {
 		logHandler = slog.NewTextHandler(os.Stderr, logOpts)
 	}
 	slog.SetDefault(slog.New(logHandler))
+
+	// Set build info metric.
+	telemetry.BuildInfo.WithLabelValues(version, runtime.Version()).Set(1)
+
+	// Start Prometheus metrics server if configured.
+	if cfg.MetricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("metrics server: %v", err)
+			}
+		}()
+	}
 
 	// Build Kubernetes client.
 	clientset, err := buildClientset()
@@ -95,6 +117,12 @@ func main() {
 	}
 	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends))
 
+	// Set initial endpoint gauges.
+	telemetry.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
+	for name, eps := range latestBackends {
+		telemetry.Endpoints.WithLabelValues("backend", name).Set(float64(len(eps)))
+	}
+
 	// Start broadcast server if configured.
 	var bcast *broadcast.Server
 	if cfg.BroadcastAddr != "" {
@@ -132,6 +160,7 @@ func main() {
 	if err := mgr.Start(initialVCL); err != nil {
 		log.Fatalf("varnish start: %v", err)
 	}
+	telemetry.VarnishdUp.Set(1)
 
 	// Watch VCL template file for changes.
 	templateCh := watchFile(ctx, cfg.VCLTemplate, 5*time.Second)
@@ -164,6 +193,7 @@ func main() {
 	for {
 		select {
 		case <-templateCh:
+			telemetry.VCLTemplateChangesTotal.Inc()
 			slog.Info("VCL template changed on disk, scheduling reload")
 			pendingReload = true
 			templateChanged = true
@@ -175,6 +205,8 @@ func main() {
 
 		case frontends := <-w.Changes():
 			latestFrontends = frontends
+			telemetry.EndpointUpdatesTotal.WithLabelValues("frontend", cfg.ServiceName).Inc()
+			telemetry.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
 			if bcast != nil {
 				bcast.SetFrontends(latestFrontends)
 			}
@@ -188,6 +220,8 @@ func main() {
 
 		case bc := <-backendChan(backendCh):
 			latestBackends[bc.name] = bc.endpoints
+			telemetry.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
+			telemetry.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			pendingReload = true
 
 			if debounceTimer != nil {
@@ -206,30 +240,28 @@ func main() {
 			reloadedTemplate := false
 			if templateChanged {
 				if err := rend.Reload(); err != nil {
+					telemetry.VCLTemplateParseErrorsTotal.Inc()
 					slog.Error("template parse error, keeping old template", "error", err)
-					templateChanged = false
 				} else {
 					reloadedTemplate = true
 				}
 			}
 
-			if len(latestFrontends) == 0 && !templateChanged {
-				templateChanged = false
-				slog.Warn("skipping reload: no ready endpoints")
-				continue
-			}
 			templateChanged = false
 
 			vclPath, err := rend.RenderToFile(latestFrontends, latestBackends)
 			if err != nil {
+				telemetry.VCLRenderErrorsTotal.Inc()
 				slog.Error("render error", "error", err)
 				if reloadedTemplate {
+					telemetry.VCLRollbacksTotal.Inc()
 					rend.Rollback()
 				}
 				continue
 			}
 
 			if err := mgr.Reload(vclPath); err != nil {
+				telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
 				slog.Error("reload error", "error", err)
 				_ = os.Remove(vclPath)
 
@@ -240,21 +272,27 @@ func main() {
 				// New template produced VCL that Varnish rejected; revert and
 				// retry so that any concurrent frontend/backend changes still
 				// take effect with the old (known-good) template.
+				telemetry.VCLRollbacksTotal.Inc()
 				rend.Rollback()
 				slog.Warn("rolled back to previous template")
 
 				vclPath, err = rend.RenderToFile(latestFrontends, latestBackends)
 				if err != nil {
+					telemetry.VCLRenderErrorsTotal.Inc()
 					slog.Error("render error after rollback", "error", err)
 					continue
 				}
 				if err := mgr.Reload(vclPath); err != nil {
+					telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
 					slog.Error("reload error after rollback", "error", err)
+				} else {
+					telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
 				}
 				_ = os.Remove(vclPath)
 				continue
 			}
 
+			telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
 			_ = os.Remove(vclPath)
 
 		case sig := <-sigCh:
@@ -279,6 +317,7 @@ func main() {
 			os.Exit(0)
 
 		case <-mgr.Done():
+			telemetry.VarnishdUp.Set(0)
 			slog.Error("varnishd exited unexpectedly", "error", mgr.Err())
 			cancel()
 			os.Exit(1)

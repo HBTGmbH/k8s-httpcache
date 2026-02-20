@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"k8s-httpcache/internal/telemetry"
 	"k8s-httpcache/internal/watcher"
 )
 
@@ -111,6 +112,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if len(frontends) == 0 {
+		telemetry.BroadcastRequestsTotal.WithLabelValues(r.Method, "503").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		if s.draining.Load() {
 			w.Header().Set("Connection", "close")
@@ -123,6 +125,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		telemetry.BroadcastRequestsTotal.WithLabelValues(r.Method, "400").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		if s.draining.Load() {
 			w.Header().Set("Connection", "close")
@@ -140,6 +143,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	results := make(chan namedResult, len(frontends))
 	var wg sync.WaitGroup
+
+	telemetry.BroadcastFanoutTargets.Set(float64(len(frontends)))
 
 	for _, fe := range frontends {
 		wg.Add(1)
@@ -159,6 +164,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out[nr.name] = nr.result
 	}
 
+	telemetry.BroadcastRequestsTotal.WithLabelValues(r.Method, "200").Inc()
 	w.Header().Set("Content-Type", "application/json")
 	if s.draining.Load() {
 		w.Header().Set("Connection", "close")
