@@ -929,6 +929,69 @@ sub vcl_deliver {
 	}
 }
 
+func TestRender_DrainVCLImportStdInComment(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+/*
+import std;
+*/
+
+sub vcl_recv {
+  set req.backend_hint = origin;
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// The "import std;" inside the block comment must be preserved.
+	if !strings.Contains(out, "/*\nimport std;\n*/") {
+		t.Error("import std inside block comment was incorrectly stripped")
+	}
+}
+
+func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{"tabs", "\timport std;"},
+		{"multiple_spaces", "    import std;"},
+		{"tab_and_spaces", "\t  import std;"},
+		{"extra_space_before_semi", "import std ;"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpl := "vcl 4.1;\n" + tt.line + "\n\nsub vcl_recv {\n  set req.backend_hint = origin;\n}\n"
+			path := writeTempTemplate(t, tmpl)
+			r, err := New(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			r.SetDrainBackend("drain_flag")
+
+			out, err := r.Render(nil, nil, nil)
+			if err != nil {
+				t.Fatalf("render error: %v", err)
+			}
+
+			// User's import std should be stripped; only ours should remain.
+			count := strings.Count(out, "import std")
+			if count != 1 {
+				t.Errorf("expected import std exactly once, got %d occurrences\noutput:\n%s", count, out)
+			}
+		})
+	}
+}
+
 func TestRender_NestedValues(t *testing.T) {
 	tmpl := `host=<< index .Values.server "host" >> port=<< index .Values.server "port" >>`
 	path := writeTempTemplate(t, tmpl)

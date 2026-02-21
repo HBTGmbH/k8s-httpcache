@@ -141,6 +141,28 @@ func vclVersionEnd(vcl string) int {
 // and trailing newline) so it can be stripped from user VCL before re-injection.
 var importStdRe = regexp.MustCompile(`(?m)^[\t ]*import\s+std\s*;\s*\n?`)
 
+// stripImportStd removes top-level "import std;" lines from VCL while
+// preserving any occurrences inside /* */ block comments.
+func stripImportStd(vcl string) string {
+	locs := importStdRe.FindAllStringIndex(vcl, -1)
+	if len(locs) == 0 {
+		return vcl
+	}
+
+	var b strings.Builder
+	prev := 0
+	for _, loc := range locs {
+		before := vcl[:loc[0]]
+		if strings.Count(before, "/*")-strings.Count(before, "*/") > 0 {
+			continue // inside a block comment — keep it
+		}
+		b.WriteString(vcl[prev:loc[0]])
+		prev = loc[1]
+	}
+	b.WriteString(vcl[prev:])
+	return b.String()
+}
+
 // injectDrainVCL injects drain VCL around the user template output.
 //
 // The drain vcl_deliver is prepended (right after the version line) so it
@@ -154,7 +176,7 @@ var importStdRe = regexp.MustCompile(`(?m)^[\t ]*import\s+std\s*;\s*\n?`)
 func injectDrainVCL(vcl, backendName string) string {
 	// Strip any existing "import std;" from user VCL — we re-inject it
 	// at the top so it appears before the drain subroutine.
-	vcl = importStdRe.ReplaceAllString(vcl, "")
+	vcl = stripImportStd(vcl)
 
 	pos := vclVersionEnd(vcl)
 
