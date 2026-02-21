@@ -41,7 +41,7 @@ ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
 - **ServiceAccount** — identity for the k8s-httpcache pod
 - **Role** — permissions to list/watch services and endpointslices
 - **RoleBinding** — binds the Role to the ServiceAccount
-- **Deployment** — runs k8s-httpcache with Varnish (3 replicas, preStop hook for graceful shutdown)
+- **Deployment** — runs k8s-httpcache with Varnish (3 replicas, graceful connection draining)
 - **Service** — exposes HTTP (port 80) and the broadcast server (port 8088)
 - **ConfigMap** — holds the VCL template
 
@@ -121,6 +121,14 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
 | `broadcast_fanout_targets` | Gauge | | Number of frontend pods targeted by the last broadcast |
 | `build_info` | Gauge | `version`, `goversion` | Build metadata (always 1) |
+
+### Drain flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--drain` | `false` | Enable graceful connection draining on shutdown (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)) |
+| `--drain-delay` | `15s` | Delay after marking backend sick before polling for active sessions |
+| `--drain-timeout` | `0` | Max time to wait for active sessions to reach 0. Default `0` skips session polling. Set to a positive duration (e.g. `30s`) to poll and wait for connections to close. |
 
 ### Timing and logging flags
 
@@ -333,7 +341,7 @@ The VCL template file is watched for changes. When a change is detected, k8s-htt
 
 ### Reference VCL template
 
-The following template from [`deploy/kube-manifest.yaml`](deploy/kube-manifest.yaml) demonstrates shard-based routing, multiple backend groups, PURGE handling, and graceful draining:
+The following template from [`deploy/kube-manifest.yaml`](deploy/kube-manifest.yaml) demonstrates shard-based routing, multiple backend groups, and PURGE handling. Note that drain VCL is **not** included here — when `--drain` is enabled, k8s-httpcache automatically injects the necessary VCL (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)).
 
 ```vcl
 vcl 4.1;
@@ -363,13 +371,6 @@ acl purge {
   "::1";
 }
 
-# Dummy backend to use as a drain flag. The preStop hook will set this backend to sick to trigger draining
-# via varnishadm.
-backend drain_flag {
-  .host = "127.0.0.1"; # <- any IP ist fine
-  .port = "9"; # <- any port ist fine
-}
-
 sub vcl_init {
   <<- if .Frontends >>
   new cluster = directors.shard();
@@ -387,20 +388,7 @@ sub vcl_init {
   <<- end >>
 }
 
-sub handle_readiness {
-  if (req.url == "/ready") {
-    # Return 200 if not draining, else 503.
-    if (std.healthy(drain_flag)) {
-      return (synth(200));
-    } else {
-      return (synth(503));
-    }
-  }
-}
-
 sub vcl_recv {
-  call handle_readiness;
-
   if (req.method == "PURGE") {
     if (!client.ip ~ purge) {
       return (synth(405, "Not allowed"));
@@ -427,22 +415,8 @@ sub vcl_recv {
   <<- end >>
 }
 
-sub handle_draining {
-  # During draining, which is activated via varnishadm setting the backend health to sick,
-  # we respond with 'Connection: close' to inform clients not to reuse connections.
-  # This will eventually lead to all connections being closed and no new requests being accepted.
-  if (!std.healthy(drain_flag)) {
-    set resp.http.Connection = "close";
-  }
-}
-
 sub vcl_purge {
   return (synth(200, "Purged"));
-}
-
-sub vcl_deliver {
-  # Check whether we are draining and adjust the Connection header in client responses accordingly.
-  call handle_draining;
 }
 ```
 
@@ -487,46 +461,51 @@ If no frontends are available, the server returns HTTP 503 with:
 
 ## Graceful shutdown / zero-downtime deploys
 
-k8s-httpcache supports zero-downtime deploys via a preStop lifecycle hook. The sequence is:
+k8s-httpcache has built-in support for graceful connection draining. Enable it with `--drain`:
 
-1. **Mark as draining** — `varnishadm backend.set_health drain_flag sick` marks the pod as unhealthy. The readiness probe starts returning 503, and `Connection: close` is sent on all responses.
-2. **Wait for traffic to stop** — sleep to allow the Service endpoint to be removed from load balancers.
-3. **Wait for connections to drain** — poll `varnishstat` for active sessions until all connections are closed or a deadline is reached.
-4. **Shutdown** — Varnish exits.
-
-The reference preStop hook from [`deploy/kube-manifest.yaml`](deploy/kube-manifest.yaml):
-
-```yaml
-lifecycle:
-  preStop:
-    exec:
-      command:
-      - sh
-      - -c
-      - |
-        varnishadm 2>/proc/1/fd/2 -T 127.0.0.1:6082 -S /var/lib/varnish/secrets/secret backend.set_health drain_flag sick
-        echo > /proc/1/fd/1 "preStop: Waiting 15s for new connections to stop coming in..."
-        sleep 15
-        if [ "30" -gt 0 ]; then
-          deadline=$(( $(date +%s) + 30 ))
-        fi
-        echo > /proc/1/fd/1 "preStop: Waiting at most 30s for all connections to be drained..."
-        while :; do
-          val=$(varnishstat 2>/proc/1/fd/2 -1 \
-                | awk '/MEMPOOL\.sess[0-9]+\.live/ {a+=$2} END {print a+0}')
-          if [ "$val" -eq 0 ]; then
-            echo > /proc/1/fd/1 "preStop: All connections are gone. Telling Varnish to shut down now."
-            break
-          elif [ "30" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
-            echo > /proc/1/fd/1 "preStop: Deadline reached while there are still connections. Telling Varnish to shut down now anyway."
-            break
-          fi
-          echo > /proc/1/fd/1 "preStop: There are still $val client connections. Continue waiting..."
-          sleep 1
-        done
+```
+k8s-httpcache --drain --drain-delay=15s ...
 ```
 
-Set `terminationGracePeriodSeconds` on the pod spec to accommodate the sleep + drain time (e.g. `90` seconds).
+### How it works
+
+When `--drain` is enabled, k8s-httpcache automatically injects drain VCL into the rendered template output. The injected VCL adds a dummy backend that serves as a health flag, and a `sub vcl_deliver` that checks the backend's health status and sets `Connection: close` on all responses when draining is active, signalling clients to close their connections.
+
+On SIGTERM (e.g. during a rolling update), the shutdown sequence is:
+
+1. **Start draining** — the injected VCL backend is marked sick via `varnishadm`, causing Varnish to send `Connection: close` on all responses.
+2. **Wait for endpoint removal** (`--drain-delay`, default `15s`) — sleep to allow Kubernetes to remove the pod from Service endpoints and load balancers. A second signal skips this wait.
+3. **Shutdown** — SIGTERM is forwarded to varnishd.
+
+### Waiting for connections to close
+
+By default (`--drain-timeout=0`), session polling is skipped and shutdown proceeds immediately after the drain delay. This is the safe default because some clients hold long-lived connections (e.g. WebSockets, streaming) that may never close on their own.
+
+To wait for all connections to close before shutting down, set `--drain-timeout` to a positive duration:
+
+```
+k8s-httpcache --drain --drain-delay=15s --drain-timeout=30s ...
+```
+
+This adds a step between 2 and 3: poll `varnishstat` for active sessions every second until all connections are closed or the timeout is reached. A second signal aborts this wait.
+
+**Important:** When using `--drain-timeout`, ensure that your clients' keep-alive/idle timeout is lower than the configured drain timeout. This ensures clients close the connection (in response to `Connection: close`) before the server shuts down, avoiding a race condition where a client sends a new request just as the server is closing the connection on its side.
+
+### Injected VCL details
+
+The drain VCL is injected transparently around your template output:
+
+- A `sub vcl_deliver` is **prepended** (before your `vcl_deliver`) to ensure the `Connection: close` header is always set during draining, even if your `vcl_deliver` returns early.
+- A drain backend declaration is **appended** (after all your backends) so it never becomes Varnish's default backend.
+- `import std;` is added automatically if not already present in your template.
+
+### Pod spec requirements
+
+Set `terminationGracePeriodSeconds` to accommodate the drain delay + drain timeout + shutdown timeout (e.g. `90` seconds):
+
+```yaml
+terminationGracePeriodSeconds: 90
+```
 
 ## RBAC
 

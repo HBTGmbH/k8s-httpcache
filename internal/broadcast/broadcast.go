@@ -91,6 +91,8 @@ func (s *Server) connState(_ net.Conn, state http.ConnState) {
 		if s.conns.Add(-1) <= 0 && s.draining.Load() {
 			s.signalDrained()
 		}
+	default:
+		// StateActive, StateIdle — no action needed.
 	}
 }
 
@@ -200,7 +202,7 @@ func (s *Server) forward(origReq *http.Request, fe watcher.Frontend, body []byte
 		req.ContentLength = int64(len(body))
 	}
 
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Do(req) //nolint:gosec // G704: URL is constructed from trusted peer pod IPs via Kubernetes EndpointSlices.
 	if err != nil {
 		return PodResult{Status: 0, Body: fmt.Sprintf("request error: %v", err)}
 	}

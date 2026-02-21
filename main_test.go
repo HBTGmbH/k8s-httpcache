@@ -200,12 +200,16 @@ func (m *mockRenderer) counts() (reload, render, rollback int) {
 }
 
 type mockManager struct {
-	mu            sync.Mutex
-	reloadFn      func(string) error
-	done          chan struct{}
-	err           error
-	reloadCount   int
-	forwardedSigs []os.Signal
+	mu               sync.Mutex
+	reloadFn         func(string) error
+	markBackendFn    func(string) error
+	activeSessionsFn func() (int64, error)
+	done             chan struct{}
+	err              error
+	reloadCount      int
+	forwardedSigs    []os.Signal
+	markSickCalls    []string
+	sessionsCalls    int
 }
 
 func (m *mockManager) Reload(vclPath string) error {
@@ -233,10 +237,46 @@ func (m *mockManager) ForwardSignal(sig os.Signal) {
 	m.forwardedSigs = append(m.forwardedSigs, sig)
 }
 
+func (m *mockManager) MarkBackendSick(name string) error {
+	m.mu.Lock()
+	m.markSickCalls = append(m.markSickCalls, name)
+	fn := m.markBackendFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(name)
+	}
+	return nil
+}
+
+func (m *mockManager) ActiveSessions() (int64, error) {
+	m.mu.Lock()
+	m.sessionsCalls++
+	fn := m.activeSessionsFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn()
+	}
+	return 0, nil
+}
+
+func (m *mockManager) getMarkSickCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dst := make([]string, len(m.markSickCalls))
+	copy(dst, m.markSickCalls)
+	return dst
+}
+
 func (m *mockManager) getReloadCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.reloadCount
+}
+
+func (m *mockManager) getSessionsCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessionsCalls
 }
 
 func (m *mockManager) getForwardedSigs() []os.Signal {
@@ -268,10 +308,10 @@ func (m *mockBroadcast) Drain(_ time.Duration) error {
 	return nil
 }
 
-func (m *mockBroadcast) counts() (set, drain int) {
+func (m *mockBroadcast) drainCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.setCount, m.drainCount
+	return m.drainCount
 }
 
 // testHarness bundles mocks and channels for a runLoop test.
@@ -641,11 +681,10 @@ func TestRunLoop_SignalShutdown(t *testing.T) {
 		t.Fatalf("expected exit 0, got %d", result)
 	}
 
-	setCount, drainCount := h.bcast.counts()
+	drainCount := h.bcast.drainCalls()
 	if drainCount < 1 {
 		t.Fatalf("expected Drain to be called, got %d", drainCount)
 	}
-	_ = setCount
 
 	sigs := h.mgr.getForwardedSigs()
 	if len(sigs) == 0 {
@@ -970,5 +1009,349 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 	result := int(code.Load())
 	if result != 0 {
 		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+// --- Drain tests ---
+
+func TestRunLoop_DrainOnShutdown(t *testing.T) {
+	h := newTestHarness()
+	var sessionCalls atomic.Int32
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		// Return >0 for the first call, then 0.
+		if sessionCalls.Add(1) == 1 {
+			return 5, nil
+		}
+		return 0, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 5 * time.Second
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	// Wait for the drain to complete and varnishd to be signalled.
+	time.Sleep(100 * time.Millisecond)
+	close(h.mgr.done) // varnishd exits cleanly
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+
+	// Verify MarkBackendSick was called.
+	sickCalls := h.mgr.getMarkSickCalls()
+	if len(sickCalls) != 1 || sickCalls[0] != drainBackendName {
+		t.Fatalf("expected MarkBackendSick(\"drain_flag\"), got %v", sickCalls)
+	}
+
+	// Verify ActiveSessions was polled.
+	if sessionCalls.Load() < 2 {
+		t.Fatalf("expected at least 2 ActiveSessions calls, got %d", sessionCalls.Load())
+	}
+
+	// Verify broadcast drain was also called.
+	drainCount := h.bcast.drainCalls()
+	if drainCount != 1 {
+		t.Fatalf("expected broadcast Drain to be called once, got %d", drainCount)
+	}
+
+	// Verify SIGTERM was forwarded to varnishd.
+	sigs := h.mgr.getForwardedSigs()
+	if len(sigs) == 0 || sigs[0] != syscall.SIGTERM {
+		t.Fatalf("expected SIGTERM forwarded, got %v", sigs)
+	}
+}
+
+func TestRunLoop_DrainSkippedWhenDisabled(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	// drainBackend is "" — drain should be skipped.
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+
+	// MarkBackendSick should NOT have been called.
+	sickCalls := h.mgr.getMarkSickCalls()
+	if len(sickCalls) != 0 {
+		t.Fatalf("expected no MarkBackendSick calls, got %v", sickCalls)
+	}
+
+	// Broadcast Drain should still be called.
+	drainCount := h.bcast.drainCalls()
+	if drainCount < 1 {
+		t.Fatal("expected broadcast Drain to be called")
+	}
+}
+
+func TestRunLoop_DrainInterruptedBySecondSignal(t *testing.T) {
+	h := newTestHarness()
+	// ActiveSessions always returns >0 to keep polling.
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		return 10, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 10 * time.Second
+	// sigCh needs more buffer for two signals.
+	sigCh := make(chan os.Signal, 2)
+	lc.sigCh = sigCh
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// First signal starts shutdown+drain.
+	sigCh <- syscall.SIGTERM
+	// Let it enter the poll loop.
+	time.Sleep(50 * time.Millisecond)
+	// Second signal interrupts drain.
+	sigCh <- syscall.SIGINT
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_DrainMarkSickError(t *testing.T) {
+	h := newTestHarness()
+	h.mgr.markBackendFn = func(_ string) error {
+		return errors.New("backend not found")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 10 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(100 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	// Shutdown should complete despite the error.
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0 despite MarkBackendSick error, got %d", result)
+	}
+
+	// SIGTERM should still be forwarded.
+	sigs := h.mgr.getForwardedSigs()
+	if len(sigs) == 0 || sigs[0] != syscall.SIGTERM {
+		t.Fatalf("expected SIGTERM forwarded, got %v", sigs)
+	}
+}
+
+func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
+	h := newTestHarness()
+	// ActiveSessions always returns >0 so sessions never clear.
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		return 42, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	// Timeout must be >1s so the 1s poll ticker fires at least once
+	// before the deadline expires.
+	lc.drainTimeout = 1500 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(2 * time.Second)
+	close(h.mgr.done)
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0 after drain timeout, got %d", result)
+	}
+
+	// Verify polling was attempted before timeout expired.
+	if h.mgr.getSessionsCalls() == 0 {
+		t.Fatal("expected ActiveSessions to be polled before timeout")
+	}
+
+	// Verify SIGTERM was still forwarded after timeout.
+	sigs := h.mgr.getForwardedSigs()
+	if len(sigs) == 0 || sigs[0] != syscall.SIGTERM {
+		t.Fatalf("expected SIGTERM forwarded, got %v", sigs)
+	}
+}
+
+func TestRunLoop_DrainSecondSignalDuringPolling(t *testing.T) {
+	h := newTestHarness()
+	// ActiveSessions always returns >0 to keep polling.
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		return 10, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 10 * time.Second // long timeout so it doesn't fire
+	sigCh := make(chan os.Signal, 2)
+	lc.sigCh = sigCh
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	sigCh <- syscall.SIGTERM
+	// Wait past drainDelay + first 1s ticker tick so polling has happened.
+	time.Sleep(1200 * time.Millisecond)
+	// Second signal during polling should abort the drain loop.
+	sigCh <- syscall.SIGINT
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+
+	// Verify we actually polled before the second signal interrupted.
+	if h.mgr.getSessionsCalls() == 0 {
+		t.Fatal("expected ActiveSessions to be polled before second signal")
+	}
+}
+
+func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
+	h := newTestHarness()
+	var calls atomic.Int32
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		n := calls.Add(1)
+		if n <= 2 {
+			// First two polls fail.
+			return 0, errors.New("varnishstat unavailable")
+		}
+		// Third poll succeeds with 0 sessions.
+		return 0, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 5 * time.Second
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(200 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0 despite ActiveSessions errors, got %d", result)
+	}
+
+	// Verify polling continued past errors (at least 3 calls: 2 errors + 1 success).
+	if calls.Load() < 3 {
+		t.Fatalf("expected at least 3 ActiveSessions calls, got %d", calls.Load())
+	}
+}
+
+func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
+	h := newTestHarness()
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		t.Fatal("ActiveSessions should not be called when drainTimeout is 0")
+		return 0, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 0 // skip session polling
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(100 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+
+	// Verify MarkBackendSick was still called (Connection: close is set).
+	sickCalls := h.mgr.getMarkSickCalls()
+	if len(sickCalls) != 1 || sickCalls[0] != drainBackendName {
+		t.Fatalf("expected MarkBackendSick(\"drain_flag\"), got %v", sickCalls)
+	}
+
+	// Verify ActiveSessions was never polled.
+	if h.mgr.getSessionsCalls() != 0 {
+		t.Fatalf("expected 0 ActiveSessions calls, got %d", h.mgr.getSessionsCalls())
 	}
 }

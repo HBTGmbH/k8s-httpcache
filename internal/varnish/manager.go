@@ -4,6 +4,7 @@ package varnish
 import (
 	"bufio"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -35,7 +36,7 @@ type proc interface {
 type execRunner struct{}
 
 func (execRunner) Start(name string, args []string) (proc, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) //nolint:noctx // varnishd runs for the container's lifetime; cancelled via SIGTERM, not context.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -45,7 +46,7 @@ func (execRunner) Start(name string, args []string) (proc, error) {
 }
 
 func (execRunner) Run(name string, args []string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) //nolint:noctx // varnishadm commands are short-lived; timeout is handled by the admin socket.
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -59,35 +60,41 @@ func (p *execProc) Pid() int                   { return p.cmd.Process.Pid }
 
 // Manager manages the varnishd process and performs VCL reloads via varnishadm.
 type Manager struct {
-	varnishdPath   string
-	varnishadmPath string
-	adminAddr      string
-	listenAddrs    []string
-	extraArgs      []string
-	secretPath     string
-	secretFile     string
-	run            runner
-	proc           proc
-	dialFn         func(addr string, timeout time.Duration) (net.Conn, error)
-	done           chan struct{}
-	err            error
-	reloadCounter  atomic.Int64
+	varnishdPath    string
+	varnishadmPath  string
+	varnishstatPath string
+	adminAddr       string
+	listenAddrs     []string
+	extraArgs       []string
+	secretPath      string
+	secretFile      string
+	run             runner
+	proc            proc
+	dialFn          func(addr string, timeout time.Duration) (net.Conn, error)
+	done            chan struct{}
+	err             error
+	reloadCounter   atomic.Int64
 }
 
 // New creates a new varnish Manager. listenAddrs are passed as individual -a
 // flags to varnishd. extraArgs are appended to the varnishd command line.
 // If secretPath is non-empty, the secret is written to that fixed path; otherwise a temp file is used.
-func New(varnishdPath, varnishadmPath, adminAddr string, listenAddrs []string, secretPath string, extraArgs []string) *Manager {
+// varnishstatPath is the path to the varnishstat binary (defaults to "varnishstat" if empty).
+func New(varnishdPath, varnishadmPath, adminAddr string, listenAddrs []string, secretPath string, extraArgs []string, varnishstatPath string) *Manager {
+	if varnishstatPath == "" {
+		varnishstatPath = "varnishstat"
+	}
 	return &Manager{
-		varnishdPath:   varnishdPath,
-		varnishadmPath: varnishadmPath,
-		adminAddr:      adminAddr,
-		listenAddrs:    listenAddrs,
-		secretPath:     secretPath,
-		extraArgs:      extraArgs,
-		run:            execRunner{},
+		varnishdPath:    varnishdPath,
+		varnishadmPath:  varnishadmPath,
+		varnishstatPath: varnishstatPath,
+		adminAddr:       adminAddr,
+		listenAddrs:     listenAddrs,
+		secretPath:      secretPath,
+		extraArgs:       extraArgs,
+		run:             execRunner{},
 		dialFn: func(addr string, timeout time.Duration) (net.Conn, error) {
-			return net.DialTimeout("tcp", addr, timeout)
+			return net.DialTimeout("tcp", addr, timeout) //nolint:noctx // simple TCP poll for admin port readiness; no context needed.
 		},
 		done: make(chan struct{}),
 	}
@@ -187,6 +194,38 @@ func (m *Manager) Cleanup() {
 	if m.secretFile != "" {
 		_ = os.Remove(m.secretFile)
 	}
+}
+
+// MarkBackendSick sets the named backend to "sick" via varnishadm.
+func (m *Manager) MarkBackendSick(name string) error {
+	_, err := m.adm("backend.set_health", name, "sick")
+	return err
+}
+
+// ActiveSessions returns the total number of live client sessions by summing
+// MEMPOOL.sess<N>.live counters from varnishstat -1 -j output (Varnish 7+).
+func (m *Manager) ActiveSessions() (int64, error) {
+	out, err := m.run.Run(m.varnishstatPath, []string{"-1", "-j"})
+	if err != nil {
+		return 0, fmt.Errorf("varnishstat: %w", err)
+	}
+
+	var data struct {
+		Counters map[string]struct {
+			Value uint64 `json:"value"`
+		} `json:"counters"`
+	}
+	if err := json.Unmarshal([]byte(out), &data); err != nil {
+		return 0, fmt.Errorf("parsing varnishstat JSON: %w", err)
+	}
+
+	var total int64
+	for key, counter := range data.Counters {
+		if strings.HasPrefix(key, "MEMPOOL.sess") && strings.HasSuffix(key, ".live") {
+			total += int64(counter.Value)
+		}
+	}
+	return total, nil
 }
 
 func (m *Manager) generateSecret() (string, error) {

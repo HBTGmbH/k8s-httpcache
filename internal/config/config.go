@@ -190,6 +190,10 @@ type Config struct {
 	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
 	LogLevel                   slog.Level
 	LogFormat                  string // "text" or "json"
+	Drain                      bool
+	DrainDelay                 time.Duration
+	DrainTimeout               time.Duration
+	VarnishstatPath            string
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -278,6 +282,10 @@ func Parse() (*Config, error) {
 	flag.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "Log level (DEBUG, INFO, WARN, ERROR)")
 	flag.StringVar(&c.LogFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&c.MetricsAddr, "metrics-addr", ":9101", "Listen address for Prometheus metrics (set empty to disable)")
+	flag.BoolVar(&c.Drain, "drain", false, "Enable graceful connection draining on shutdown")
+	flag.DurationVar(&c.DrainDelay, "drain-delay", 15*time.Second, "Delay after marking backend sick before polling for active sessions")
+	flag.DurationVar(&c.DrainTimeout, "drain-timeout", 0, "Max time to wait for active sessions to reach 0 (0 to skip session polling)")
+	flag.StringVar(&c.VarnishstatPath, "varnishstat-path", "varnishstat", "Path to varnishstat binary")
 
 	flag.Parse()
 

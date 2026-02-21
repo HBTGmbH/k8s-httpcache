@@ -559,13 +559,16 @@ func TestDebugLoggingDisabled(t *testing.T) {
 
 func TestNew(t *testing.T) {
 	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm", "127.0.0.1:6082",
-		[]string{":8080", ":8443"}, "/tmp/secret", []string{"-p", "default_ttl=3600"})
+		[]string{":8080", ":8443"}, "/tmp/secret", []string{"-p", "default_ttl=3600"}, "/usr/bin/varnishstat")
 
 	if m.varnishdPath != "/usr/sbin/varnishd" {
 		t.Errorf("varnishdPath = %q, want /usr/sbin/varnishd", m.varnishdPath)
 	}
 	if m.varnishadmPath != "/usr/bin/varnishadm" {
 		t.Errorf("varnishadmPath = %q, want /usr/bin/varnishadm", m.varnishadmPath)
+	}
+	if m.varnishstatPath != "/usr/bin/varnishstat" {
+		t.Errorf("varnishstatPath = %q, want /usr/bin/varnishstat", m.varnishstatPath)
 	}
 	if m.adminAddr != "127.0.0.1:6082" {
 		t.Errorf("adminAddr = %q, want 127.0.0.1:6082", m.adminAddr)
@@ -581,6 +584,15 @@ func TestNew(t *testing.T) {
 	}
 	if m.done == nil {
 		t.Error("done channel should not be nil")
+	}
+}
+
+func TestNewDefaultVarnishstatPath(t *testing.T) {
+	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm", "127.0.0.1:6082",
+		[]string{":8080"}, "", nil, "")
+
+	if m.varnishstatPath != "varnishstat" {
+		t.Errorf("varnishstatPath = %q, want default 'varnishstat'", m.varnishstatPath)
 	}
 }
 
@@ -850,6 +862,195 @@ func TestDiscardOldVCLsEmptyOutput(t *testing.T) {
 
 	if discardCalls != 0 {
 		t.Fatalf("expected 0 discard calls, got %d", discardCalls)
+	}
+}
+
+func TestMarkBackendSick(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn:   func(string, []string) (string, error) { return "200", nil },
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	if err := m.MarkBackendSick("drain_flag"); err != nil {
+		t.Fatalf("MarkBackendSick() error: %v", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Verify the correct varnishadm command was called.
+	found := false
+	for _, c := range r.calls {
+		if len(c) >= 8 && c[5] == "backend.set_health" && c[6] == "drain_flag" && c[7] == "sick" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected varnishadm backend.set_health drain_flag sick call, got %v", r.calls)
+	}
+}
+
+func TestMarkBackendSickError(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "backend.set_health") {
+				return "", errors.New("backend not found")
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.secretFile = "/tmp/secret"
+
+	err := m.MarkBackendSick("nonexistent")
+	if err == nil {
+		t.Fatal("expected error from MarkBackendSick, got nil")
+	}
+}
+
+func TestActiveSessions(t *testing.T) {
+	varnishstatOutput := `{
+		"version": 1,
+		"counters": {
+			"MEMPOOL.sess0.live": {"value": 5},
+			"MEMPOOL.sess1.live": {"value": 3},
+			"MEMPOOL.sess0.pool": {"value": 100},
+			"MAIN.uptime": {"value": 12345}
+		}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if sessions != 8 {
+		t.Errorf("ActiveSessions() = %d, want 8", sessions)
+	}
+}
+
+func TestActiveSessionsZero(t *testing.T) {
+	varnishstatOutput := `{
+		"version": 1,
+		"counters": {
+			"MEMPOOL.sess0.live": {"value": 0},
+			"MEMPOOL.sess1.live": {"value": 0}
+		}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if sessions != 0 {
+		t.Errorf("ActiveSessions() = %d, want 0", sessions)
+	}
+}
+
+func TestActiveSessionsNoCounters(t *testing.T) {
+	varnishstatOutput := `{
+		"version": 1,
+		"counters": {
+			"MAIN.uptime": {"value": 12345}
+		}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if sessions != 0 {
+		t.Errorf("ActiveSessions() = %d, want 0", sessions)
+	}
+}
+
+func TestActiveSessionsError(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return "", errors.New("command failed")
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+
+	_, err := m.ActiveSessions()
+	if err == nil {
+		t.Fatal("expected error from ActiveSessions, got nil")
+	}
+	if !strings.Contains(err.Error(), "varnishstat") {
+		t.Errorf("error = %q, want substring 'varnishstat'", err.Error())
+	}
+}
+
+func TestActiveSessionsInvalidJSON(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return "not valid json", nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+
+	_, err := m.ActiveSessions()
+	if err == nil {
+		t.Fatal("expected error from ActiveSessions for invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing varnishstat JSON") {
+		t.Errorf("error = %q, want substring 'parsing varnishstat JSON'", err.Error())
 	}
 }
 

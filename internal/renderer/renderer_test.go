@@ -751,6 +751,184 @@ func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
 	}
 }
 
+func TestRender_DrainVCLInjection(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+sub vcl_recv {
+  set req.backend_hint = origin;
+}
+
+sub vcl_deliver {
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Backend declaration present.
+	if !strings.Contains(out, `backend drain_flag {`) {
+		t.Error("expected drain_flag backend declaration")
+	}
+	// Drain vcl_deliver present.
+	if !strings.Contains(out, `std.healthy(drain_flag)`) {
+		t.Error("expected std.healthy(drain_flag) in drain check")
+	}
+	if !strings.Contains(out, `resp.http.Connection = "close"`) {
+		t.Error("expected Connection: close in drain vcl_deliver")
+	}
+	// import std injected.
+	if !strings.Contains(out, "import std;") {
+		t.Error("expected import std to be injected")
+	}
+	// No readiness vcl_recv injected.
+	if strings.Contains(out, "synth(200)") || strings.Contains(out, "synth(503)") {
+		t.Error("expected no readiness health check to be injected")
+	}
+}
+
+func TestRender_DrainVCLImportStdDedup(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+import std;
+
+sub vcl_recv {
+  set req.backend_hint = origin;
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// "import std" should appear exactly once (user's copy stripped, ours injected).
+	count := strings.Count(out, "import std")
+	if count != 1 {
+		t.Errorf("expected import std exactly once, got %d occurrences", count)
+	}
+}
+
+func TestRender_NoDrainVCLWhenDisabled(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+sub vcl_recv {
+  set req.backend_hint = origin;
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// No SetDrainBackend call — drain is disabled.
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	if strings.Contains(out, "drain_flag") {
+		t.Error("expected no drain_flag when drain is disabled")
+	}
+	if strings.Contains(out, "std.healthy") {
+		t.Error("expected no std.healthy when drain is disabled")
+	}
+}
+
+func TestRender_DrainVCLCustomBackendName(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+sub vcl_recv {
+  set req.backend_hint = origin;
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("my_drain")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	if !strings.Contains(out, `backend my_drain {`) {
+		t.Error("expected custom backend name my_drain")
+	}
+	if !strings.Contains(out, `std.healthy(my_drain)`) {
+		t.Error("expected std.healthy(my_drain)")
+	}
+	// The default name should not appear.
+	if strings.Contains(out, "drain_flag") {
+		t.Error("unexpected drain_flag when custom name is used")
+	}
+}
+
+func TestRender_DrainVCLOrdering(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+backend origin {
+  # USER_BACKEND
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+sub vcl_deliver {
+  # USER_DELIVER
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Drain vcl_deliver (with Connection: close) should appear before USER_DELIVER.
+	drainPos := strings.Index(out, `resp.http.Connection = "close"`)
+	userDeliverPos := strings.Index(out, `# USER_DELIVER`)
+	if drainPos < 0 || userDeliverPos < 0 {
+		t.Fatal("could not find drain or user deliver markers")
+	}
+	if drainPos >= userDeliverPos {
+		t.Error("drain vcl_deliver should appear before user vcl_deliver")
+	}
+
+	// Drain backend should appear after user backend (so user's first
+	// backend remains the Varnish default).
+	userBackendPos := strings.Index(out, `# USER_BACKEND`)
+	drainBackendPos := strings.Index(out, `backend drain_flag {`)
+	if userBackendPos < 0 || drainBackendPos < 0 {
+		t.Fatal("could not find user backend or drain backend markers")
+	}
+	if drainBackendPos <= userBackendPos {
+		t.Error("drain backend should appear after user-defined backends")
+	}
+}
+
 func TestRender_NestedValues(t *testing.T) {
 	tmpl := `host=<< index .Values.server "host" >> port=<< index .Values.server "port" >>`
 	path := writeTempTemplate(t, tmpl)

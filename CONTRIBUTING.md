@@ -85,6 +85,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 
    ```bash
    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+   kubectl patch configmap -n ingress-nginx ingress-nginx-controller --type merge -p '{"data":{"upstream-keepalive-timeout":"5"}}'
    kubectl wait -n ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s
    kubectl apply -f .github/test/manifest.yaml
    kubectl rollout status deployment/k8s-httpcache --timeout=120s

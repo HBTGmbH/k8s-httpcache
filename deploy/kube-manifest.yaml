@@ -52,33 +52,6 @@ spec:
       - name: k8s-httpcache
         image: ${IMAGE_REPO_PREFIX}/k8s-httpcache:1.0.0
         imagePullPolicy: Always
-        lifecycle:
-          preStop:
-            exec:
-              command:
-              - sh
-              - -c
-              - |
-                varnishadm 2>/proc/1/fd/2 -T 127.0.0.1:6082 -S /var/lib/varnish/secrets/secret backend.set_health drain_flag sick
-                echo > /proc/1/fd/1 "preStop: Waiting 15s for new connections to stop coming in..."
-                sleep 15
-                if [ "30" -gt 0 ]; then
-                  deadline=$(( $(date +%s) + 30 ))
-                fi
-                echo > /proc/1/fd/1 "preStop: Waiting at most 30s for all connections to be drained..."
-                while :; do
-                  val=$(varnishstat 2>/proc/1/fd/2 -1 \
-                        | awk '/MEMPOOL\.sess[0-9]+\.live/ {a+=$2} END {print a+0}')
-                  if [ "$val" -eq 0 ]; then
-                    echo > /proc/1/fd/1 "preStop: All connections are gone. Telling Varnish to shut down now."
-                    break
-                  elif [ "30" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
-                    echo > /proc/1/fd/1 "preStop: Deadline reached while there are still connections. Telling Varnish to shut down now anyway."
-                    break
-                  fi
-                  echo > /proc/1/fd/1 "preStop: There are still $val client connections. Continue waiting..."
-                  sleep 1
-                done
         securityContext:
           allowPrivilegeEscalation: false
           privileged: false
@@ -97,6 +70,8 @@ spec:
         - --broadcast-addr=:8088
         - --backend=nginx:nginx
         - --backend=go-demo:go-demo
+        - --drain
+        - --drain-delay=15s
         - --
         - -s
         - default,1M
@@ -210,13 +185,6 @@ data:
       "::1";
     }
 
-    # Dummy backend to use as a drain flag. The preStop hook will set this backend to sick to trigger draining
-    # via varnishadm.
-    backend drain_flag {
-      .host = "127.0.0.1"; # <- any IP ist fine
-      .port = "9"; # <- any port ist fine
-    }
-
     sub vcl_init {
       <<- if .Frontends >>
       new cluster = directors.shard();
@@ -234,20 +202,7 @@ data:
       <<- end >>
     }
 
-    sub handle_readiness {
-      if (req.url == "/ready") {
-        # Return 200 if not draining, else 503.
-        if (std.healthy(drain_flag)) {
-          return (synth(200));
-        } else {
-          return (synth(503));
-        }
-      }
-    }
-
     sub vcl_recv {
-      call handle_readiness;
-
       if (req.method == "PURGE") {
         if (!client.ip ~ purge) {
           return (synth(405, "Not allowed"));
@@ -274,20 +229,6 @@ data:
       <<- end >>
     }
 
-    sub handle_draining {
-      # During draining, which is activated via varnishadm setting the backend health to sick,
-      # we respond with 'Connection: close' to inform clients not to reuse connections.
-      # This will eventually lead to all connections being closed and no new requests being accepted.
-      if (!std.healthy(drain_flag)) {
-        set resp.http.Connection = "close";
-      }
-    }
-
     sub vcl_purge {
       return (synth(200, "Purged"));
-    }
-
-    sub vcl_deliver {
-      # Check whether we are draining and adjust the Connection header in client responses accordingly.
-      call handle_draining;
     }

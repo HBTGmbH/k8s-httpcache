@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
@@ -24,6 +26,13 @@ type Renderer struct {
 	prev         *template.Template
 	templatePath string
 	funcMap      template.FuncMap
+	drainBackend string
+}
+
+// SetDrainBackend configures the renderer to auto-inject drain VCL using the
+// given backend name. An empty name disables injection.
+func (r *Renderer) SetDrainBackend(name string) {
+	r.drainBackend = name
 }
 
 // New parses the template file and returns a Renderer.
@@ -81,7 +90,11 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]wa
 	if err := r.tmpl.Execute(&buf, templateData{Frontends: frontends, Backends: backends, Values: values}); err != nil {
 		return "", fmt.Errorf("executing template: %w", err)
 	}
-	return buf.String(), nil
+	vcl := buf.String()
+	if r.drainBackend != "" {
+		vcl = injectDrainVCL(vcl, r.drainBackend)
+	}
+	return vcl, nil
 }
 
 // RenderToFile renders the template to a temporary file and returns its path.
@@ -108,4 +121,59 @@ func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[strin
 	}
 
 	return f.Name(), nil
+}
+
+// vclVersionRe matches a VCL version line like "vcl 4.1;" (with optional
+// leading whitespace and trailing newline).
+var vclVersionRe = regexp.MustCompile(`(?m)^[\t ]*vcl\s+[\d.]+\s*;\s*\n?`)
+
+// vclVersionEnd returns the byte offset just past the "vcl X.Y;" line.
+// If no version line is found it returns 0.
+func vclVersionEnd(vcl string) int {
+	loc := vclVersionRe.FindStringIndex(vcl)
+	if loc == nil {
+		return 0
+	}
+	return loc[1]
+}
+
+// importStdRe matches an "import std;" line (with optional leading whitespace
+// and trailing newline) so it can be stripped from user VCL before re-injection.
+var importStdRe = regexp.MustCompile(`(?m)^[\t ]*import\s+std\s*;\s*\n?`)
+
+// injectDrainVCL injects drain VCL around the user template output.
+//
+// The drain vcl_deliver is prepended (right after the version line) so it
+// always runs, even if a user-defined vcl_deliver returns early.
+// "import std;" is always prepended (and stripped from the user VCL to avoid
+// duplicates) because it must appear before the drain subroutine.
+//
+// The drain backend declaration is appended after all user content so it
+// never becomes Varnish's default backend (Varnish uses the first declared
+// backend as the implicit default).
+func injectDrainVCL(vcl, backendName string) string {
+	// Strip any existing "import std;" from user VCL — we re-inject it
+	// at the top so it appears before the drain subroutine.
+	vcl = importStdRe.ReplaceAllString(vcl, "")
+
+	pos := vclVersionEnd(vcl)
+
+	// Drain preamble: import std + drain subroutine.
+	var prepend strings.Builder
+	_, _ = fmt.Fprintf(&prepend, `
+import std;
+
+sub vcl_deliver {
+  if (!std.healthy(%s)) {
+    set resp.http.Connection = "close";
+  }
+}
+`, backendName)
+
+	// Drain-flag backend declaration — appended after all user backends
+	// so it does not become the default backend.
+	var appendVCL strings.Builder
+	_, _ = fmt.Fprintf(&appendVCL, "\nbackend %s {\n  .host = \"127.0.0.1\";\n  .port = \"9\";\n}\n", backendName)
+
+	return vcl[:pos] + prepend.String() + vcl[pos:] + appendVCL.String()
 }

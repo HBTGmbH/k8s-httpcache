@@ -30,6 +30,11 @@ import (
 // version is set at build time via -ldflags.
 var version = "dev"
 
+// drainBackendName is the VCL backend name used internally for graceful
+// connection draining. Users do not configure this — it is auto-injected
+// into the rendered VCL when --drain is enabled.
+const drainBackendName = "drain_flag"
+
 // vclRenderer abstracts VCL template operations (satisfied by *renderer.Renderer).
 type vclRenderer interface {
 	Reload() error
@@ -43,6 +48,8 @@ type varnishProcess interface {
 	Done() <-chan struct{}
 	Err() error
 	ForwardSignal(sig os.Signal)
+	MarkBackendSick(name string) error
+	ActiveSessions() (int64, error)
 }
 
 // broadcaster abstracts broadcast server operations (satisfied by *broadcast.Server).
@@ -67,6 +74,10 @@ type loopConfig struct {
 	debounce              time.Duration
 	shutdownTimeout       time.Duration
 	broadcastDrainTimeout time.Duration
+
+	drainBackend string
+	drainDelay   time.Duration
+	drainTimeout time.Duration
 
 	latestFrontends []watcher.Frontend
 	latestBackends  map[string][]watcher.Endpoint
@@ -114,6 +125,9 @@ func main() {
 	rend, err := renderer.New(cfg.VCLTemplate)
 	if err != nil {
 		log.Fatalf("renderer: %v", err)
+	}
+	if cfg.Drain {
+		rend.SetDrainBackend(drainBackendName)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -238,7 +252,7 @@ func main() {
 	for i, la := range cfg.ListenAddrs {
 		listenAddrs[i] = la.Raw
 	}
-	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, cfg.AdminAddr, listenAddrs, cfg.SecretPath, cfg.ExtraVarnishd)
+	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, cfg.AdminAddr, listenAddrs, cfg.SecretPath, cfg.ExtraVarnishd, cfg.VarnishstatPath)
 	defer mgr.Cleanup()
 
 	if err := mgr.Start(initialVCL); err != nil {
@@ -305,6 +319,10 @@ func main() {
 		debounce:              cfg.Debounce,
 		shutdownTimeout:       cfg.ShutdownTimeout,
 		broadcastDrainTimeout: cfg.BroadcastDrainTimeout,
+
+		drainBackend: drainBackendForLoop(cfg.Drain),
+		drainDelay:   cfg.DrainDelay,
+		drainTimeout: cfg.DrainTimeout,
 
 		latestFrontends: latestFrontends,
 		latestBackends:  latestBackends,
@@ -438,9 +456,64 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		case sig := <-lc.sigCh:
 			slog.Info("received signal, shutting down", "signal", sig)
+
+			if lc.drainBackend != "" {
+				// Mark the VCL backend sick so Varnish starts responding
+				// with Connection: close, causing clients to disconnect.
+				if err := lc.mgr.MarkBackendSick(lc.drainBackend); err != nil {
+					slog.Error("failed to mark backend sick", "backend", lc.drainBackend, "error", err)
+				} else {
+					slog.Info("marked backend sick", "backend", lc.drainBackend)
+				}
+
+				// Sleep drainDelay to let Kubernetes remove this pod from
+				// endpoints, interruptible by a second signal.
+				slog.Info("waiting for endpoint removal", "delay", lc.drainDelay)
+				interrupted := false
+				select {
+				case <-time.After(lc.drainDelay):
+				case <-lc.sigCh:
+					slog.Info("second signal received, skipping drain wait")
+					interrupted = true
+				}
+
+				// Poll ActiveSessions every 1s until 0 or drainTimeout,
+				// unless interrupted by a second signal. When drainTimeout
+				// is 0, skip polling entirely (useful when clients hold
+				// long-lived connections that may never close).
+				if !interrupted && lc.drainTimeout > 0 {
+					deadline := time.After(lc.drainTimeout)
+					ticker := time.NewTicker(1 * time.Second)
+				drainLoop:
+					for {
+						select {
+						case <-ticker.C:
+							sessions, err := lc.mgr.ActiveSessions()
+							if err != nil {
+								slog.Warn("failed to read active sessions", "error", err)
+								continue
+							}
+							slog.Info("active sessions", "count", sessions)
+							if sessions == 0 {
+								slog.Info("all connections drained")
+								break drainLoop
+							}
+						case <-deadline:
+							slog.Warn("drain timeout reached, proceeding with shutdown")
+							break drainLoop
+						case <-lc.sigCh:
+							slog.Info("second signal received, aborting drain")
+							break drainLoop
+						}
+					}
+					ticker.Stop()
+				}
+			}
+
 			if lc.bcast != nil {
 				_ = lc.bcast.Drain(lc.broadcastDrainTimeout)
 			}
+
 			cancel()
 			lc.mgr.ForwardSignal(sig)
 
@@ -507,6 +580,15 @@ func valuesChan(ch chan valuesChange) <-chan valuesChange {
 		return nil
 	}
 	return ch
+}
+
+// drainBackendForLoop returns the internal drain backend name when drain is
+// enabled, or "" to disable draining in the event loop.
+func drainBackendForLoop(drain bool) string {
+	if drain {
+		return drainBackendName
+	}
+	return ""
 }
 
 // timerChan returns the timer's channel, or nil if the timer is nil.
