@@ -10,14 +10,13 @@ pf_pids=""
 cleanup() { kill "$pf_pids" 2>/dev/null || true; }
 trap cleanup EXIT
 
-if ! curl -sf http://localhost:9101/metrics > /dev/null 2>&1; then
+# Both ports are forwarded from the same pod so that broadcast requests
+# and metric scrapes are always consistent (the broadcast_fanout_targets
+# gauge is only set on the pod that handles the broadcast request).
+if ! curl -sf http://localhost:9101/metrics > /dev/null 2>&1 \
+  || ! curl -sf http://localhost:8088/backend/ > /dev/null 2>&1; then
   pod=$(kubectl get pods -l app=k8s-httpcache -o jsonpath='{.items[0].metadata.name}')
-  kubectl port-forward "$pod" 9101:9101 &
-  pf_pids="$pf_pids $!"
-fi
-
-if ! curl -sf http://localhost:8088/backend/ > /dev/null 2>&1; then
-  kubectl port-forward svc/k8s-httpcache 8088:8088 &
+  kubectl port-forward "$pod" 9101:9101 8088:8088 &
   pf_pids="$pf_pids $!"
 fi
 
