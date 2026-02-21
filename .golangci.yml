@@ -15,24 +15,30 @@ linters:
     - dogsled
     - dupword
     - durationcheck
+    - errcheck
     - errchkjson
     - errorlint
     - errname
+    - exhaustive
     - exptostd
     - fatcontext
     - forcetypeassert
     - gocheckcompilerdirectives
+    - goconst
     - gocritic
     - godoclint
     - goprintffuncname
+    - gosec
     - intrange
     - iotamixing
     - loggercheck
+    - makezero
     - mirror
     - misspell
     - modernize
     - nakedret
     - nilerr
+    - noctx
     - nilnesserr
     - nilnil
     - nolintlint
@@ -52,6 +58,18 @@ linters:
     - wastedassign
     - whitespace
   settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    gosec:
+      excludes:
+        - G104 # redundant with errcheck
+        - G115 # controlled int conversions
+        - G204 # subprocess launch is core functionality
+        - G302 # file permissions in test cleanup
+        - G304 # file reading by variable path is core functionality
+        - G306 # WriteFile permissions in tests
+        - G703 # temp file cleanup paths
+        - G706 # normal error logging
     nolintlint:
       require-explanation: true
       require-specific: true
@@ -61,3 +79,7 @@ linters:
         linters:
           - revive
         text: context-as-argument
+      - path: _test\.go
+        linters:
+          - goconst
+          - noctx
