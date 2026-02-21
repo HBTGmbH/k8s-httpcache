@@ -70,11 +70,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    CGO_ENABLED=0 GOOS=linux go build -trimpath -o k8s-httpcache .
    mkdir -p .docker-context
    cp k8s-httpcache .docker-context/
-   docker build -t k8s-httpcache:test .docker-context -f- <<'EOF'
-   FROM varnish:8.0.0-alpine
-   COPY k8s-httpcache /usr/local/bin/k8s-httpcache
-   ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
-   EOF
+   docker build -f .github/test/Dockerfile -t k8s-httpcache:test .docker-context
    kind load docker-image k8s-httpcache:test --name test
    ```
 
@@ -103,7 +99,8 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 5. Quick rebuild cycle (no cluster recreation needed):
 
    ```bash
-   CGO_ENABLED=0 GOOS=linux go build -trimpath -o k8s-httpcache . \
+   mkdir -p .docker-context \
+     && CGO_ENABLED=0 GOOS=linux go build -trimpath -o k8s-httpcache . \
      && cp k8s-httpcache .docker-context/ \
      && docker build -t k8s-httpcache:test .docker-context -f .github/test/Dockerfile \
      && kind load docker-image k8s-httpcache:test --name test \

@@ -194,7 +194,7 @@ jobs:
       run: |
         mkdir .docker-context
         cp k8s-httpcache-linux-amd64 .docker-context/
-        docker build -f .github/test/Dockerfile -t k8s-httpcache:test .docker-context
+        docker build -f .github/test/Dockerfile --build-arg BINARY=k8s-httpcache-linux-amd64 -t k8s-httpcache:test .docker-context
     - name: Create kind cluster
       uses: helm/kind-action@v1.14.0
       with:
