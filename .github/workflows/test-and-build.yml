@@ -118,6 +118,8 @@ jobs:
           go install golang.org/x/tools/cmd/deadcode@v0.42.0
         fi
         deadcode -test ./...
+    - name: ShellCheck
+      run: shellcheck .github/test/*.sh
 
 
   go-build:

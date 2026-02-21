@@ -7,7 +7,7 @@ set -eu
 # --- Port-forward setup (skipped if ports are already reachable) -----------
 
 pf_pids=""
-cleanup() { kill $pf_pids 2>/dev/null || true; }
+cleanup() { kill "$pf_pids" 2>/dev/null || true; }
 trap cleanup EXIT
 
 if ! curl -sf http://localhost:9101/metrics > /dev/null 2>&1; then
@@ -21,12 +21,12 @@ if ! curl -sf http://localhost:8088/backend/ > /dev/null 2>&1; then
   pf_pids="$pf_pids $!"
 fi
 
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   curl -sf http://localhost:9101/metrics > /dev/null 2>&1 && break
   sleep 1
 done
 
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   curl -sf http://localhost:8088/backend/ > /dev/null 2>&1 && break
   sleep 1
 done
