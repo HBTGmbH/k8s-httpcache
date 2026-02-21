@@ -120,6 +120,8 @@ jobs:
         deadcode -test ./...
     - name: ShellCheck
       run: shellcheck .github/test/*.sh
+    - name: YAML lint
+      run: yamllint .
 
 
   go-build:

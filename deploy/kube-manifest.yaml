@@ -82,8 +82,8 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           privileged: false
-          runAsUser: 1000 # <-- varnish user uses uid=1000 also in the container image
-          runAsGroup: 1000 # <-- varnish user uses gid=1000 also in the container image
+          runAsUser: 1000  # <-- varnish user uses uid=1000 also in the container image
+          runAsGroup: 1000  # <-- varnish user uses gid=1000 also in the container image
           runAsNonRoot: true
           readOnlyRootFilesystem: true
           capabilities:
