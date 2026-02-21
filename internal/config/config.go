@@ -21,6 +21,19 @@ type BackendSpec struct {
 	Namespace   string // Kubernetes namespace (resolved from [namespace/]service or --namespace)
 }
 
+// ValuesSpec describes one ConfigMap to watch and expose as template values.
+type ValuesSpec struct {
+	Name          string // template key, accessible as .Values.<Name>.<key>
+	ConfigMapName string // Kubernetes ConfigMap name
+	Namespace     string // Kubernetes namespace (resolved from [namespace/]configmap or --namespace)
+}
+
+// ValuesDirSpec describes a filesystem directory to poll for YAML values.
+type ValuesDirSpec struct {
+	Name string // template key, accessible as .Values.<Name>.<key>
+	Path string // filesystem directory path
+}
+
 // ListenAddrSpec describes a Varnish listen address parsed from the
 // varnishd -a flag format: [name=][bind-ip]:port[,proto[,proto...]].
 type ListenAddrSpec struct {
@@ -62,6 +75,52 @@ func (l *listenAddrFlags) Set(val string) error {
 	spec.Port = int32(p)
 
 	*l = append(*l, spec)
+	return nil
+}
+
+// valuesFlags implements flag.Value for repeatable --values flags.
+type valuesFlags []ValuesSpec
+
+func (v *valuesFlags) String() string { return fmt.Sprintf("%v", *v) }
+
+func (v *valuesFlags) Set(val string) error {
+	name, ref, ok := strings.Cut(val, ":")
+	if !ok {
+		return fmt.Errorf("invalid --values %q: expected name:[namespace/]configmap", val)
+	}
+	if name == "" {
+		return fmt.Errorf("empty name in --values %q", val)
+	}
+	if ref == "" {
+		return fmt.Errorf("empty configmap in --values %q", val)
+	}
+	*v = append(*v, ValuesSpec{
+		Name:          name,
+		ConfigMapName: ref, // namespace resolution happens in Parse()
+	})
+	return nil
+}
+
+// valuesDirFlags implements flag.Value for repeatable --values-dir flags.
+type valuesDirFlags []ValuesDirSpec
+
+func (v *valuesDirFlags) String() string { return fmt.Sprintf("%v", *v) }
+
+func (v *valuesDirFlags) Set(val string) error {
+	name, path, ok := strings.Cut(val, ":")
+	if !ok {
+		return fmt.Errorf("invalid --values-dir %q: expected name:/path/to/dir", val)
+	}
+	if name == "" {
+		return fmt.Errorf("empty name in --values-dir %q", val)
+	}
+	if path == "" {
+		return fmt.Errorf("empty path in --values-dir %q", val)
+	}
+	*v = append(*v, ValuesDirSpec{
+		Name: name,
+		Path: path,
+	})
 	return nil
 }
 
@@ -124,6 +183,9 @@ type Config struct {
 	Debounce                   time.Duration
 	ShutdownTimeout            time.Duration
 	Backends                   []BackendSpec
+	Values                     []ValuesSpec
+	ValuesDirs                 []ValuesDirSpec
+	ValuesDirPollInterval      time.Duration
 	MetricsAddr                string
 	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
 	LogLevel                   slog.Level
@@ -187,6 +249,8 @@ func Parse() (*Config, error) {
 	var (
 		backends    backendFlags
 		listenAddrs listenAddrFlags
+		values      valuesFlags
+		valuesDirs  valuesDirFlags
 	)
 
 	flag.StringVar(&c.ServiceName, "service-name", "", "Kubernetes Service to watch: [namespace/]service (required)")
@@ -208,6 +272,9 @@ func Parse() (*Config, error) {
 	flag.DurationVar(&c.BroadcastClientIdleTimeout, "broadcast-client-idle-timeout", 4*time.Second, "Max time an idle connection to a Varnish pod is kept in the broadcast client pool. This should ideally be lower than the Varnish timeout_idle parameter.")
 	flag.DurationVar(&c.BroadcastClientTimeout, "broadcast-client-timeout", 3*time.Second, "Timeout for each fan-out request to a Varnish pod")
 	flag.Var(&backends, "backend", "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)")
+	flag.Var(&values, "values", "ConfigMap to watch for template values: name:[namespace/]configmap (repeatable)")
+	flag.Var(&valuesDirs, "values-dir", "Directory to poll for YAML template values: name:/path/to/dir (repeatable)")
+	flag.DurationVar(&c.ValuesDirPollInterval, "values-dir-poll-interval", 5*time.Second, "Poll interval for --values-dir directories")
 	flag.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "Log level (DEBUG, INFO, WARN, ERROR)")
 	flag.StringVar(&c.LogFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&c.MetricsAddr, "metrics-addr", ":9101", "Listen address for Prometheus metrics (set empty to disable)")
@@ -296,6 +363,40 @@ func Parse() (*Config, error) {
 		backends[i].ServiceName = svc
 	}
 	c.Backends = []BackendSpec(backends)
+
+	// Validate values name uniqueness and resolve namespaces.
+	seenValues := make(map[string]bool, len(values)+len(valuesDirs))
+	for i, v := range values {
+		if seenValues[v.Name] {
+			return nil, fmt.Errorf("duplicate --values name %q", v.Name)
+		}
+		seenValues[v.Name] = true
+
+		ns, cm, err := parseNamespacedService(v.ConfigMapName, c.Namespace)
+		if err != nil {
+			return nil, fmt.Errorf("--values %q: %w", v.Name, err)
+		}
+		values[i].Namespace = ns
+		values[i].ConfigMapName = cm
+	}
+	c.Values = []ValuesSpec(values)
+
+	// Validate --values-dir name uniqueness (also against --values) and directory existence.
+	for _, vd := range valuesDirs {
+		if seenValues[vd.Name] {
+			return nil, fmt.Errorf("duplicate values name %q (across --values and --values-dir)", vd.Name)
+		}
+		seenValues[vd.Name] = true
+
+		info, err := os.Stat(vd.Path)
+		if err != nil {
+			return nil, fmt.Errorf("--values-dir %q: %w", vd.Name, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("--values-dir %q: path %q is not a directory", vd.Name, vd.Path)
+		}
+	}
+	c.ValuesDirs = []ValuesDirSpec(valuesDirs)
 
 	c.ExtraVarnishd = flag.Args()
 

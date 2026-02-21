@@ -3,10 +3,16 @@ GET http://localhost:8080/ready
 HTTP 200
 
 # Backend request via /backend/ should return 200 with body "ok".
+# Also verify that values from both --values (ConfigMap) and --values-dir (mounted directory)
+# are available in the VCL template.
 GET http://localhost:8080/backend/
 HTTP 200
 [Asserts]
 body == "ok\n"
+header "X-Values-Test" == "hello-from-values"
+header "X-Values-Nested" == "example.com"
+header "X-ValuesDir-Test" == "hello-from-dir"
+header "X-ValuesDir-Nested" == "dir.example.com"
 
 # Backend with explicit numeric port.
 GET http://localhost:8080/backend-port/

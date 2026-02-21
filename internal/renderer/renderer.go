@@ -15,6 +15,7 @@ import (
 type templateData struct {
 	Frontends []watcher.Frontend
 	Backends  map[string][]watcher.Endpoint
+	Values    map[string]map[string]any
 }
 
 // Renderer renders VCL from a Go template and a list of frontends.
@@ -71,18 +72,21 @@ func (r *Renderer) Rollback() {
 	}
 }
 
-// Render executes the template with the given frontends and backends and returns the VCL string.
-func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint) (string, error) {
+// Render executes the template with the given frontends, backends, and values and returns the VCL string.
+func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values map[string]map[string]any) (string, error) {
+	if values == nil {
+		values = make(map[string]map[string]any)
+	}
 	var buf bytes.Buffer
-	if err := r.tmpl.Execute(&buf, templateData{Frontends: frontends, Backends: backends}); err != nil {
+	if err := r.tmpl.Execute(&buf, templateData{Frontends: frontends, Backends: backends, Values: values}); err != nil {
 		return "", fmt.Errorf("executing template: %w", err)
 	}
 	return buf.String(), nil
 }
 
 // RenderToFile renders the template to a temporary file and returns its path.
-func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint) (string, error) {
-	vcl, err := r.Render(frontends, backends)
+func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values map[string]map[string]any) (string, error) {
+	vcl, err := r.Render(frontends, backends, values)
 	if err != nil {
 		return "", err
 	}

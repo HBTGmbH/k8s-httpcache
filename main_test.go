@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -153,7 +154,7 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 type mockRenderer struct {
 	mu             sync.Mutex
 	reloadFn       func() error
-	renderToFileFn func([]watcher.Frontend, map[string][]watcher.Endpoint) (string, error)
+	renderToFileFn func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any) (string, error)
 	rollbackFn     func()
 	reloadCount    int
 	renderCount    int
@@ -171,13 +172,13 @@ func (m *mockRenderer) Reload() error {
 	return nil
 }
 
-func (m *mockRenderer) RenderToFile(fe []watcher.Frontend, be map[string][]watcher.Endpoint) (string, error) {
+func (m *mockRenderer) RenderToFile(fe []watcher.Frontend, be map[string][]watcher.Endpoint, vals map[string]map[string]any) (string, error) {
 	m.mu.Lock()
 	m.renderCount++
 	fn := m.renderToFileFn
 	m.mu.Unlock()
 	if fn != nil {
-		return fn(fe, be)
+		return fn(fe, be, vals)
 	}
 	return "test.vcl", nil
 }
@@ -281,6 +282,7 @@ type testHarness struct {
 
 	frontendCh chan []watcher.Frontend
 	backendCh  chan backendChange
+	valuesCh   chan valuesChange
 	templateCh chan struct{}
 	sigCh      chan os.Signal
 }
@@ -292,6 +294,7 @@ func newTestHarness() *testHarness {
 		bcast:      &mockBroadcast{},
 		frontendCh: make(chan []watcher.Frontend, 1),
 		backendCh:  make(chan backendChange, 1),
+		valuesCh:   make(chan valuesChange, 1),
 		templateCh: make(chan struct{}, 1),
 		sigCh:      make(chan os.Signal, 1),
 	}
@@ -305,6 +308,7 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 
 		frontendCh: h.frontendCh,
 		backendCh:  h.backendCh,
+		valuesCh:   h.valuesCh,
 		templateCh: h.templateCh,
 		sigCh:      h.sigCh,
 
@@ -315,6 +319,7 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 
 		latestFrontends: nil,
 		latestBackends:  make(map[string][]watcher.Endpoint),
+		latestValues:    make(map[string]map[string]any),
 	}
 }
 
@@ -368,7 +373,7 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 	h := newTestHarness()
 	var mu sync.Mutex
 	var gotFrontends []watcher.Frontend
-	h.rend.renderToFileFn = func(fe []watcher.Frontend, _ map[string][]watcher.Endpoint) (string, error) {
+	h.rend.renderToFileFn = func(fe []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		mu.Lock()
 		gotFrontends = fe
 		mu.Unlock()
@@ -420,6 +425,55 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 	}
 }
 
+func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
+	h := newTestHarness()
+	wait := h.runAndWait(h.bcast)
+
+	h.valuesCh <- valuesChange{
+		name: "tuning",
+		data: map[string]any{"ttl": "300"},
+	}
+	time.Sleep(20 * time.Millisecond) // debounce
+
+	_, renderCount, _ := h.rend.counts()
+	if renderCount < 1 {
+		t.Fatal("expected RenderToFile after values update")
+	}
+	if h.mgr.getReloadCount() < 1 {
+		t.Fatal("expected mgr.Reload after values update")
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestValuesChanNil(t *testing.T) {
+	ch := valuesChan(nil)
+	if ch != nil {
+		t.Fatal("expected nil channel for nil input")
+	}
+}
+
+func TestValuesChanNonNil(t *testing.T) {
+	input := make(chan valuesChange, 1)
+	ch := valuesChan(input)
+	if ch == nil {
+		t.Fatal("expected non-nil channel")
+	}
+
+	input <- valuesChange{name: "test"}
+	select {
+	case vc := <-ch:
+		if vc.name != "test" {
+			t.Fatalf("got name %q, want test", vc.name)
+		}
+	default:
+		t.Fatal("expected to receive from channel")
+	}
+}
+
 func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 	h := newTestHarness()
 	wait := h.runAndWait(h.bcast)
@@ -466,7 +520,7 @@ func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 	h := newTestHarness()
 	var renderCalls atomic.Int32
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint) (string, error) {
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		if renderCalls.Add(1) == 1 {
 			return "", errors.New("render error")
 		}
@@ -522,7 +576,7 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 
 func TestRunLoop_RollbackRenderError(t *testing.T) {
 	h := newTestHarness()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint) (string, error) {
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render always fails")
 	}
 	wait := h.runAndWait(h.bcast)
@@ -625,7 +679,7 @@ func TestRunLoop_VarnishdUnexpectedExit(t *testing.T) {
 
 func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 	h := newTestHarness()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint) (string, error) {
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
 	}
 	wait := h.runAndWait(h.bcast)
@@ -676,7 +730,7 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	h := newTestHarness()
 	var renderCalls atomic.Int32
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint) (string, error) {
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		if renderCalls.Add(1) == 2 {
 			return "", errors.New("render error after rollback")
 		}
@@ -799,6 +853,97 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	close(h.mgr.done)
 	<-done
+}
+
+func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start a real FileValuesWatcher with a fast poll interval.
+	fvw := watcher.NewFileValuesWatcher(dir, 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = fvw.Run(ctx) }()
+
+	// Consume initial state from the watcher.
+	select {
+	case <-fvw.Changes():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for initial FileValuesWatcher state")
+	}
+
+	// Wire the watcher into a valuesCh, same as main.go does.
+	valuesCh := make(chan valuesChange, 1)
+	go func() {
+		for data := range fvw.Changes() {
+			valuesCh <- valuesChange{name: "tuning", data: data}
+		}
+	}()
+
+	// Track the values passed to RenderToFile.
+	var (
+		renderMu     sync.Mutex
+		renderedVals []map[string]map[string]any
+	)
+
+	h := newTestHarness()
+	h.valuesCh = valuesCh
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, vals map[string]map[string]any) (string, error) {
+		// Deep-copy the values map to capture the state at render time.
+		copied := make(map[string]map[string]any, len(vals))
+		for k, v := range vals {
+			inner := make(map[string]any, len(v))
+			maps.Copy(inner, v)
+			copied[k] = inner
+		}
+		renderMu.Lock()
+		renderedVals = append(renderedVals, copied)
+		renderMu.Unlock()
+		return "test.vcl", nil
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Modify the YAML file on disk.
+	if err := os.WriteFile(dir+"/ttl.yaml", []byte("600"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the watcher to detect the change, debounce to fire, and render to complete.
+	deadline := time.After(5 * time.Second)
+	for {
+		renderMu.Lock()
+		n := len(renderedVals)
+		renderMu.Unlock()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for RenderToFile after file change")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Verify the render received the updated value.
+	renderMu.Lock()
+	last := renderedVals[len(renderedVals)-1]
+	renderMu.Unlock()
+
+	tuning, ok := last["tuning"]
+	if !ok {
+		t.Fatal("expected 'tuning' key in rendered values")
+	}
+	// sigs.k8s.io/yaml parses "600" as float64(600).
+	if ttl, ok := tuning["ttl"].(float64); !ok || ttl != 600 {
+		t.Errorf("expected ttl=600 (float64), got %v (%T)", tuning["ttl"], tuning["ttl"])
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
 }
 
 func TestRunLoop_BroadcastDisabled(t *testing.T) {

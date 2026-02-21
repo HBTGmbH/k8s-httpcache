@@ -43,7 +43,7 @@ func TestNew_CustomDelimiters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out, err := r.Render(nil, nil)
+	out, err := r.Render(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestRender_EmptyFrontends(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, err := r.Render(nil, nil)
+	out, err := r.Render(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRender_WithFrontends(t *testing.T) {
 		{IP: "10.0.0.2", Port: 8080, Name: "pod-b"},
 	}
 
-	out, err := r.Render(frontends, nil)
+	out, err := r.Render(frontends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestRender_SprigFunctions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			out, err := r.Render(frontends, nil)
+			out, err := r.Render(frontends, nil, nil)
 			if err != nil {
 				t.Fatalf("render error: %v", err)
 			}
@@ -252,7 +252,7 @@ func TestReload(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, _ := r.Render(nil, nil)
+	out, _ := r.Render(nil, nil, nil)
 	if out != "BEFORE" {
 		t.Fatalf("expected BEFORE, got: %s", out)
 	}
@@ -266,7 +266,7 @@ func TestReload(t *testing.T) {
 		t.Fatalf("reload error: %v", err)
 	}
 
-	out, _ = r.Render(nil, nil)
+	out, _ = r.Render(nil, nil, nil)
 	if out != "AFTER" {
 		t.Errorf("expected AFTER after reload, got: %s", out)
 	}
@@ -287,7 +287,7 @@ func TestRollback(t *testing.T) {
 		t.Fatalf("reload error: %v", err)
 	}
 
-	out, _ := r.Render(nil, nil)
+	out, _ := r.Render(nil, nil, nil)
 	if out != "NEW" {
 		t.Fatalf("expected NEW after reload, got: %s", out)
 	}
@@ -295,7 +295,7 @@ func TestRollback(t *testing.T) {
 	// Rollback should restore the old template.
 	r.Rollback()
 
-	out, _ = r.Render(nil, nil)
+	out, _ = r.Render(nil, nil, nil)
 	if out != "OLD" {
 		t.Errorf("expected OLD after rollback, got: %s", out)
 	}
@@ -318,7 +318,7 @@ func TestReload_InvalidTemplate(t *testing.T) {
 	}
 
 	// Old template should still work.
-	out, err := r.Render(nil, nil)
+	out, err := r.Render(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render should still work with old template: %v", err)
 	}
@@ -413,7 +413,7 @@ sub vcl_backend_response {
 	}
 
 	t.Run("empty", func(t *testing.T) {
-		out, err := r.Render(nil, nil)
+		out, err := r.Render(nil, nil, nil)
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
@@ -433,7 +433,7 @@ sub vcl_backend_response {
 			{IP: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
 			{IP: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
 		}
-		out, err := r.Render(frontends, nil)
+		out, err := r.Render(frontends, nil, nil)
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
@@ -479,7 +479,7 @@ sub vcl_backend_response {
 				{IP: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
 			},
 		}
-		out, err := r.Render(nil, backends)
+		out, err := r.Render(nil, backends, nil)
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
@@ -528,7 +528,7 @@ func TestRenderToFile(t *testing.T) {
 		{IP: "10.0.0.5", Port: 80, Name: "x"},
 	}
 
-	outPath, err := r.RenderToFile(frontends, nil)
+	outPath, err := r.RenderToFile(frontends, nil, nil)
 	if err != nil {
 		t.Fatalf("RenderToFile error: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestRender_WithBackends(t *testing.T) {
 		},
 	}
 
-	out, err := r.Render(nil, backends)
+	out, err := r.Render(nil, backends, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 		{IP: "10.0.0.1", Port: 80, Name: "a"},
 	}
 
-	_, err = r.RenderToFile(frontends, nil)
+	_, err = r.RenderToFile(frontends, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from RenderToFile with broken template execution")
 	}
@@ -621,7 +621,7 @@ func TestReload_FileRemoved(t *testing.T) {
 	}
 
 	// Old template should still work.
-	out, err := r.Render(nil, nil)
+	out, err := r.Render(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render should still work: %v", err)
 	}
@@ -640,7 +640,7 @@ func TestRollback_NoOp(t *testing.T) {
 	// Rollback without prior Reload should be a no-op.
 	r.Rollback()
 
-	out, err := r.Render(nil, nil)
+	out, err := r.Render(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -667,7 +667,7 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 		},
 	}
 
-	out, err := r.Render(frontends, backends)
+	out, err := r.Render(frontends, backends, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -677,5 +677,103 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	}
 	if !strings.Contains(out, "10.1.0.1/api") {
 		t.Errorf("expected backend 10.1.0.1/api, got: %s", out)
+	}
+}
+
+func TestRender_WithValues(t *testing.T) {
+	tmpl := `greeting=<< index .Values.tuning "greeting" >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	values := map[string]map[string]any{
+		"tuning": {"greeting": "hello-world"},
+	}
+
+	out, err := r.Render(nil, nil, values)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "greeting=hello-world") {
+		t.Errorf("expected greeting=hello-world, got: %s", out)
+	}
+}
+
+func TestRender_EmptyValues(t *testing.T) {
+	tmpl := `<< if .Values >>HAS_VALUES<< else >>NO_VALUES<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// nil values should be normalised to empty map — template should still work.
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	// Empty map is falsy in Go templates.
+	if !strings.Contains(out, "NO_VALUES") {
+		t.Errorf("expected NO_VALUES for nil values, got: %s", out)
+	}
+}
+
+func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
+	tmpl := `ttl=<< index .Values.config "ttl" >> frontends=<< len .Frontends >> backends=<< len .Backends >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	frontends := []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	backends := map[string][]watcher.Endpoint{
+		"api": {{IP: "10.1.0.1", Port: 3000, Name: "api-0"}},
+	}
+	values := map[string]map[string]any{
+		"config": {"ttl": "120"},
+	}
+
+	out, err := r.Render(frontends, backends, values)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "ttl=120") {
+		t.Errorf("expected ttl=120, got: %s", out)
+	}
+	if !strings.Contains(out, "frontends=1") {
+		t.Errorf("expected frontends=1, got: %s", out)
+	}
+	if !strings.Contains(out, "backends=1") {
+		t.Errorf("expected backends=1, got: %s", out)
+	}
+}
+
+func TestRender_NestedValues(t *testing.T) {
+	tmpl := `host=<< index .Values.server "host" >> port=<< index .Values.server "port" >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	values := map[string]map[string]any{
+		"server": {
+			"host": "example.com",
+			"port": float64(8080),
+		},
+	}
+
+	out, err := r.Render(nil, nil, values)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "host=example.com") {
+		t.Errorf("expected host=example.com, got: %s", out)
+	}
+	if !strings.Contains(out, "port=8080") {
+		t.Errorf("expected port=8080, got: %s", out)
 	}
 }

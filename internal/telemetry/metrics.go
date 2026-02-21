@@ -78,6 +78,13 @@ var (
 		Help:      "Number of frontend pods targeted by the last broadcast fan-out.",
 	})
 
+	// ValuesUpdatesTotal counts ConfigMap value updates received by the event loop.
+	ValuesUpdatesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "values_updates_total",
+		Help:      "Total number of ConfigMap value updates received.",
+	}, []string{"configmap"})
+
 	// BuildInfo is a gauge that always has value 1 and carries build metadata as labels.
 	BuildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -96,6 +103,7 @@ func init() {
 		EndpointUpdatesTotal,
 		Endpoints,
 		VarnishdUp,
+		ValuesUpdatesTotal,
 		BroadcastRequestsTotal,
 		BroadcastFanoutTargets,
 		BuildInfo,

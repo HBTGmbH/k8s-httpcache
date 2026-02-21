@@ -53,6 +53,9 @@ rules:
 - apiGroups: ["discovery.k8s.io"]
   resources: ["endpointslices"]
   verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -133,6 +136,9 @@ rules:
 - apiGroups: ["discovery.k8s.io"]
   resources: ["endpointslices"]
   verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -147,6 +153,28 @@ subjects:
 - kind: ServiceAccount
   name: k8s-httpcache
   namespace: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-httpcache-values-test
+  namespace: default
+data:
+  greeting: hello-from-values
+  server: |
+    host: example.com
+    port: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-httpcache-values-dir-test
+  namespace: default
+data:
+  greeting.yaml: hello-from-dir
+  server.yaml: |
+    host: dir.example.com
+    port: 9090
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -217,6 +245,8 @@ spec:
         - --backend=backend-named:backend:http
         - --backend=backend-xns:test-ns/backend-xns
         - --backend=backend-ext:backend-external:80
+        - --values=test:k8s-httpcache-values-test
+        - --values-dir=dirtest:/etc/values-dir-test
         - --
         - -s
         - default,1M
@@ -252,6 +282,9 @@ spec:
         - name: vcl-template
           mountPath: /etc/k8s-httpcache
           readOnly: true
+        - name: values-dir-test
+          mountPath: /etc/values-dir-test
+          readOnly: true
         - name: tmp
           mountPath: /tmp
           readOnly: false
@@ -277,6 +310,9 @@ spec:
       - name: vcl-template
         configMap:
           name: k8s-httpcache-vcl
+      - name: values-dir-test
+        configMap:
+          name: k8s-httpcache-values-dir-test
 ---
 apiVersion: v1
 kind: Service
@@ -424,4 +460,8 @@ data:
     sub vcl_deliver {
       # Check whether we are draining and adjust the Connection header in client responses accordingly.
       call handle_draining;
+      set resp.http.X-Values-Test = "<< index .Values.test "greeting" >>";
+      set resp.http.X-Values-Nested = "<< .Values.test.server.host >>";
+      set resp.http.X-ValuesDir-Test = "<< index .Values.dirtest "greeting" >>";
+      set resp.http.X-ValuesDir-Nested = "<< .Values.dirtest.server.host >>";
     }

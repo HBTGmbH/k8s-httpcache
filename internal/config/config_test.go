@@ -1531,3 +1531,349 @@ func TestParseMultipleBackendsWithPorts(t *testing.T) {
 		t.Errorf("Backends[2].Port = %q, want 9090", cfg.Backends[2].Port)
 	}
 }
+
+// --- --values flag tests ---
+
+func TestValuesFlagsSet(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantVS  ValuesSpec
+		wantErr bool
+	}{
+		{
+			name:  "name and configmap",
+			input: "tuning:my-cm",
+			wantVS: ValuesSpec{
+				Name:          "tuning",
+				ConfigMapName: "my-cm",
+			},
+		},
+		{
+			name:  "with namespace prefix",
+			input: "tuning:staging/my-cm",
+			wantVS: ValuesSpec{
+				Name:          "tuning",
+				ConfigMapName: "staging/my-cm",
+			},
+		},
+		{
+			name:    "missing configmap",
+			input:   "tuning",
+			wantErr: true,
+		},
+		{
+			name:    "empty name",
+			input:   ":my-cm",
+			wantErr: true,
+		},
+		{
+			name:    "empty configmap",
+			input:   "tuning:",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var vf valuesFlags
+			err := vf.Set(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %+v", vf)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(vf) != 1 {
+				t.Fatalf("expected 1 values spec, got %d", len(vf))
+			}
+			got := vf[0]
+			if got.Name != tt.wantVS.Name {
+				t.Errorf("Name = %q, want %q", got.Name, tt.wantVS.Name)
+			}
+			if got.ConfigMapName != tt.wantVS.ConfigMapName {
+				t.Errorf("ConfigMapName = %q, want %q", got.ConfigMapName, tt.wantVS.ConfigMapName)
+			}
+		})
+	}
+}
+
+func TestValuesFlagsString(t *testing.T) {
+	var vf valuesFlags
+	_ = vf.Set("tuning:my-cm")
+	s := vf.String()
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}
+
+func TestParseDuplicateValuesNames(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values=tuning:cm-a",
+		"--values=tuning:cm-b",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for duplicate --values name")
+	}
+	if !strings.Contains(err.Error(), "duplicate --values name") {
+		t.Errorf("error = %q, want substring 'duplicate --values name'", err)
+	}
+}
+
+func TestParseValuesNamespaceResolution(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values=tuning:my-cm",
+		"--values=config:staging/other-cm",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Values) != 2 {
+		t.Fatalf("expected 2 values, got %d", len(cfg.Values))
+	}
+	// First values uses default namespace.
+	if cfg.Values[0].Namespace != "default" {
+		t.Errorf("Values[0].Namespace = %q, want default", cfg.Values[0].Namespace)
+	}
+	if cfg.Values[0].ConfigMapName != "my-cm" {
+		t.Errorf("Values[0].ConfigMapName = %q, want my-cm", cfg.Values[0].ConfigMapName)
+	}
+	// Second values uses explicit namespace.
+	if cfg.Values[1].Namespace != "staging" {
+		t.Errorf("Values[1].Namespace = %q, want staging", cfg.Values[1].Namespace)
+	}
+	if cfg.Values[1].ConfigMapName != "other-cm" {
+		t.Errorf("Values[1].ConfigMapName = %q, want other-cm", cfg.Values[1].ConfigMapName)
+	}
+}
+
+func TestParseValuesInvalidConfigMapRef(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values=tuning:/cm",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for invalid values configmap reference")
+	}
+	if !strings.Contains(err.Error(), "--values") {
+		t.Errorf("error = %q, want substring '--values'", err)
+	}
+}
+
+func TestParseNoValues(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Values) != 0 {
+		t.Errorf("Values = %v, want empty", cfg.Values)
+	}
+}
+
+// --- --values-dir flag tests ---
+
+func TestValuesDirFlagsSet(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantSpec ValuesDirSpec
+		wantErr  bool
+	}{
+		{
+			name:     "name and path",
+			input:    "tuning:/etc/values",
+			wantSpec: ValuesDirSpec{Name: "tuning", Path: "/etc/values"},
+		},
+		{
+			name:     "path with colons",
+			input:    "tuning:C:/data/values",
+			wantSpec: ValuesDirSpec{Name: "tuning", Path: "C:/data/values"},
+		},
+		{
+			name:    "missing path",
+			input:   "tuning",
+			wantErr: true,
+		},
+		{
+			name:    "empty name",
+			input:   ":/etc/values",
+			wantErr: true,
+		},
+		{
+			name:    "empty path",
+			input:   "tuning:",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var vdf valuesDirFlags
+			err := vdf.Set(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %+v", vdf)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(vdf) != 1 {
+				t.Fatalf("expected 1 values-dir spec, got %d", len(vdf))
+			}
+			got := vdf[0]
+			if got.Name != tt.wantSpec.Name {
+				t.Errorf("Name = %q, want %q", got.Name, tt.wantSpec.Name)
+			}
+			if got.Path != tt.wantSpec.Path {
+				t.Errorf("Path = %q, want %q", got.Path, tt.wantSpec.Path)
+			}
+		})
+	}
+}
+
+func TestValuesDirFlagsString(t *testing.T) {
+	var vdf valuesDirFlags
+	_ = vdf.Set("tuning:/etc/values")
+	s := vdf.String()
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}
+
+func TestParseDuplicateValuesDirNames(t *testing.T) {
+	vcl := makeTempVCL(t)
+	dir := t.TempDir()
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values-dir=tuning:" + dir,
+		"--values-dir=tuning:" + dir,
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for duplicate --values-dir name")
+	}
+	if !strings.Contains(err.Error(), "duplicate values name") {
+		t.Errorf("error = %q, want substring 'duplicate values name'", err)
+	}
+}
+
+func TestParseDuplicateValuesAndValuesDirNames(t *testing.T) {
+	vcl := makeTempVCL(t)
+	dir := t.TempDir()
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values=tuning:my-cm",
+		"--values-dir=tuning:" + dir,
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for name collision across --values and --values-dir")
+	}
+	if !strings.Contains(err.Error(), "duplicate values name") {
+		t.Errorf("error = %q, want substring 'duplicate values name'", err)
+	}
+}
+
+func TestParseValuesDirNotADirectory(t *testing.T) {
+	vcl := makeTempVCL(t)
+	// Create a regular file, not a directory.
+	f, err := os.CreateTemp(t.TempDir(), "not-a-dir-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values-dir=tuning:" + f.Name(),
+	})
+	_, err = Parse()
+	if err == nil {
+		t.Fatal("expected error for path that is not a directory")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("error = %q, want substring 'not a directory'", err)
+	}
+}
+
+func TestParseValuesDirNotExist(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values-dir=tuning:/nonexistent/path/to/dir",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for non-existent directory")
+	}
+	if !strings.Contains(err.Error(), "--values-dir") {
+		t.Errorf("error = %q, want substring '--values-dir'", err)
+	}
+}
+
+func TestParseValuesDirValid(t *testing.T) {
+	vcl := makeTempVCL(t)
+	dir := t.TempDir()
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values-dir=tuning:" + dir,
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.ValuesDirs) != 1 {
+		t.Fatalf("expected 1 values-dir, got %d", len(cfg.ValuesDirs))
+	}
+	if cfg.ValuesDirs[0].Name != "tuning" {
+		t.Errorf("ValuesDirs[0].Name = %q, want tuning", cfg.ValuesDirs[0].Name)
+	}
+	if cfg.ValuesDirs[0].Path != dir {
+		t.Errorf("ValuesDirs[0].Path = %q, want %q", cfg.ValuesDirs[0].Path, dir)
+	}
+}

@@ -33,7 +33,7 @@ var version = "dev"
 // vclRenderer abstracts VCL template operations (satisfied by *renderer.Renderer).
 type vclRenderer interface {
 	Reload() error
-	RenderToFile([]watcher.Frontend, map[string][]watcher.Endpoint) (string, error)
+	RenderToFile([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any) (string, error)
 	Rollback()
 }
 
@@ -59,6 +59,7 @@ type loopConfig struct {
 
 	frontendCh <-chan []watcher.Frontend
 	backendCh  chan backendChange
+	valuesCh   chan valuesChange
 	templateCh <-chan struct{}
 	sigCh      <-chan os.Signal
 
@@ -69,6 +70,7 @@ type loopConfig struct {
 
 	latestFrontends []watcher.Frontend
 	latestBackends  map[string][]watcher.Endpoint
+	latestValues    map[string]map[string]any
 }
 
 func main() {
@@ -142,6 +144,40 @@ func main() {
 		bwWatchers = append(bwWatchers, bw)
 	}
 
+	// Start ConfigMap watchers for --values.
+	var (
+		vwNames    []string
+		vwWatchers []*watcher.ConfigMapWatcher
+	)
+	for _, v := range cfg.Values {
+		vw := watcher.NewConfigMapWatcher(clientset, v.Namespace, v.ConfigMapName)
+		name := v.Name
+		go func() {
+			if err := vw.Run(ctx); err != nil {
+				slog.Error("values watcher error", "values", name, "error", err)
+			}
+		}()
+		vwNames = append(vwNames, name)
+		vwWatchers = append(vwWatchers, vw)
+	}
+
+	// Start directory watchers for --values-dir.
+	var (
+		fvwNames    []string
+		fvwWatchers []*watcher.FileValuesWatcher
+	)
+	for _, vd := range cfg.ValuesDirs {
+		fvw := watcher.NewFileValuesWatcher(vd.Path, cfg.ValuesDirPollInterval)
+		name := vd.Name
+		go func() {
+			if err := fvw.Run(ctx); err != nil {
+				slog.Error("values-dir watcher error", "values-dir", name, "error", err)
+			}
+		}()
+		fvwNames = append(fvwNames, name)
+		fvwWatchers = append(fvwWatchers, fvw)
+	}
+
 	// Collect the initial endpoint snapshot from every watcher before
 	// starting varnishd, so it launches with a complete configuration.
 	// The watcher guarantees at least one send after cache sync (even if
@@ -156,7 +192,14 @@ func main() {
 	for i, bw := range bwWatchers {
 		latestBackends[bwNames[i]] = <-bw.Changes()
 	}
-	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends))
+	latestValues := make(map[string]map[string]any)
+	for i, vw := range vwWatchers {
+		latestValues[vwNames[i]] = <-vw.Changes()
+	}
+	for i, fvw := range fvwWatchers {
+		latestValues[fvwNames[i]] = <-fvw.Changes()
+	}
+	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues))
 
 	// Set initial endpoint gauges.
 	telemetry.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
@@ -185,7 +228,7 @@ func main() {
 	}
 
 	// Render VCL with real endpoint data and start varnishd.
-	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends)
+	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends, latestValues)
 	if err != nil {
 		log.Fatalf("initial render: %v", err) //nolint:gocritic // startup fatal; process exits, no cleanup needed
 	}
@@ -220,6 +263,28 @@ func main() {
 		}
 	}
 
+	// Fan-in ConfigMapWatcher and FileValuesWatcher updates to a single channel.
+	var valuesCh chan valuesChange
+	if len(vwWatchers) > 0 || len(fvwWatchers) > 0 {
+		valuesCh = make(chan valuesChange, len(vwWatchers)+len(fvwWatchers))
+		for i, vw := range vwWatchers {
+			name := vwNames[i]
+			go func() {
+				for data := range vw.Changes() {
+					valuesCh <- valuesChange{name: name, data: data}
+				}
+			}()
+		}
+		for i, fvw := range fvwWatchers {
+			name := fvwNames[i]
+			go func() {
+				for data := range fvw.Changes() {
+					valuesCh <- valuesChange{name: name, data: data}
+				}
+			}()
+		}
+	}
+
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -232,6 +297,7 @@ func main() {
 
 		frontendCh: w.Changes(),
 		backendCh:  backendCh,
+		valuesCh:   valuesCh,
 		templateCh: templateCh,
 		sigCh:      sigCh,
 
@@ -242,6 +308,7 @@ func main() {
 
 		latestFrontends: latestFrontends,
 		latestBackends:  latestBackends,
+		latestValues:    latestValues,
 	}))
 }
 
@@ -292,6 +359,17 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			}
 			debounceTimer = time.NewTimer(lc.debounce)
 
+		case vc := <-valuesChan(lc.valuesCh):
+			lc.latestValues[vc.name] = vc.data
+			telemetry.ValuesUpdatesTotal.WithLabelValues(vc.name).Inc()
+			slog.Info("values ConfigMap updated", "name", vc.name)
+			pendingReload = true
+
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			debounceTimer = time.NewTimer(lc.debounce)
+
 		case <-timerChan(debounceTimer):
 			debounceTimer = nil
 			if !pendingReload {
@@ -312,7 +390,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 			templateChanged = false
 
-			vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends)
+			vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
 			if err != nil {
 				telemetry.VCLRenderErrorsTotal.Inc()
 				slog.Error("render error", "error", err)
@@ -339,7 +417,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				lc.rend.Rollback()
 				slog.Warn("rolled back to previous template")
 
-				vclPath, err = lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends)
+				vclPath, err = lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
 				if err != nil {
 					telemetry.VCLRenderErrorsTotal.Inc()
 					slog.Error("render error after rollback", "error", err)
@@ -410,8 +488,21 @@ type backendChange struct {
 	endpoints []watcher.Endpoint
 }
 
+type valuesChange struct {
+	name string
+	data map[string]any
+}
+
 // backendChan returns ch, or nil if ch is nil (so select skips it).
 func backendChan(ch chan backendChange) <-chan backendChange {
+	if ch == nil {
+		return nil
+	}
+	return ch
+}
+
+// valuesChan returns ch, or nil if ch is nil (so select skips it).
+func valuesChan(ch chan valuesChange) <-chan valuesChange {
 	if ch == nil {
 		return nil
 	}

@@ -67,12 +67,15 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--namespace` | Kubernetes namespace (also used as default for services without a `namespace/` prefix) |
 | `--vcl-template` | Path to VCL Go template file |
 
-### Listen and backend flags
+### Listen, backend, and values flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen-addr` | `http=:8080,HTTP` | Varnish listen address (repeatable). See [Listen address specification](#listen-address-specification). |
 | `--backend` | | Backend service (repeatable). See [Backend specification](#backend-specification). |
+| `--values` | | ConfigMap to watch for template values (repeatable). See [Values specification](#values-specification). |
+| `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
+| `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories |
 
 ### Varnish paths
 
@@ -112,6 +115,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `vcl_template_parse_errors_total` | Counter | | VCL template parse failures |
 | `vcl_rollbacks_total` | Counter | | Template rollbacks to previous known-good version |
 | `endpoint_updates_total` | Counter | `role`, `service` | EndpointSlice updates received (`frontend` or `backend`) |
+| `values_updates_total` | Counter | `configmap` | ConfigMap value updates received |
 | `endpoints` | Gauge | `role`, `service` | Current ready endpoint count per service |
 | `varnishd_up` | Gauge | | Whether the varnishd process is running (1/0) |
 | `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
@@ -204,6 +208,87 @@ Format: `[name=][host]:port[,proto...]`
 --listen-addr=0.0.0.0:8080,HTTP,PROXY        # HTTP + PROXY protocol
 ```
 
+## Values specification
+
+Format: `name:[namespace/]configmap`
+
+| Part | Required | Description |
+|------|----------|-------------|
+| `name` | yes | Template key, accessible as `.Values.<name>.<key>` |
+| `namespace/` | no | Kubernetes namespace; defaults to `--namespace` if omitted |
+| `configmap` | yes | Kubernetes ConfigMap name to watch |
+
+Each ConfigMap `data` value (which Kubernetes stores as a string) is YAML-parsed into its natural type: plain strings stay strings, numbers become numbers, booleans become booleans, and structured YAML (maps, lists) becomes nested `map[string]any` / `[]any`. The parsed data is exposed under `.Values.<name>`. When the ConfigMap is updated, the VCL template is re-rendered and Varnish is reloaded (after debounce). If the ConfigMap does not exist, an empty map is used.
+
+### Examples
+
+```
+--values=tuning:my-tuning-cm           # default namespace
+--values=config:staging/app-config     # cross-namespace
+```
+
+Using values in a VCL template (flat string value):
+
+```vcl
+sub vcl_backend_response {
+  set beresp.ttl = << index .Values.tuning "ttl" | default "120" >>s;
+}
+```
+
+Structured YAML values are also supported. For example, given a ConfigMap:
+
+```yaml
+data:
+  server: |
+    host: example.com
+    port: 8080
+```
+
+The nested fields are accessible in the template:
+
+```vcl
+set req.http.X-Origin = "<< .Values.config.server.host >>:<< .Values.config.server.port >>";
+```
+
+### Cross-namespace values
+
+Use the `namespace/configmap` syntax to reference a ConfigMap in another namespace. This requires a Role and RoleBinding granting `list` and `watch` on `configmaps` in the target namespace. See [RBAC](#rbac).
+
+## Values from directories
+
+Format: `name:/path/to/dir`
+
+| Part | Required | Description |
+|------|----------|-------------|
+| `name` | yes | Template key, accessible as `.Values.<name>.<key>` (must be unique across both `--values` and `--values-dir`) |
+| `path` | yes | Filesystem directory path to poll for YAML files |
+
+The `--values-dir` flag is an alternative to `--values` for cases where a ConfigMap is already mounted into the container's filesystem. Instead of watching the ConfigMap via the Kubernetes API, k8s-httpcache polls the mounted directory for `.yaml` and `.yml` files.
+
+**Behavior:**
+- Files must have a `.yaml` or `.yml` extension; other files are ignored
+- Dotfiles (names starting with `.`) are skipped — Kubernetes mounts ConfigMaps with `..data` and `..version` symlinks
+- The filename without extension becomes the key (e.g. `server.yaml` → key `"server"`)
+- Each file is YAML-parsed into its natural type, identical to `--values` parsing
+- The directory is polled at the `--values-dir-poll-interval` (default `5s`)
+- The parsed data is exposed under `.Values.<name>`, same as `--values`
+
+### Examples
+
+```
+--values-dir=tuning:/etc/config/tuning
+--values-dir=config:/var/run/configmap
+```
+
+Given a ConfigMap mounted at `/etc/config/tuning` with files:
+
+```
+/etc/config/tuning/ttl.yaml     → contents: "300"
+/etc/config/tuning/server.yaml  → contents: "host: example.com\nport: 8080"
+```
+
+The values are accessible in templates as `.Values.tuning.ttl` (300) and `.Values.tuning.server.host` ("example.com").
+
 ## VCL template
 
 The VCL template is a standard Go [`text/template`](https://pkg.go.dev/text/template) with custom delimiters `<<` and `>>` (instead of `{{ }}`) to avoid clashes with Helm templating.
@@ -216,6 +301,7 @@ The template receives the following data:
 |-------|------|-------------|
 | `.Frontends` | `[]Frontend` | Varnish peer pods from the watched service EndpointSlice |
 | `.Backends` | `map[string][]Endpoint` | Named backend groups keyed by the `name` from `--backend` |
+| `.Values` | `map[string]map[string]any` | Template values keyed by the `name` from `--values` or `--values-dir`. Each value is YAML-parsed, so structured data (maps, lists, numbers) is accessible. |
 
 Each `Frontend` / `Endpoint` has:
 
@@ -446,7 +532,7 @@ Set `terminationGracePeriodSeconds` on the pod spec to accommodate the sleep + d
 
 ### Minimum permissions
 
-k8s-httpcache needs `list` and `watch` on `services` and `endpointslices` in its own namespace:
+k8s-httpcache needs `list` and `watch` on `services` and `endpointslices` in its own namespace. If using `--values`, it also needs `list` and `watch` on `configmaps`:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -461,11 +547,14 @@ rules:
 - apiGroups: ["discovery.k8s.io"]
   resources: ["endpointslices"]
   verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["list", "watch"]
 ```
 
 ### Cross-namespace
 
-To watch services in other namespaces (for cross-namespace backends), create a Role and RoleBinding in each target namespace. The RoleBinding must reference the ServiceAccount from the k8s-httpcache namespace:
+To watch services or ConfigMaps in other namespaces (for cross-namespace backends or values), create a Role and RoleBinding in each target namespace. The RoleBinding must reference the ServiceAccount from the k8s-httpcache namespace:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -479,6 +568,9 @@ rules:
   verbs: ["list", "watch"]
 - apiGroups: ["discovery.k8s.io"]
   resources: ["endpointslices"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
   verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
