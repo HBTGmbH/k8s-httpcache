@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,44 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+// syncBuffer is a goroutine-safe wrapper around bytes.Buffer.
+// It prevents data races when goroutines from previous tests are still
+// writing to the global slog default while a new test reads/resets the buffer.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
+}
+
+// waitForWatch lets the fake clientset's informer finish establishing its
+// watch after the initial cache sync.  The Kubernetes reflector has a small
+// window between HasSynced (list done) and Watch (watch started) in which
+// the fake clientset drops events that have no registered watcher.  In
+// production this is not an issue because the real API server buffers
+// events, but the fake clientset delivers only to currently registered
+// watchers.  A brief pause after reading the initial state gives the
+// informer goroutine time to call Watch and register with the tracker.
+func waitForWatch() {
+	time.Sleep(100 * time.Millisecond)
+}
 
 // readBackendChanges reads from the BackendWatcher's Changes channel with a timeout.
 func readBackendChanges(t *testing.T, bw *BackendWatcher) []Endpoint {
@@ -97,6 +136,7 @@ func TestBackendWatcherExternalNameDefaultPort(t *testing.T) {
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
@@ -123,6 +163,7 @@ func TestBackendWatcherExternalNameNamedPort(t *testing.T) {
 
 	// Named ports cannot be resolved for ExternalName services (no EndpointSlice),
 	// so the watcher should emit empty endpoints.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints for named port on ExternalName, got %d: %v", len(eps), eps)
@@ -228,6 +269,7 @@ func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ExternalName endpoint.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "api.example.com" {
 		t.Fatalf("expected ExternalName endpoint, got %v", eps)
@@ -293,6 +335,7 @@ func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ClusterIP endpoint.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "10.0.0.1" {
 		t.Fatalf("expected ClusterIP endpoint, got %v", eps)
@@ -329,6 +372,7 @@ func TestBackendWatcherServiceDeleted(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ExternalName endpoint.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
@@ -357,6 +401,7 @@ func TestBackendWatcherDebugLogging(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: one endpoint.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
@@ -397,6 +442,7 @@ func TestBackendWatcherExternalNameUpdated(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "api.example.com" {
 		t.Fatalf("expected api.example.com, got %v", eps)
@@ -455,6 +501,7 @@ func TestBackendWatcherDeduplicatesUnchanged(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Consume initial state.
+	waitForWatch()
 	readBackendChanges(t, bw)
 
 	// Update an unrelated field (annotation) via Get-then-Update — endpoints stay the same.
@@ -478,6 +525,7 @@ func TestBackendWatcherExternalNameDeletedAndRecreated(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: ExternalName endpoint.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 || eps[0].IP != "api.example.com" {
 		t.Fatalf("expected api.example.com, got %v", eps)
@@ -572,6 +620,7 @@ func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Empty externalName should be treated as no endpoints.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints for empty externalName, got %d: %v", len(eps), eps)
@@ -604,13 +653,16 @@ func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
 
 // captureLogs redirects slog to a buffer at the given level and returns
 // the buffer. The original logger is restored via t.Cleanup.
-func captureLogs(t *testing.T, level slog.Level) *bytes.Buffer {
+// The returned syncBuffer is goroutine-safe so that stale goroutines from
+// previous tests writing to the global slog default do not race with
+// reads/resets in the current test.
+func captureLogs(t *testing.T, level slog.Level) *syncBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &syncBuffer{}
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &buf
+	return buf
 }
 
 func TestBackendWatcherWarnServiceNotFound(t *testing.T) {
@@ -623,6 +675,7 @@ func TestBackendWatcherWarnServiceNotFound(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// No Service exists → empty endpoints.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints, got %d", len(eps))
@@ -648,6 +701,7 @@ func TestBackendWatcherWarnEndpointsBecomeEmpty(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: 1 endpoint — no empty-endpoint warning expected.
+	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
@@ -689,6 +743,7 @@ func TestBackendWatcherWarnReappearsAndDisappears(t *testing.T) {
 	go func() { _ = bw.Run(ctx) }()
 
 	// Initial: no Service → warns.
+	waitForWatch()
 	readBackendChanges(t, bw)
 
 	output := buf.String()
