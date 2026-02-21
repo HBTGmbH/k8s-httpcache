@@ -55,6 +55,12 @@ go install golang.org/x/tools/cmd/deadcode@latest
 deadcode -test ./...
 ```
 
+When modifying GitHub Actions workflows, run [actionlint](https://github.com/rhysd/actionlint) locally before pushing:
+
+```bash
+actionlint
+```
+
 ### E2E tests
 
 The CI runs E2E tests against a kind cluster. To run them locally:
