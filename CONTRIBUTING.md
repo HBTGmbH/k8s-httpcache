@@ -8,7 +8,9 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [Docker](https://docs.docker.com/get-docker/)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [golangci-lint](https://golangci-lint.run/welcome/install/)
+- [hurl](https://hurl.dev/) for E2E test assertions
 - A Kubernetes cluster for E2E testing (the CI uses [kind](https://kind.sigs.k8s.io/))
+- [oha](https://github.com/hatoo/oha) (optional, only needed for the zero-downtime rollout test)
 
 ## Local development setup
 
@@ -85,13 +87,31 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    kubectl rollout status deployment/k8s-httpcache --timeout=120s
    ```
 
-4. Run the smoke tests (requires [hurl](https://hurl.dev/)):
+4. Run the E2E test scripts:
 
    ```bash
-   hurl --test .github/test/smoke.hurl
+   .github/test/smoke-test.sh            # HTTP proxying, shard consistency
+   .github/test/metrics-test.sh           # Prometheus metrics, broadcast fan-out
+   .github/test/shard-test.sh             # shard distribution across pods
+   .github/test/rollout-test.sh           # zero-downtime rollout (requires oha)
    ```
 
-5. Clean up:
+   `metrics-test.sh` automatically sets up `kubectl port-forward` for the
+   metrics (`:9101`) and broadcast (`:8088`) ports if they are not already
+   reachable, and cleans them up on exit.
+
+5. Quick rebuild cycle (no cluster recreation needed):
+
+   ```bash
+   CGO_ENABLED=0 GOOS=linux go build -trimpath -o k8s-httpcache . \
+     && cp k8s-httpcache .docker-context/ \
+     && docker build -t k8s-httpcache:test .docker-context -f .github/test/Dockerfile \
+     && kind load docker-image k8s-httpcache:test --name test \
+     && kubectl rollout restart deployment/k8s-httpcache \
+     && kubectl rollout status deployment/k8s-httpcache --timeout=120s
+   ```
+
+6. Clean up:
 
    ```bash
    kind delete cluster --name test
