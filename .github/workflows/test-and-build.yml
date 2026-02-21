@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   changes:
@@ -52,17 +51,23 @@ jobs:
       uses: actions/setup-go@v6.2.0
       with:
         go-version-file: go.mod
-    - name: Cache gotestsum
-      uses: actions/cache@v5.0.3
+    - name: Restore gotestsum
+      uses: actions/cache/restore@v5.0.3
+      id: gotestsum
       with:
         path: ~/go/bin/gotestsum
         key: gotestsum-1.13.0-linux-amd64
     - name: Install gotestsum
+      if: steps.gotestsum.outputs.cache-hit != 'true'
       run: |
-        if [ ! -f ~/go/bin/gotestsum ]; then
-          curl -sfL https://github.com/gotestyourself/gotestsum/releases/download/v1.13.0/gotestsum_1.13.0_linux_amd64.tar.gz \
-            | tar -xz -C ~/go/bin gotestsum
-        fi
+        curl -sfL https://github.com/gotestyourself/gotestsum/releases/download/v1.13.0/gotestsum_1.13.0_linux_amd64.tar.gz \
+          | tar -xz -C ~/go/bin gotestsum
+    - name: Save gotestsum
+      if: steps.gotestsum.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5.0.3
+      with:
+        path: ~/go/bin/gotestsum
+        key: gotestsum-1.13.0-linux-amd64
     - name: Run tests with coverage
       run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -coverprofile=coverage.out -coverpkg=./... ./...
     - name: Display coverage
@@ -96,28 +101,31 @@ jobs:
         go-version-file: go.mod
     - name: Go Lint
       uses: golangci/golangci-lint-action@v9.2.0
-    - name: Cache govulncheck
-      uses: actions/cache@v5.0.3
+    - name: Restore analysis tools
+      uses: actions/cache/restore@v5.0.3
+      id: analysis-tools
       with:
-        path: ~/go/bin/govulncheck
-        key: govulncheck-1.1.4-linux-amd64
-    - name: Install and run govulncheck
+        path: |
+          ~/go/bin/govulncheck
+          ~/go/bin/deadcode
+        key: analysis-tools-govulncheck-1.1.4-deadcode-0.42.0
+    - name: Install analysis tools
+      if: steps.analysis-tools.outputs.cache-hit != 'true'
       run: |
-        if [ ! -f ~/go/bin/govulncheck ]; then
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
-        fi
-        govulncheck ./...
-    - name: Cache deadcode
-      uses: actions/cache@v5.0.3
+        go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        go install golang.org/x/tools/cmd/deadcode@v0.42.0
+    - name: Save analysis tools
+      if: steps.analysis-tools.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5.0.3
       with:
-        path: ~/go/bin/deadcode
-        key: deadcode-0.42.0-linux-amd64
-    - name: Install and run deadcode
-      run: |
-        if [ ! -f ~/go/bin/deadcode ]; then
-          go install golang.org/x/tools/cmd/deadcode@v0.42.0
-        fi
-        deadcode -test ./...
+        path: |
+          ~/go/bin/govulncheck
+          ~/go/bin/deadcode
+        key: analysis-tools-govulncheck-1.1.4-deadcode-0.42.0
+    - name: Run govulncheck
+      run: govulncheck ./...
+    - name: Run deadcode
+      run: deadcode -test ./...
     - name: ShellCheck
       run: shellcheck .github/test/*.sh
     - name: YAML lint
@@ -187,24 +195,29 @@ jobs:
       uses: actions/download-artifact@v7.0.0
       with:
         name: binaries
-    - name: Cache test tools
-      uses: actions/cache@v5.0.3
+    - name: Restore test tools
+      uses: actions/cache/restore@v5.0.3
+      id: test-tools
       with:
-        path: |
-          ~/tools
-          /usr/local/bin/oha
+        path: ~/tools
         key: test-tools-hurl-7.1.0-oha-1.13.0
     - name: Install tools
+      if: steps.test-tools.outputs.cache-hit != 'true'
       run: |
         mkdir -p ~/tools
-        if [ ! -f ~/tools/hurl_7.1.0_amd64.deb ]; then
-          curl -sfL -o ~/tools/hurl_7.1.0_amd64.deb https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
-        fi
-        sudo apt-get install -yqq ~/tools/hurl_7.1.0_amd64.deb > /dev/null
-        if [ ! -f /usr/local/bin/oha ]; then
-          curl -sfL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
-          chmod +x /usr/local/bin/oha
-        fi
+        curl -sfL -o /tmp/hurl.deb https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
+        dpkg-deb -x /tmp/hurl.deb /tmp/hurl
+        cp /tmp/hurl/usr/bin/* ~/tools/
+        curl -sfL -o ~/tools/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
+        chmod +x ~/tools/oha
+    - name: Save test tools
+      if: steps.test-tools.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5.0.3
+      with:
+        path: ~/tools
+        key: test-tools-hurl-7.1.0-oha-1.13.0
+    - name: Add tools to PATH
+      run: echo "$HOME/tools" >> "$GITHUB_PATH"
     - name: Build test image
       run: |
         mkdir .docker-context
@@ -274,6 +287,9 @@ jobs:
       needs.changes.outputs.src == 'true' ||
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
     - name: Checkout
       uses: actions/checkout@v6.0.2
