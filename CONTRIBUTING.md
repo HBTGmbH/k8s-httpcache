@@ -10,6 +10,7 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [golangci-lint](https://golangci-lint.run/welcome/install/)
 - [hurl](https://hurl.dev/) for E2E test assertions
 - A Kubernetes cluster for E2E testing (the CI uses [kind](https://kind.sigs.k8s.io/))
+- [jq](https://jqlang.github.io/jq/) for JSON assertions in E2E tests
 - [oha](https://github.com/hatoo/oha) (optional, only needed for the zero-downtime rollout test)
 
 ## Local development setup

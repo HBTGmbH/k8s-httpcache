@@ -2,6 +2,7 @@
 # Metrics and broadcast smoke test.
 # Sets up port-forwards if the ports are not already reachable,
 # runs hurl assertions, then verifies metric values.
+# Requires: curl, kubectl, hurl, jq
 set -eu
 
 # --- Port-forward setup (skipped if ports are already reachable) -----------
@@ -86,3 +87,15 @@ if [ "$after" -le "$before" ]; then
   exit 1
 fi
 echo "PASS: broadcast_requests_total increased ($before -> $after)"
+
+# Verify that every pod received the broadcast fan-out and returned 200.
+response=$(curl -sf http://localhost:8088/backend/)
+total=$(echo "$response" | jq 'length')
+ok=$(echo "$response" | jq '[.[] | select(.status == 200)] | length')
+echo "Broadcast fan-out: $ok/$total pods returned 200"
+if [ "$ok" -ne "$total" ]; then
+  echo "FAIL: not all pods returned 200:"
+  echo "$response" | jq .
+  exit 1
+fi
+echo "PASS: all $total pods received the broadcast and returned 200"
