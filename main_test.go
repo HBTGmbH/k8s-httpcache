@@ -1186,6 +1186,48 @@ func TestRunLoop_DrainMarkSickError(t *testing.T) {
 	}
 }
 
+func TestRunLoop_DrainMarkSickErrorContinuesDrain(t *testing.T) {
+	h := newTestHarness()
+	h.mgr.markBackendFn = func(_ string) error {
+		return errors.New("backend not found")
+	}
+	var sessionCalls atomic.Int32
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		// Return >0 first, then 0.
+		if sessionCalls.Add(1) == 1 {
+			return 5, nil
+		}
+		return 0, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 5 * time.Second
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(100 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0 despite MarkBackendSick error, got %d", result)
+	}
+
+	// Despite MarkBackendSick failing, drain delay + polling should still proceed.
+	if sessionCalls.Load() < 2 {
+		t.Fatalf("expected ActiveSessions polling despite MarkBackendSick error, got %d calls", sessionCalls.Load())
+	}
+}
+
 func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
 	h := newTestHarness()
 	// ActiveSessions always returns >0 so sessions never clear.

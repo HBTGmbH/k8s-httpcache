@@ -1054,6 +1054,37 @@ func TestActiveSessionsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestActiveSessionsMalformedValue(t *testing.T) {
+	// The "value" field is a string instead of a number.
+	varnishstatOutput := `{
+		"version": 1,
+		"counters": {
+			"MEMPOOL.sess0.live": {"value": "not_a_number"}
+		}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+
+	_, err := m.ActiveSessions()
+	if err == nil {
+		t.Fatal("expected error from ActiveSessions for malformed value, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing varnishstat JSON") {
+		t.Errorf("error = %q, want substring 'parsing varnishstat JSON'", err.Error())
+	}
+}
+
 func TestDiscardOldVCLsDiscardError(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
