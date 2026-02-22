@@ -486,8 +486,8 @@ func TestNewDefaultVarnishstatPath(t *testing.T) {
 	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm",
 		[]string{":8080"}, nil, "")
 
-	if m.varnishstatPath != "varnishstat" {
-		t.Errorf("varnishstatPath = %q, want default 'varnishstat'", m.varnishstatPath)
+	if m.varnishstatPath != defaultVarnishstatPath {
+		t.Errorf("varnishstatPath = %q, want default %q", m.varnishstatPath, defaultVarnishstatPath)
 	}
 }
 
@@ -504,6 +504,29 @@ func TestDoneAndErr(t *testing.T) {
 	// Err should return the stored error.
 	if m.Err() == nil || m.Err().Error() != "test error" {
 		t.Errorf("Err() = %v, want 'test error'", m.Err())
+	}
+}
+
+func TestStartDetectVersionError(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return "", errors.New("exec failed")
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	// majorVersion is 0, so Start will call DetectVersion which will fail.
+
+	err := m.Start("/tmp/test.vcl")
+	if err == nil {
+		t.Fatal("expected error from Start, got nil")
+	}
+	if !strings.Contains(err.Error(), "detecting varnish version") {
+		t.Errorf("error = %q, want substring 'detecting varnish version'", err.Error())
 	}
 }
 
@@ -709,7 +732,7 @@ func TestActiveSessions(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
 			return "", nil
@@ -717,7 +740,7 @@ func TestActiveSessions(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 
 	sessions, err := m.ActiveSessions()
@@ -741,7 +764,7 @@ func TestActiveSessionsZero(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
 			return "", nil
@@ -749,7 +772,7 @@ func TestActiveSessionsZero(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 
 	sessions, err := m.ActiveSessions()
@@ -772,7 +795,7 @@ func TestActiveSessionsNoCounters(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
 			return "", nil
@@ -780,7 +803,7 @@ func TestActiveSessionsNoCounters(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 
 	sessions, err := m.ActiveSessions()
@@ -796,7 +819,7 @@ func TestActiveSessionsError(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return "", errors.New("command failed")
 			}
 			return "", nil
@@ -804,7 +827,7 @@ func TestActiveSessionsError(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 
 	_, err := m.ActiveSessions()
@@ -820,7 +843,7 @@ func TestActiveSessionsInvalidJSON(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return "not valid json", nil
 			}
 			return "", nil
@@ -828,7 +851,7 @@ func TestActiveSessionsInvalidJSON(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 
 	_, err := m.ActiveSessions()
@@ -852,7 +875,7 @@ func TestActiveSessionsMalformedValue(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
 			return "", nil
@@ -860,7 +883,7 @@ func TestActiveSessionsMalformedValue(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 
 	_, err := m.ActiveSessions()
@@ -999,7 +1022,7 @@ func TestActiveSessionsV6(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
 			return "", nil
@@ -1007,7 +1030,7 @@ func TestActiveSessionsV6(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 6
 
 	sessions, err := m.ActiveSessions()
@@ -1016,6 +1039,106 @@ func TestActiveSessionsV6(t *testing.T) {
 	}
 	if sessions != 8 {
 		t.Errorf("ActiveSessions() = %d, want 8", sessions)
+	}
+}
+
+func TestActiveSessionsV6InvalidJSON(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == defaultVarnishstatPath {
+				return "not valid json", nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = defaultVarnishstatPath
+	m.majorVersion = 6
+
+	_, err := m.ActiveSessions()
+	if err == nil {
+		t.Fatal("expected error from ActiveSessions for invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing varnishstat JSON") {
+		t.Errorf("error = %q, want substring 'parsing varnishstat JSON'", err.Error())
+	}
+}
+
+func TestActiveSessionsV6MalformedCounter(t *testing.T) {
+	// The "value" field is a string instead of a number, causing unmarshal of the individual counter to fail.
+	varnishstatOutput := `{
+		"timestamp": "2024-01-01T00:00:00",
+		"MEMPOOL.sess0.live": {"value": "not_a_number"}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == defaultVarnishstatPath {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = defaultVarnishstatPath
+	m.majorVersion = 6
+
+	_, err := m.ActiveSessions()
+	if err == nil {
+		t.Fatal("expected error from ActiveSessions for malformed counter, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing varnishstat counter") {
+		t.Errorf("error = %q, want substring 'parsing varnishstat counter'", err.Error())
+	}
+}
+
+func TestActiveSessionsV6NoCounters(t *testing.T) {
+	varnishstatOutput := `{
+		"timestamp": "2024-01-01T00:00:00",
+		"MAIN.uptime": {"value": 12345}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == defaultVarnishstatPath {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = defaultVarnishstatPath
+	m.majorVersion = 6
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if sessions != 0 {
+		t.Errorf("ActiveSessions() = %d, want 0", sessions)
+	}
+}
+
+func TestMajorVersion(t *testing.T) {
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn:   func(string, []string) (string, error) { return "", nil },
+	}
+	m := newTestManager(r)
+
+	if got := m.MajorVersion(); got != 0 {
+		t.Errorf("MajorVersion() before DetectVersion = %d, want 0", got)
+	}
+
+	m.majorVersion = 7
+	if got := m.MajorVersion(); got != 7 {
+		t.Errorf("MajorVersion() = %d, want 7", got)
 	}
 }
 
@@ -1029,7 +1152,7 @@ func TestActiveSessionsV6Zero(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
 			return "", nil
@@ -1037,7 +1160,7 @@ func TestActiveSessionsV6Zero(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 6
 
 	sessions, err := m.ActiveSessions()
@@ -1114,7 +1237,7 @@ func TestActiveSessionsWithWorkDir(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, args []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				gotArgs = args
 				return varnishstatOutput, nil
 			}
@@ -1123,7 +1246,7 @@ func TestActiveSessionsWithWorkDir(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 	m.workDir = "/var/lib/varnish/myname"
 
@@ -1150,7 +1273,7 @@ func TestActiveSessionsWithoutWorkDir(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, args []string) (string, error) {
-			if name == "varnishstat" {
+			if name == defaultVarnishstatPath {
 				gotArgs = args
 				return varnishstatOutput, nil
 			}
@@ -1159,7 +1282,7 @@ func TestActiveSessionsWithoutWorkDir(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.varnishstatPath = "varnishstat"
+	m.varnishstatPath = defaultVarnishstatPath
 	m.majorVersion = 7
 
 	_, err := m.ActiveSessions()

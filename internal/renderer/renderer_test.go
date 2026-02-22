@@ -1035,6 +1035,43 @@ sub vcl_deliver {
 	}
 }
 
+func TestVclVersionEnd(t *testing.T) {
+	tests := []struct {
+		name string
+		vcl  string
+		want int
+	}{
+		{
+			name: "standard version line",
+			vcl:  "vcl 4.1;\nbackend default { }\n",
+			want: len("vcl 4.1;\n"),
+		},
+		{
+			name: "no version line",
+			vcl:  "backend default {\n  .host = \"127.0.0.1\";\n}\n",
+			want: 0,
+		},
+		{
+			name: "indented version line",
+			vcl:  "  vcl 4.1;\nbackend default { }\n",
+			want: len("  vcl 4.1;\n"),
+		},
+		{
+			name: "version without minor",
+			vcl:  "vcl 4;\nbackend default { }\n",
+			want: len("vcl 4;\n"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := vclVersionEnd(tt.vcl)
+			if got != tt.want {
+				t.Errorf("vclVersionEnd() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBackendBlocksEnd(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1191,6 +1228,22 @@ func TestBackendBlocksEnd(t *testing.T) {
 				"backend origin {\n  .host = \"127.0.0.1\";\n  # }\n  .port = \"8080\";\n}\n",
 			want: len("vcl 4.1;\n" +
 				"backend origin {\n  .host = \"127.0.0.1\";\n  # }\n  .port = \"8080\";\n}\n"),
+		},
+		{
+			name: "unclosed_block_comment_inside_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  /* unclosed comment\n",
+			// The unclosed block comment causes the scanner to break;
+			// end stays at openBrace+1 since the closing brace is never found.
+			want: len("vcl 4.1;\nbackend origin {"),
+		},
+		{
+			name: "line_comment_at_eof_no_newline_inside_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  // trailing comment no newline",
+			// The line comment has no trailing newline, so the scanner breaks;
+			// end stays at openBrace+1 since the closing brace is never found.
+			want: len("vcl 4.1;\nbackend origin {"),
 		},
 	}
 

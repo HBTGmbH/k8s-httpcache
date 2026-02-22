@@ -91,12 +91,15 @@ func extractWorkDir(args []string) string {
 	return ""
 }
 
+// defaultVarnishstatPath is the default binary name for varnishstat.
+const defaultVarnishstatPath = "varnishstat"
+
 // New creates a new varnish Manager. listenAddrs are passed as individual -a
 // flags to varnishd. extraArgs are appended to the varnishd command line.
 // varnishstatPath is the path to the varnishstat binary (defaults to "varnishstat" if empty).
 func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []string, varnishstatPath string) *Manager {
 	if varnishstatPath == "" {
-		varnishstatPath = "varnishstat"
+		varnishstatPath = defaultVarnishstatPath
 	}
 	return &Manager{
 		varnishdPath:    varnishdPath,

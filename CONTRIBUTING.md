@@ -109,7 +109,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 
    ```bash
    mkdir -p .docker-context \
-     && CGO_ENABLED=0 GOOS=linux go build -trimpath -o k8s-httpcache . \
+     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache . \
      && cp k8s-httpcache .docker-context/ \
      && docker build -t k8s-httpcache:test .docker-context -f .github/test/Dockerfile \
      && kind load docker-image k8s-httpcache:test --name test \
