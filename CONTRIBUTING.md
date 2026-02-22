@@ -94,10 +94,11 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 4. Run the E2E test scripts:
 
    ```bash
-   .github/test/smoke-test.sh            # HTTP proxying, shard consistency
-   .github/test/metrics-test.sh           # Prometheus metrics, broadcast fan-out
-   .github/test/shard-test.sh             # shard distribution across pods
-   .github/test/rollout-test.sh           # zero-downtime rollout (requires oha)
+   .github/test/smoke-test.sh   # HTTP proxying, shard consistency
+   .github/test/metrics-test.sh # Prometheus metrics, broadcast fan-out
+   .github/test/shard-test.sh   # shard distribution across pods
+   .github/test/drain-test.sh   # connection draining
+   .github/test/rollout-test.sh # zero-downtime rollout (requires oha)
    ```
 
    `metrics-test.sh` automatically sets up `kubectl port-forward` for the

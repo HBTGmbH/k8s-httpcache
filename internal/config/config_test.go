@@ -906,9 +906,6 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.AdminAddr != "127.0.0.1:6082" {
-		t.Errorf("AdminAddr = %q, want 127.0.0.1:6082", cfg.AdminAddr)
-	}
 	if cfg.VarnishdPath != "varnishd" {
 		t.Errorf("VarnishdPath = %q, want varnishd", cfg.VarnishdPath)
 	}
@@ -1027,27 +1024,19 @@ func TestParseOverrideStringFlags(t *testing.T) {
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
-		"--admin-addr=0.0.0.0:6082",
 		"--varnishd-path=/usr/sbin/varnishd",
 		"--varnishadm-path=/usr/bin/varnishadm",
-		"--secret-path=/etc/varnish/secret",
 		"--broadcast-addr=:9999",
 	})
 	cfg, err := Parse()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.AdminAddr != "0.0.0.0:6082" {
-		t.Errorf("AdminAddr = %q, want 0.0.0.0:6082", cfg.AdminAddr)
-	}
 	if cfg.VarnishdPath != "/usr/sbin/varnishd" {
 		t.Errorf("VarnishdPath = %q, want /usr/sbin/varnishd", cfg.VarnishdPath)
 	}
 	if cfg.VarnishadmPath != "/usr/bin/varnishadm" {
 		t.Errorf("VarnishadmPath = %q, want /usr/bin/varnishadm", cfg.VarnishadmPath)
-	}
-	if cfg.SecretPath != "/etc/varnish/secret" {
-		t.Errorf("SecretPath = %q, want /etc/varnish/secret", cfg.SecretPath)
 	}
 	if cfg.BroadcastAddr != ":9999" {
 		t.Errorf("BroadcastAddr = %q, want :9999", cfg.BroadcastAddr)
@@ -1371,22 +1360,6 @@ func TestParseDefaultDurations(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
-	}
-}
-
-func TestParseSecretPathDefault(t *testing.T) {
-	vcl := makeTempVCL(t)
-	setupParse(t, []string{
-		"--service-name=my-svc",
-		"--namespace=default",
-		"--vcl-template=" + vcl,
-	})
-	cfg, err := Parse()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.SecretPath != "" {
-		t.Errorf("SecretPath = %q, want empty (auto-generated)", cfg.SecretPath)
 	}
 }
 

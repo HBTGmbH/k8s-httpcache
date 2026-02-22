@@ -84,9 +84,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--varnishd-path` | `varnishd` | Path to varnishd binary |
 | `--varnishadm-path` | `varnishadm` | Path to varnishadm binary |
 | `--varnishstat-path` | `varnishstat` | Path to varnishstat binary |
-| `--admin-addr` | `127.0.0.1:6082` | Varnish admin listen address |
 | `--admin-timeout` | `30s` | Max time to wait for the varnish admin port to become ready |
-| `--secret-path` | *(auto-generated)* | Path to write the varnishadm secret file |
 
 ### Broadcast flags
 

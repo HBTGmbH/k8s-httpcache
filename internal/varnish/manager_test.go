@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
-	"net"
 	"os"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -59,25 +56,19 @@ func (p *mockProc) Signal(sig os.Signal) error {
 
 func (p *mockProc) Pid() int { return p.pid }
 
-// newTestManager creates a Manager wired with mock runner/dial for testing.
-// The dialFn defaults to immediate success; override m.dialFn after calling this.
+// newTestManager creates a Manager wired with a mock runner for testing.
 func newTestManager(r *mockRunner) *Manager {
 	return &Manager{
 		varnishdPath:   "/usr/sbin/varnishd",
 		varnishadmPath: "/usr/bin/varnishadm",
-		adminAddr:      "127.0.0.1:6082",
 		listenAddrs:    []string{":8080"},
 		run:            r,
-		dialFn: func(string, time.Duration) (net.Conn, error) {
-			// default: immediate success via an in-process pipe
-			c1, c2 := net.Pipe()
-			_ = c2.Close()
-			return c1, nil
-		},
-		done:         make(chan struct{}),
-		AdminTimeout: 30 * time.Second,
+		done:           make(chan struct{}),
+		AdminTimeout:   30 * time.Second,
 	}
 }
+
+const varnishdVersionOutput = "varnishd (varnish-7.6.1 revision abc123)"
 
 // --- tests ---
 
@@ -94,44 +85,32 @@ func TestStartArgs(t *testing.T) {
 			gotArgs = args
 			return mp, nil
 		},
-		runFn: func(string, []string) (string, error) { return "", nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+			return "", nil
+		},
 	}
 
 	m := newTestManager(r)
 	m.listenAddrs = []string{":8080", ":8443"}
 	m.extraArgs = []string{"-p", "default_ttl=3600"}
-	m.secretFile = "/tmp/test-secret" // pre-set to skip generateSecret
-
-	// Bypass generateSecret by calling the inner logic directly.
-	// We need to set secretFile before Start, so we call the method parts manually.
-	// Actually, Start calls generateSecret which writes a real file. Instead,
-	// let's just call Start and verify args after it sets secretFile.
-
-	// To avoid generateSecret side effects, pre-set secretFile and override Start's
-	// first step. We'll test Start end-to-end by letting it create a real temp secret.
-	m.secretFile = "" // reset so generateSecret runs
 	err := m.Start("/etc/varnish/default.vcl")
 	if err != nil {
 		t.Fatalf("Start() error: %v", err)
-	}
-
-	// Clean up the generated secret file.
-	if m.secretFile != "" {
-		defer func() { _ = os.Remove(m.secretFile) }()
 	}
 
 	if gotName != "/usr/sbin/varnishd" {
 		t.Errorf("command name = %q, want /usr/sbin/varnishd", gotName)
 	}
 
-	// Expected: -F -a :8080 -a :8443 -T 127.0.0.1:6082 -f /etc/varnish/default.vcl -S <secret> -p default_ttl=3600
+	// Expected: -F -a :8080 -a :8443 -f /etc/varnish/default.vcl -p default_ttl=3600
 	want := []string{
 		"-F",
 		"-a", ":8080",
 		"-a", ":8443",
-		"-T", "127.0.0.1:6082",
 		"-f", "/etc/varnish/default.vcl",
-		"-S", m.secretFile,
 		"-p", "default_ttl=3600",
 	}
 
@@ -146,36 +125,34 @@ func TestStartArgs(t *testing.T) {
 }
 
 func TestStartAdminWait(t *testing.T) {
-	dialCount := 0
+	pingCount := 0
 	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
 	defer close(mp.waitCh)
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return mp, nil },
-		runFn:   func(string, []string) (string, error) { return "", nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+			if slices.Contains(args, "ping") {
+				pingCount++
+				if pingCount < 3 {
+					return "", errors.New("connection refused")
+				}
+			}
+			return "", nil
+		},
 	}
 
 	m := newTestManager(r)
-	// Dial fails twice, then succeeds.
-	m.dialFn = func(string, time.Duration) (net.Conn, error) {
-		dialCount++
-		if dialCount < 3 {
-			return nil, errors.New("connection refused")
-		}
-		c1, c2 := net.Pipe()
-		_ = c2.Close()
-		return c1, nil
-	}
 
 	err := m.Start("/tmp/test.vcl")
-	if m.secretFile != "" {
-		defer func() { _ = os.Remove(m.secretFile) }()
-	}
 	if err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	if dialCount < 3 {
-		t.Errorf("dialCount = %d, want >= 3", dialCount)
+	if pingCount < 3 {
+		t.Errorf("pingCount = %d, want >= 3", pingCount)
 	}
 }
 
@@ -185,16 +162,17 @@ func TestStartAdminTimeout(t *testing.T) {
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return mp, nil },
-		runFn:   func(string, []string) (string, error) { return "", nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "ping") {
+				return "", errors.New("connection refused")
+			}
+			return "", nil
+		},
 	}
 
 	m := newTestManager(r)
-	m.dialFn = func(string, time.Duration) (net.Conn, error) {
-		return nil, errors.New("connection refused")
-	}
 
 	// Use a very short timeout by calling waitForAdmin directly.
-	m.secretFile = "/dev/null" // skip generateSecret
 	p, err := m.run.Start(m.varnishdPath, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +199,6 @@ func TestReloadSequence(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	// First reload
 	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
@@ -242,11 +219,10 @@ func TestReloadSequence(t *testing.T) {
 	// Find vcl.load and vcl.use calls in order.
 	var loadUseCalls [][]string
 	for _, c := range calls {
-		// calls are [varnishadm, -T, addr, -S, secret, subcmd, ...]
-		if len(c) >= 6 {
-			sub := c[5]
-			if sub == "vcl.load" || sub == "vcl.use" {
-				loadUseCalls = append(loadUseCalls, c[5:])
+		for i, arg := range c {
+			if arg == "vcl.load" || arg == "vcl.use" {
+				loadUseCalls = append(loadUseCalls, c[i:])
+				break
 			}
 		}
 	}
@@ -281,7 +257,6 @@ func TestReloadLoadError(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	err := m.Reload("/tmp/bad.vcl")
 	if err == nil {
@@ -315,7 +290,6 @@ func TestReloadUseError(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	err := m.Reload("/tmp/test.vcl")
 	if err == nil {
@@ -352,7 +326,6 @@ func TestDiscardOldVCLs(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	// Discard with kv_reload_3 as the current VCL.
 	m.discardOldVCLs("kv_reload_3")
@@ -395,90 +368,6 @@ func TestForwardSignalNilProc(_ *testing.T) {
 	m.ForwardSignal(os.Interrupt)
 }
 
-func TestCleanup(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "varnish-test-secret-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := f.Name()
-	_ = f.Close()
-
-	m := &Manager{secretFile: name}
-	m.Cleanup()
-
-	if _, err := os.Stat(name); !os.IsNotExist(err) {
-		t.Errorf("secret file %s still exists after Cleanup", name)
-	}
-}
-
-func TestParseAdminPort(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    int
-		wantErr bool
-	}{
-		{
-			name:  "host and port",
-			input: "127.0.0.1:6082",
-			want:  6082,
-		},
-		{
-			name:  "empty host",
-			input: ":6082",
-			want:  6082,
-		},
-		{
-			name:  "all interfaces",
-			input: "0.0.0.0:6082",
-			want:  6082,
-		},
-		{
-			name:  "IPv6 loopback",
-			input: "[::1]:6082",
-			want:  6082,
-		},
-		{
-			name:  "high port",
-			input: "127.0.0.1:65535",
-			want:  65535,
-		},
-		{
-			name:    "missing port",
-			input:   "127.0.0.1",
-			wantErr: true,
-		},
-		{
-			name:    "non-numeric port",
-			input:   "127.0.0.1:abc",
-			wantErr: true,
-		},
-		{
-			name:    "empty string",
-			input:   "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseAdminPort(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got %d", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("ParseAdminPort(%q) = %d, want %d", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestDebugLogging(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -490,11 +379,15 @@ func TestDebugLogging(t *testing.T) {
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return mp, nil },
-		runFn:   func(string, []string) (string, error) { return "200", nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+			return "200", nil
+		},
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	// Test varnishd start logging.
 	err := m.Start("/tmp/test.vcl")
@@ -539,11 +432,15 @@ func TestDebugLoggingDisabled(t *testing.T) {
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return mp, nil },
-		runFn:   func(string, []string) (string, error) { return "200", nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+			return "200", nil
+		},
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	if err := m.Start("/tmp/test.vcl"); err != nil {
 		t.Fatalf("Start() error: %v", err)
@@ -559,8 +456,8 @@ func TestDebugLoggingDisabled(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm", "127.0.0.1:6082",
-		[]string{":8080", ":8443"}, "/tmp/secret", []string{"-p", "default_ttl=3600"}, "/usr/bin/varnishstat")
+	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm",
+		[]string{":8080", ":8443"}, []string{"-p", "default_ttl=3600"}, "/usr/bin/varnishstat")
 
 	if m.varnishdPath != "/usr/sbin/varnishd" {
 		t.Errorf("varnishdPath = %q, want /usr/sbin/varnishd", m.varnishdPath)
@@ -571,14 +468,8 @@ func TestNew(t *testing.T) {
 	if m.varnishstatPath != "/usr/bin/varnishstat" {
 		t.Errorf("varnishstatPath = %q, want /usr/bin/varnishstat", m.varnishstatPath)
 	}
-	if m.adminAddr != "127.0.0.1:6082" {
-		t.Errorf("adminAddr = %q, want 127.0.0.1:6082", m.adminAddr)
-	}
 	if len(m.listenAddrs) != 2 {
 		t.Errorf("listenAddrs length = %d, want 2", len(m.listenAddrs))
-	}
-	if m.secretPath != "/tmp/secret" {
-		t.Errorf("secretPath = %q, want /tmp/secret", m.secretPath)
 	}
 	if len(m.extraArgs) != 2 {
 		t.Errorf("extraArgs length = %d, want 2", len(m.extraArgs))
@@ -592,8 +483,8 @@ func TestNew(t *testing.T) {
 }
 
 func TestNewDefaultVarnishstatPath(t *testing.T) {
-	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm", "127.0.0.1:6082",
-		[]string{":8080"}, "", nil, "")
+	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm",
+		[]string{":8080"}, nil, "")
 
 	if m.varnishstatPath != "varnishstat" {
 		t.Errorf("varnishstatPath = %q, want default 'varnishstat'", m.varnishstatPath)
@@ -616,44 +507,22 @@ func TestDoneAndErr(t *testing.T) {
 	}
 }
 
-func TestGenerateSecretWithPath(t *testing.T) {
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "subdir", "secret")
-
-	m := &Manager{secretPath: secretPath}
-	path, err := m.generateSecret()
-	if err != nil {
-		t.Fatalf("generateSecret() error: %v", err)
-	}
-	defer func() { _ = os.Remove(path) }()
-
-	if path != secretPath {
-		t.Errorf("path = %q, want %q", path, secretPath)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading secret: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("secret file is empty")
-	}
-}
-
 func TestStartRunnerError(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) {
 			return nil, errors.New("exec failed")
 		},
-		runFn: func(string, []string) (string, error) { return "", nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+			return "", nil
+		},
 	}
 
 	m := newTestManager(r)
 
 	err := m.Start("/tmp/test.vcl")
-	if m.secretFile != "" {
-		defer func() { _ = os.Remove(m.secretFile) }()
-	}
 	if err == nil {
 		t.Fatal("expected error from Start, got nil")
 	}
@@ -667,15 +536,16 @@ func TestWaitForAdminProcessExited(t *testing.T) {
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return mp, nil },
-		runFn:   func(string, []string) (string, error) { return "", nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "ping") {
+				return "", errors.New("connection refused")
+			}
+			return "", nil
+		},
 	}
 
 	m := newTestManager(r)
-	m.dialFn = func(string, time.Duration) (net.Conn, error) {
-		return nil, errors.New("connection refused")
-	}
 
-	m.secretFile = "/dev/null"
 	m.proc = mp
 	go func() {
 		m.err = mp.Wait()
@@ -686,8 +556,8 @@ func TestWaitForAdminProcessExited(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "exited before admin port") {
-		t.Errorf("error = %q, want substring 'exited before admin port'", err.Error())
+	if !strings.Contains(err.Error(), "exited before admin") {
+		t.Errorf("error = %q, want substring 'exited before admin'", err.Error())
 	}
 }
 
@@ -703,100 +573,9 @@ func TestDiscardOldVCLsListError(_ *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	// Should not panic — just return silently on error.
 	m.discardOldVCLs("kv_reload_1")
-}
-
-func TestGenerateSecretTempFile(t *testing.T) {
-	m := &Manager{} // empty secretPath → temp file
-	path, err := m.generateSecret()
-	if err != nil {
-		t.Fatalf("generateSecret() error: %v", err)
-	}
-	defer func() { _ = os.Remove(path) }()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading secret: %v", err)
-	}
-
-	content := string(data)
-	// Should be hex-encoded 32 bytes (64 hex chars) + newline = 65 bytes.
-	if len(content) != 65 {
-		t.Errorf("secret length = %d, want 65 (64 hex chars + newline)", len(content))
-	}
-	if content[len(content)-1] != '\n' {
-		t.Error("secret should end with newline")
-	}
-
-	// Verify hex characters only (before the newline).
-	hex := content[:len(content)-1]
-	for _, c := range hex {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			t.Errorf("non-hex character %q in secret", c)
-			break
-		}
-	}
-}
-
-func TestGenerateSecretPermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix file permissions not enforced on Windows")
-	}
-
-	dir := t.TempDir()
-	subdir := filepath.Join(dir, "nested")
-	secretPath := filepath.Join(subdir, "secret")
-
-	m := &Manager{secretPath: secretPath}
-	path, err := m.generateSecret()
-	if err != nil {
-		t.Fatalf("generateSecret() error: %v", err)
-	}
-	defer func() { _ = os.Remove(path) }()
-
-	// Check file permissions.
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat secret: %v", err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("file permissions = %o, want 0600", fi.Mode().Perm())
-	}
-
-	// Check parent directory permissions.
-	di, err := os.Stat(subdir)
-	if err != nil {
-		t.Fatalf("stat dir: %v", err)
-	}
-	if di.Mode().Perm() != 0o700 {
-		t.Errorf("dir permissions = %o, want 0700", di.Mode().Perm())
-	}
-}
-
-func TestGenerateSecretReadOnlyDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("read-only directory enforcement differs on Windows")
-	}
-	if os.Getuid() == 0 {
-		t.Skip("root bypasses filesystem permission checks")
-	}
-
-	dir := t.TempDir()
-	readOnlyDir := filepath.Join(dir, "readonly")
-	if err := os.Mkdir(readOnlyDir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(readOnlyDir, 0o700) })
-
-	secretPath := filepath.Join(readOnlyDir, "subdir", "secret")
-	m := &Manager{secretPath: secretPath}
-	_, err := m.generateSecret()
-	if err == nil {
-		t.Fatal("expected error writing to read-only directory, got nil")
-	}
 }
 
 func TestDiscardOldVCLsMalformedLines(t *testing.T) {
@@ -828,7 +607,6 @@ func TestDiscardOldVCLsMalformedLines(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	// Should not panic despite malformed lines.
 	m.discardOldVCLs("current")
@@ -860,7 +638,6 @@ func TestDiscardOldVCLsEmptyOutput(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	m.discardOldVCLs("kv_reload_1")
 
@@ -876,7 +653,6 @@ func TestMarkBackendSick(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	if err := m.MarkBackendSick("drain_flag"); err != nil {
 		t.Fatalf("MarkBackendSick() error: %v", err)
@@ -888,9 +664,11 @@ func TestMarkBackendSick(t *testing.T) {
 	// Verify the correct varnishadm command was called.
 	found := false
 	for _, c := range r.calls {
-		if len(c) >= 8 && c[5] == "backend.set_health" && c[6] == "drain_flag" && c[7] == "sick" {
-			found = true
-			break
+		for i, arg := range c {
+			if arg == "backend.set_health" && i+2 < len(c) && c[i+1] == "drain_flag" && c[i+2] == "sick" {
+				found = true
+				break
+			}
 		}
 	}
 	if !found {
@@ -910,7 +688,6 @@ func TestMarkBackendSickError(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	err := m.MarkBackendSick("nonexistent")
 	if err == nil {
@@ -941,6 +718,7 @@ func TestActiveSessions(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -972,6 +750,7 @@ func TestActiveSessionsZero(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1002,6 +781,7 @@ func TestActiveSessionsNoCounters(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1025,6 +805,7 @@ func TestActiveSessionsError(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1048,6 +829,7 @@ func TestActiveSessionsInvalidJSON(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1079,6 +861,7 @@ func TestActiveSessionsMalformedValue(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1123,7 +906,6 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 	}
 
 	m := newTestManager(r)
-	m.secretFile = "/tmp/secret"
 
 	m.discardOldVCLs("current")
 
@@ -1136,5 +918,308 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "failed to discard VCL") {
 		t.Errorf("expected warning log for discard failure, got: %s", output)
+	}
+}
+
+func TestDetectVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		err     error
+		wantVer int
+		wantErr bool
+	}{
+		{
+			name:    "varnish 7",
+			output:  "varnishd (varnish-7.7.3 revision abc123)",
+			wantVer: 7,
+		},
+		{
+			name:    "varnish 6",
+			output:  "varnishd (varnish-6.0.16 revision abc123)",
+			wantVer: 6,
+		},
+		{
+			name:    "varnish 8",
+			output:  "varnishd (varnish-8.0.0 revision abc123)",
+			wantVer: 8,
+		},
+		{
+			name:    "unparseable output",
+			output:  "some random output",
+			wantErr: true,
+		},
+		{
+			name:    "command failure",
+			err:     errors.New("exec failed"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &mockRunner{
+				startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+				runFn: func(string, []string) (string, error) {
+					return tt.output, tt.err
+				},
+			}
+			m := newTestManager(r)
+			err := m.DetectVersion()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("detectVersion() error: %v", err)
+			}
+			if m.majorVersion != tt.wantVer {
+				t.Errorf("majorVersion = %d, want %d", m.majorVersion, tt.wantVer)
+			}
+		})
+	}
+}
+
+func TestActiveSessionsV6(t *testing.T) {
+	varnishstatOutput := `{
+		"timestamp": "2024-01-01T00:00:00",
+		"MEMPOOL.sess0.live": {"value": 5},
+		"MEMPOOL.sess1.live": {"value": 3},
+		"MEMPOOL.sess0.pool": {"value": 100},
+		"MAIN.uptime": {"value": 12345}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 6
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if sessions != 8 {
+		t.Errorf("ActiveSessions() = %d, want 8", sessions)
+	}
+}
+
+func TestActiveSessionsV6Zero(t *testing.T) {
+	varnishstatOutput := `{
+		"timestamp": "2024-01-01T00:00:00",
+		"MEMPOOL.sess0.live": {"value": 0},
+		"MEMPOOL.sess1.live": {"value": 0}
+	}`
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, _ []string) (string, error) {
+			if name == "varnishstat" {
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 6
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if sessions != 0 {
+		t.Errorf("ActiveSessions() = %d, want 0", sessions)
+	}
+}
+
+func TestExtractWorkDir(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "separate args",
+			args: []string{"-p", "default_ttl=3600", "-n", "/var/lib/varnish/myname"},
+			want: "/var/lib/varnish/myname",
+		},
+		{
+			name: "concatenated",
+			args: []string{"-p", "default_ttl=3600", "-n/var/lib/varnish/myname"},
+			want: "/var/lib/varnish/myname",
+		},
+		{
+			name: "missing -n",
+			args: []string{"-p", "default_ttl=3600"},
+			want: "",
+		},
+		{
+			name: "-n as last arg without value",
+			args: []string{"-p", "default_ttl=3600", "-n"},
+			want: "",
+		},
+		{
+			name: "-n mixed with other flags",
+			args: []string{"-s", "malloc,256m", "-n", "myinst", "-p", "thread_pool_min=5"},
+			want: "myinst",
+		},
+		{
+			name: "nil args",
+			args: nil,
+			want: "",
+		},
+		{
+			name: "empty args",
+			args: []string{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractWorkDir(tt.args)
+			if got != tt.want {
+				t.Errorf("extractWorkDir(%v) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActiveSessionsWithWorkDir(t *testing.T) {
+	varnishstatOutput := `{
+		"version": 1,
+		"counters": {
+			"MEMPOOL.sess0.live": {"value": 2}
+		}
+	}`
+
+	var gotArgs []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, args []string) (string, error) {
+			if name == "varnishstat" {
+				gotArgs = args
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
+	m.workDir = "/var/lib/varnish/myname"
+
+	_, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+
+	want := []string{"-n", "/var/lib/varnish/myname", "-1", "-j"}
+	if !slices.Equal(gotArgs, want) {
+		t.Errorf("varnishstat args = %v, want %v", gotArgs, want)
+	}
+}
+
+func TestActiveSessionsWithoutWorkDir(t *testing.T) {
+	varnishstatOutput := `{
+		"version": 1,
+		"counters": {
+			"MEMPOOL.sess0.live": {"value": 2}
+		}
+	}`
+
+	var gotArgs []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, args []string) (string, error) {
+			if name == "varnishstat" {
+				gotArgs = args
+				return varnishstatOutput, nil
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 7
+
+	_, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+
+	want := []string{"-1", "-j"}
+	if !slices.Equal(gotArgs, want) {
+		t.Errorf("varnishstat args = %v, want %v", gotArgs, want)
+	}
+}
+
+func TestAdmArgsWithWorkDir(t *testing.T) {
+	var gotArgs []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				gotArgs = args
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.workDir = "/var/lib/varnish/myinst"
+
+	_ = m.Reload("/tmp/test.vcl")
+
+	if len(gotArgs) < 3 {
+		t.Fatalf("expected at least 3 args, got %v", gotArgs)
+	}
+	if gotArgs[0] != "-n" || gotArgs[1] != "/var/lib/varnish/myinst" {
+		t.Errorf("expected args to start with [-n /var/lib/varnish/myinst], got %v", gotArgs[:2])
+	}
+	if !slices.Contains(gotArgs, "vcl.load") {
+		t.Errorf("expected args to contain vcl.load, got %v", gotArgs)
+	}
+}
+
+func TestAdmArgsWithoutWorkDir(t *testing.T) {
+	var gotArgs []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				gotArgs = args
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	// workDir left empty
+
+	_ = m.Reload("/tmp/test.vcl")
+
+	if slices.Contains(gotArgs, "-n") {
+		t.Errorf("expected no -n flag when workDir is empty, got %v", gotArgs)
+	}
+	if slices.Contains(gotArgs, "-T") || slices.Contains(gotArgs, "-S") {
+		t.Errorf("expected no -T/-S flags, got %v", gotArgs)
+	}
+	if !slices.Contains(gotArgs, "vcl.load") {
+		t.Errorf("expected args to contain vcl.load, got %v", gotArgs)
 	}
 }

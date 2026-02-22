@@ -188,6 +188,13 @@ jobs:
       needs.changes.outputs.src == 'true' ||
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        varnish-image:
+          - varnish:6.0.16
+          - varnish:7.7.3-alpine
+          - varnish:8.0.0-alpine
     steps:
     - name: Checkout
       uses: actions/checkout@v6.0.2
@@ -222,7 +229,10 @@ jobs:
       run: |
         mkdir .docker-context
         cp k8s-httpcache-linux-amd64 .docker-context/
-        docker build -f .github/test/Dockerfile --build-arg BINARY=k8s-httpcache-linux-amd64 -t k8s-httpcache:test .docker-context
+        docker build -f .github/test/Dockerfile \
+          --build-arg VARNISH_IMAGE=${{ matrix.varnish-image }} \
+          --build-arg BINARY=k8s-httpcache-linux-amd64 \
+          -t k8s-httpcache:test .docker-context
     - name: Create kind cluster
       uses: helm/kind-action@v1.14.0
       with:
@@ -259,13 +269,15 @@ jobs:
       run: .github/test/metrics-test.sh
     - name: Shard Distribution test
       run: .github/test/shard-test.sh
+    - name: Graceful drain test
+      run: .github/test/drain-test.sh
     - name: Zero-downtime rollout restart
       run: .github/test/rollout-test.sh
     - name: Upload E2E test results
       uses: actions/upload-artifact@v6.0.0
       if: always()
       with:
-        name: e2e-test-results
+        name: e2e-test-results-${{ strategy.job-index }}
         path: |
           smoke-report.xml
           /tmp/oha.json

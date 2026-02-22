@@ -163,28 +163,98 @@ func stripImportStd(vcl string) string {
 	return b.String()
 }
 
-// injectDrainVCL injects drain VCL around the user template output.
+// backendBlockRe matches the start of a VCL backend declaration, e.g.
+// "backend myname {". VCL identifiers may contain letters, digits,
+// underscores, and hyphens.
+var backendBlockRe = regexp.MustCompile(`(?m)^[\t ]*backend\s+[\w-]+\s*\{`)
+
+// backendBlocksEnd returns the byte offset just past the closing "}" (and any
+// trailing newline) of the last backend block in vcl. It correctly handles
+// nested brace blocks such as ".probe = { ... }". Returns 0 if no backend
+// blocks are found.
+func backendBlocksEnd(vcl string) int {
+	locs := backendBlockRe.FindAllStringIndex(vcl, -1)
+	if len(locs) == 0 {
+		return 0
+	}
+
+	lastEnd := 0
+	for _, loc := range locs {
+		// Skip matches inside /* */ block comments.
+		before := vcl[:loc[0]]
+		if strings.Count(before, "/*")-strings.Count(before, "*/") > 0 {
+			continue
+		}
+
+		// The regex ends with \{, so loc[1]-1 is the opening brace.
+		openBrace := loc[1] - 1
+		depth := 1
+		end := openBrace + 1
+		for i := openBrace + 1; i < len(vcl); i++ {
+			// Skip /* */ block comments.
+			if i+1 < len(vcl) && vcl[i] == '/' && vcl[i+1] == '*' {
+				end := strings.Index(vcl[i+2:], "*/")
+				if end >= 0 {
+					i = i + 2 + end + 1 // skip past "*/"
+				} else {
+					break // unclosed comment, stop scanning
+				}
+				continue
+			}
+			// Skip // and # line comments.
+			if vcl[i] == '#' || (i+1 < len(vcl) && vcl[i] == '/' && vcl[i+1] == '/') {
+				nl := strings.IndexByte(vcl[i:], '\n')
+				if nl >= 0 {
+					i += nl // advance to newline
+				} else {
+					break // no newline, rest is comment
+				}
+				continue
+			}
+			switch vcl[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+			}
+			if depth == 0 {
+				end = i + 1
+				// Skip a single trailing newline.
+				if end < len(vcl) && vcl[end] == '\n' {
+					end++
+				}
+				break
+			}
+		}
+		if end > lastEnd {
+			lastEnd = end
+		}
+	}
+	return lastEnd
+}
+
+// injectDrainVCL injects drain VCL into the user template output.
 //
-// The drain vcl_deliver is prepended (right after the version line) so it
-// always runs, even if a user-defined vcl_deliver returns early.
-// "import std;" is always prepended (and stripped from the user VCL to avoid
-// duplicates) because it must appear before the drain subroutine.
+// "import std;" is injected right after the version line (and stripped from the
+// user VCL to avoid duplicates) because it must appear before any subroutine
+// that uses it.
 //
-// The drain backend declaration is appended after all user content so it
-// never becomes Varnish's default backend (Varnish uses the first declared
-// backend as the implicit default).
+// The drain backend declaration and drain sub vcl_deliver are injected right
+// after the last user-declared backend block, so the drain backend is never
+// the first (default) backend and is declared before the sub that references
+// it (avoiding forward-reference errors on Varnish 6). If no user backends
+// are found, the drain VCL is inserted right after the import std line.
 func injectDrainVCL(vcl, backendName string) string {
 	// Strip any existing "import std;" from user VCL — we re-inject it
 	// at the top so it appears before the drain subroutine.
 	vcl = stripImportStd(vcl)
 
-	pos := vclVersionEnd(vcl)
+	versionEnd := vclVersionEnd(vcl)
 
-	// Drain preamble: import std + drain subroutine.
-	var prepend strings.Builder
-	_, _ = fmt.Fprintf(&prepend, `
-import std;
+	importStd := "\nimport std;\n"
 
+	drainVCL := fmt.Sprintf("\nbackend %s {\n  .host = \"127.0.0.1\";\n  .port = \"9\";\n}\n", backendName)
+	drainVCL += fmt.Sprintf(`
 sub vcl_deliver {
   if (!std.healthy(%s)) {
     set resp.http.Connection = "close";
@@ -192,10 +262,21 @@ sub vcl_deliver {
 }
 `, backendName)
 
-	// Drain-flag backend declaration — appended after all user backends
-	// so it does not become the default backend.
-	var appendVCL strings.Builder
-	_, _ = fmt.Fprintf(&appendVCL, "\nbackend %s {\n  .host = \"127.0.0.1\";\n  .port = \"9\";\n}\n", backendName)
+	// Insert import std right after the version line.
+	result := vcl[:versionEnd] + importStd + vcl[versionEnd:]
 
-	return vcl[:pos] + prepend.String() + vcl[pos:] + appendVCL.String()
+	// Find insertion point for drain backend + sub: after the last user
+	// backend block, or right after import std if no backends exist.
+	// The offset is computed on the result string (which now includes
+	// the injected import std).
+	backendsEnd := backendBlocksEnd(result)
+	if backendsEnd == 0 {
+		// No user backends — insert right after import std.
+		insertPos := versionEnd + len(importStd)
+		result = result[:insertPos] + drainVCL + result[insertPos:]
+	} else {
+		result = result[:backendsEnd] + drainVCL + result[backendsEnd:]
+	}
+
+	return result
 }

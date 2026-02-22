@@ -929,6 +929,349 @@ sub vcl_deliver {
 	}
 }
 
+func TestRender_DrainVCLBackendWithProbe(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+backend origin {
+  .host = "127.0.0.1";
+  .port = "8080";
+  .probe = {
+    .url = "/healthz";
+    .interval = 5s;
+  }
+}
+
+sub vcl_deliver {
+  # USER_DELIVER
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Drain backend should appear after the user backend (with nested probe braces).
+	originPos := strings.Index(out, `backend origin {`)
+	drainBackendPos := strings.Index(out, `backend drain_flag {`)
+	if originPos < 0 || drainBackendPos < 0 {
+		t.Fatalf("could not find backend markers\noutput:\n%s", out)
+	}
+	if drainBackendPos <= originPos {
+		t.Error("drain backend should appear after user backend with probe")
+	}
+
+	// Drain sub should appear before user vcl_deliver.
+	drainPos := strings.Index(out, `resp.http.Connection = "close"`)
+	userDeliverPos := strings.Index(out, `# USER_DELIVER`)
+	if drainPos < 0 || userDeliverPos < 0 {
+		t.Fatalf("could not find drain or user deliver markers\noutput:\n%s", out)
+	}
+	if drainPos >= userDeliverPos {
+		t.Error("drain vcl_deliver should appear before user vcl_deliver")
+	}
+}
+
+func TestRender_DrainVCLNoBackends(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+sub vcl_recv {
+  set req.backend_hint = origin;
+}
+
+sub vcl_deliver {
+  # USER_DELIVER
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// Drain backend + sub should be present.
+	if !strings.Contains(out, `backend drain_flag {`) {
+		t.Errorf("expected drain_flag backend\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, `std.healthy(drain_flag)`) {
+		t.Errorf("expected std.healthy check\noutput:\n%s", out)
+	}
+
+	// Both should appear after import std.
+	importPos := strings.Index(out, "import std;")
+	drainBackendPos := strings.Index(out, `backend drain_flag {`)
+	drainSubPos := strings.Index(out, `std.healthy(drain_flag)`)
+	if importPos < 0 || drainBackendPos < 0 || drainSubPos < 0 {
+		t.Fatalf("missing markers\noutput:\n%s", out)
+	}
+	if drainBackendPos <= importPos {
+		t.Error("drain backend should appear after import std")
+	}
+	if drainSubPos <= drainBackendPos {
+		t.Error("drain sub should appear after drain backend")
+	}
+
+	// Drain sub should appear before user vcl_deliver.
+	userDeliverPos := strings.Index(out, `# USER_DELIVER`)
+	if userDeliverPos < 0 {
+		t.Fatalf("could not find user deliver marker\noutput:\n%s", out)
+	}
+	if drainSubPos >= userDeliverPos {
+		t.Error("drain vcl_deliver should appear before user vcl_deliver")
+	}
+}
+
+func TestBackendBlocksEnd(t *testing.T) {
+	tests := []struct {
+		name string
+		vcl  string
+		want int // expected byte offset (0 = not found)
+	}{
+		{
+			name: "no_backends",
+			vcl:  "vcl 4.1;\n\nsub vcl_recv {\n}\n",
+			want: 0,
+		},
+		{
+			name: "single_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  .port = \"8080\";\n}\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  .port = \"8080\";\n}\n"),
+		},
+		{
+			name: "multiple_backends",
+			vcl: "vcl 4.1;\n" +
+				"backend first {\n  .host = \"10.0.0.1\";\n  .port = \"80\";\n}\n" +
+				"backend second {\n  .host = \"10.0.0.2\";\n  .port = \"80\";\n}\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend first {\n  .host = \"10.0.0.1\";\n  .port = \"80\";\n}\n" +
+				"backend second {\n  .host = \"10.0.0.2\";\n  .port = \"80\";\n}\n"),
+		},
+		{
+			name: "backend_with_probe",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  .probe = {\n    .url = \"/\";\n  }\n}\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  .probe = {\n    .url = \"/\";\n  }\n}\n"),
+		},
+		{
+			name: "hyphenated_name",
+			vcl: "vcl 4.1;\n" +
+				"backend web-pod-0 {\n  .host = \"10.0.0.1\";\n  .port = \"8080\";\n}\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend web-pod-0 {\n  .host = \"10.0.0.1\";\n  .port = \"8080\";\n}\n"),
+		},
+		{
+			name: "underscore_name",
+			vcl: "vcl 4.1;\n" +
+				"backend api_pod_0_api {\n  .host = \"10.0.0.1\";\n  .port = \"3000\";\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend api_pod_0_api {\n  .host = \"10.0.0.1\";\n  .port = \"3000\";\n}\n"),
+		},
+		{
+			name: "indented_backend",
+			vcl: "vcl 4.1;\n" +
+				"  backend origin {\n    .host = \"127.0.0.1\";\n  }\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"  backend origin {\n    .host = \"127.0.0.1\";\n  }\n"),
+		},
+		{
+			name: "backends_before_and_after_subs",
+			vcl: "vcl 4.1;\n" +
+				"backend first {\n  .host = \"10.0.0.1\";\n}\n" +
+				"sub vcl_init {\n}\n" +
+				"backend last {\n  .host = \"10.0.0.2\";\n}\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend first {\n  .host = \"10.0.0.1\";\n}\n" +
+				"sub vcl_init {\n}\n" +
+				"backend last {\n  .host = \"10.0.0.2\";\n}\n"),
+		},
+		{
+			name: "no_trailing_newline",
+			vcl:  "vcl 4.1;\nbackend origin {\n  .host = \"127.0.0.1\";\n}",
+			want: len("vcl 4.1;\nbackend origin {\n  .host = \"127.0.0.1\";\n}"),
+		},
+		{
+			name: "hash_comment",
+			vcl: "vcl 4.1;\n" +
+				"# backend commented_out {\n" +
+				"#   .host = \"127.0.0.1\";\n" +
+				"# }\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n",
+			want: len("vcl 4.1;\n" +
+				"# backend commented_out {\n" +
+				"#   .host = \"127.0.0.1\";\n" +
+				"# }\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n"),
+		},
+		{
+			name: "slash_comment",
+			vcl: "vcl 4.1;\n" +
+				"// backend commented_out {\n" +
+				"//   .host = \"127.0.0.1\";\n" +
+				"// }\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n",
+			want: len("vcl 4.1;\n" +
+				"// backend commented_out {\n" +
+				"//   .host = \"127.0.0.1\";\n" +
+				"// }\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n"),
+		},
+		{
+			name: "block_comment_only_backend",
+			vcl: "vcl 4.1;\n" +
+				"/*\nbackend commented_out {\n  .host = \"127.0.0.1\";\n}\n*/\n" +
+				"sub vcl_recv {\n}\n",
+			want: 0, // commented-out backend should be ignored
+		},
+		{
+			name: "block_comment_before_real_backend",
+			vcl: "vcl 4.1;\n" +
+				"/*\nbackend commented_out {\n  .host = \"127.0.0.1\";\n}\n*/\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n",
+			want: len("vcl 4.1;\n" +
+				"/*\nbackend commented_out {\n  .host = \"127.0.0.1\";\n}\n*/\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n"),
+		},
+		{
+			name: "block_comment_after_real_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n" +
+				"/*\nbackend commented_out {\n  .host = \"127.0.0.2\";\n}\n*/\n",
+			want: len("vcl 4.1;\n" +
+				"backend real {\n  .host = \"10.0.0.1\";\n}\n"),
+		},
+		{
+			name: "block_comment_open_brace_inside_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  /* { */\n  .port = \"8080\";\n}\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  /* { */\n  .port = \"8080\";\n}\n"),
+		},
+		{
+			name: "block_comment_close_brace_inside_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  /* } */\n  .port = \"8080\";\n}\n" +
+				"sub vcl_recv {\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  /* } */\n  .port = \"8080\";\n}\n"),
+		},
+		{
+			name: "line_comment_brace_inside_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  // }\n  .port = \"8080\";\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  // }\n  .port = \"8080\";\n}\n"),
+		},
+		{
+			name: "hash_comment_brace_inside_backend",
+			vcl: "vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  # }\n  .port = \"8080\";\n}\n",
+			want: len("vcl 4.1;\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  # }\n  .port = \"8080\";\n}\n"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := backendBlocksEnd(tt.vcl)
+			if got != tt.want {
+				t.Errorf("backendBlocksEnd() = %d, want %d\nvcl:\n%s", got, tt.want, tt.vcl)
+			}
+		})
+	}
+}
+
+func TestRender_DrainVCLMultipleBackends(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+backend origin {
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+<< range .Frontends >>
+backend << .Name >> {
+  .host = "<< .IP >>";
+  .port = "<< .Port >>";
+}
+<< end >>
+
+sub vcl_deliver {
+  # USER_DELIVER
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	frontends := []watcher.Frontend{
+		{IP: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
+		{IP: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
+	}
+
+	out, err := r.Render(frontends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// All user backends should appear before drain backend.
+	drainBackendPos := strings.Index(out, `backend drain_flag {`)
+	if drainBackendPos < 0 {
+		t.Fatalf("drain backend not found\noutput:\n%s", out)
+	}
+	for _, name := range []string{"origin", "web-pod-0", "web-pod-1"} {
+		pos := strings.Index(out, "backend "+name+" {")
+		if pos < 0 {
+			t.Errorf("backend %s not found\noutput:\n%s", name, out)
+		} else if pos >= drainBackendPos {
+			t.Errorf("backend %s (pos %d) should appear before drain backend (pos %d)", name, pos, drainBackendPos)
+		}
+	}
+
+	// Drain sub should appear before user vcl_deliver.
+	drainSubPos := strings.Index(out, `resp.http.Connection = "close"`)
+	userDeliverPos := strings.Index(out, `# USER_DELIVER`)
+	if drainSubPos < 0 || userDeliverPos < 0 {
+		t.Fatalf("missing markers\noutput:\n%s", out)
+	}
+	if drainSubPos >= userDeliverPos {
+		t.Error("drain vcl_deliver should appear before user vcl_deliver")
+	}
+
+	// Drain backend should appear exactly once.
+	count := strings.Count(out, "backend drain_flag {")
+	if count != 1 {
+		t.Errorf("expected drain backend exactly once, got %d\noutput:\n%s", count, out)
+	}
+}
+
 func TestRender_DrainVCLImportStdInComment(t *testing.T) {
 	tmpl := `vcl 4.1;
 

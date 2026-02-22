@@ -3,14 +3,13 @@ package varnish
 
 import (
 	"bufio"
-	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -63,25 +62,39 @@ type Manager struct {
 	varnishdPath    string
 	varnishadmPath  string
 	varnishstatPath string
-	adminAddr       string
 	listenAddrs     []string
 	extraArgs       []string
-	secretPath      string
-	secretFile      string
+	workDir         string // varnishd -n instance name, forwarded to varnishadm/varnishstat
 	run             runner
 	proc            proc
-	dialFn          func(addr string, timeout time.Duration) (net.Conn, error)
+	majorVersion    int // major version of varnishd (e.g. 6, 7, 8)
 	done            chan struct{}
 	err             error
 	reloadCounter   atomic.Int64
 	AdminTimeout    time.Duration
 }
 
+// extractWorkDir scans args for a -n flag and returns its value.
+// It handles both "-n value" (separate args) and "-nvalue" (concatenated).
+func extractWorkDir(args []string) string {
+	for i, a := range args {
+		if a == "-n" {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		}
+		if strings.HasPrefix(a, "-n") && len(a) > 2 {
+			return a[2:]
+		}
+	}
+	return ""
+}
+
 // New creates a new varnish Manager. listenAddrs are passed as individual -a
 // flags to varnishd. extraArgs are appended to the varnishd command line.
-// If secretPath is non-empty, the secret is written to that fixed path; otherwise a temp file is used.
 // varnishstatPath is the path to the varnishstat binary (defaults to "varnishstat" if empty).
-func New(varnishdPath, varnishadmPath, adminAddr string, listenAddrs []string, secretPath string, extraArgs []string, varnishstatPath string) *Manager {
+func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []string, varnishstatPath string) *Manager {
 	if varnishstatPath == "" {
 		varnishstatPath = "varnishstat"
 	}
@@ -89,27 +102,52 @@ func New(varnishdPath, varnishadmPath, adminAddr string, listenAddrs []string, s
 		varnishdPath:    varnishdPath,
 		varnishadmPath:  varnishadmPath,
 		varnishstatPath: varnishstatPath,
-		adminAddr:       adminAddr,
 		listenAddrs:     listenAddrs,
-		secretPath:      secretPath,
 		extraArgs:       extraArgs,
+		workDir:         extractWorkDir(extraArgs),
 		run:             execRunner{},
-		dialFn: func(addr string, timeout time.Duration) (net.Conn, error) {
-			return net.DialTimeout("tcp", addr, timeout) //nolint:noctx // simple TCP poll for admin port readiness; no context needed.
-		},
-		done:         make(chan struct{}),
-		AdminTimeout: 30 * time.Second,
+		done:            make(chan struct{}),
+		AdminTimeout:    30 * time.Second,
 	}
+}
+
+var versionRe = regexp.MustCompile(`varnish-(\d+)\.`)
+
+// DetectVersion runs varnishd -V and stores the major version number.
+// It is safe to call multiple times; Start calls it automatically if
+// the version has not been detected yet.
+func (m *Manager) DetectVersion() error {
+	out, err := m.run.Run(m.varnishdPath, []string{"-V"})
+	if err != nil {
+		return fmt.Errorf("running varnishd -V: %w", err)
+	}
+	matches := versionRe.FindStringSubmatch(out)
+	if len(matches) < 2 {
+		return fmt.Errorf("cannot parse varnish version from: %q", out)
+	}
+	v, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return fmt.Errorf("parsing major version %q: %w", matches[1], err)
+	}
+	m.majorVersion = v
+	slog.Info("detected varnish version", "major", m.majorVersion)
+	return nil
+}
+
+// MajorVersion returns the detected varnishd major version (e.g. 6, 7, 8).
+// Returns 0 if DetectVersion has not been called yet.
+func (m *Manager) MajorVersion() int {
+	return m.majorVersion
 }
 
 // Start launches varnishd in foreground mode with the given initial VCL file.
 // It blocks until the admin port is ready or a timeout is reached.
 func (m *Manager) Start(initialVCL string) error {
-	secret, err := m.generateSecret()
-	if err != nil {
-		return fmt.Errorf("generating secret: %w", err)
+	if m.majorVersion == 0 {
+		if err := m.DetectVersion(); err != nil {
+			return fmt.Errorf("detecting varnish version: %w", err)
+		}
 	}
-	m.secretFile = secret
 
 	args := []string{
 		"-F",
@@ -118,9 +156,7 @@ func (m *Manager) Start(initialVCL string) error {
 		args = append(args, "-a", la)
 	}
 	args = append(args,
-		"-T", m.adminAddr,
 		"-f", initialVCL,
-		"-S", m.secretFile,
 	)
 	args = append(args, m.extraArgs...)
 
@@ -145,7 +181,7 @@ func (m *Manager) Start(initialVCL string) error {
 		return fmt.Errorf("waiting for varnish admin: %w", err)
 	}
 
-	slog.Info("varnish admin ready", "addr", m.adminAddr)
+	slog.Info("varnish admin ready")
 	return nil
 }
 
@@ -191,13 +227,6 @@ func (m *Manager) Err() error {
 	return m.err
 }
 
-// Cleanup removes temporary files.
-func (m *Manager) Cleanup() {
-	if m.secretFile != "" {
-		_ = os.Remove(m.secretFile)
-	}
-}
-
 // MarkBackendSick sets the named backend to "sick" via varnishadm.
 func (m *Manager) MarkBackendSick(name string) error {
 	_, err := m.adm("backend.set_health", name, "sick")
@@ -205,13 +234,24 @@ func (m *Manager) MarkBackendSick(name string) error {
 }
 
 // ActiveSessions returns the total number of live client sessions by summing
-// MEMPOOL.sess<N>.live counters from varnishstat -1 -j output (Varnish 7+).
+// MEMPOOL.sess<N>.live counters from varnishstat -1 -j output.
+// It handles both the Varnish 7+ nested format and the Varnish 6.x flat format.
 func (m *Manager) ActiveSessions() (int64, error) {
-	out, err := m.run.Run(m.varnishstatPath, []string{"-1", "-j"})
+	args := []string{"-1", "-j"}
+	if m.workDir != "" {
+		args = []string{"-n", m.workDir, "-1", "-j"}
+	}
+	out, err := m.run.Run(m.varnishstatPath, args)
 	if err != nil {
 		return 0, fmt.Errorf("varnishstat: %w", err)
 	}
+	if m.majorVersion < 7 {
+		return m.parseActiveSessionsV6(out)
+	}
+	return m.parseActiveSessionsV7(out)
+}
 
+func (m *Manager) parseActiveSessionsV7(out string) (int64, error) {
 	var data struct {
 		Counters map[string]struct {
 			Value uint64 `json:"value"`
@@ -230,40 +270,26 @@ func (m *Manager) ActiveSessions() (int64, error) {
 	return total, nil
 }
 
-func (m *Manager) generateSecret() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
+func (m *Manager) parseActiveSessionsV6(out string) (int64, error) {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &data); err != nil {
+		return 0, fmt.Errorf("parsing varnishstat JSON: %w", err)
 	}
 
-	var (
-		f   *os.File
-		err error
-	)
-	if m.secretPath != "" {
-		if err := os.MkdirAll(filepath.Dir(m.secretPath), 0o700); err != nil {
-			return "", err
+	var total int64
+	for key, raw := range data {
+		if !strings.HasPrefix(key, "MEMPOOL.sess") || !strings.HasSuffix(key, ".live") {
+			continue
 		}
-		f, err = os.OpenFile(m.secretPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	} else {
-		f, err = os.CreateTemp("", "k8s-httpcache-secret-*")
+		var counter struct {
+			Value uint64 `json:"value"`
+		}
+		if err := json.Unmarshal(raw, &counter); err != nil {
+			return 0, fmt.Errorf("parsing varnishstat counter %q: %w", key, err)
+		}
+		total += int64(counter.Value)
 	}
-	if err != nil {
-		return "", err
-	}
-
-	if _, err := fmt.Fprintf(f, "%x\n", b); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return "", err
-	}
-
-	if err := f.Close(); err != nil {
-		_ = os.Remove(f.Name())
-		return "", err
-	}
-
-	return f.Name(), nil
+	return total, nil
 }
 
 func (m *Manager) waitForAdmin(timeout time.Duration) error {
@@ -272,22 +298,23 @@ func (m *Manager) waitForAdmin(timeout time.Duration) error {
 		// Check if varnishd already exited.
 		select {
 		case <-m.done:
-			return fmt.Errorf("varnishd exited before admin port was ready: %w", m.err)
+			return fmt.Errorf("varnishd exited before admin was ready: %w", m.err)
 		default:
 		}
 
-		conn, err := m.dialFn(m.adminAddr, time.Second)
-		if err == nil {
-			_ = conn.Close()
+		if _, err := m.adm("ping"); err == nil {
 			return nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("timeout waiting for admin port %s", m.adminAddr)
+	return errors.New("timeout waiting for varnish admin")
 }
 
 func (m *Manager) adm(args ...string) (string, error) {
-	cmdArgs := []string{"-T", m.adminAddr, "-S", m.secretFile}
+	var cmdArgs []string
+	if m.workDir != "" {
+		cmdArgs = []string{"-n", m.workDir}
+	}
 	cmdArgs = append(cmdArgs, args...)
 
 	slog.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
@@ -317,13 +344,4 @@ func (m *Manager) discardOldVCLs(currentName string) {
 			}
 		}
 	}
-}
-
-// ParseAdminPort extracts the port number from the admin address.
-func ParseAdminPort(addr string) (int, error) {
-	_, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.Atoi(portStr)
 }

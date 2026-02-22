@@ -208,10 +208,10 @@ spec:
             drop:
               - ALL
         args:
+        - --varnishd-path=/usr/sbin/varnishd
         - --service-name=k8s-httpcache
         - --namespace=$(NAMESPACE)
         - --vcl-template=/etc/k8s-httpcache/vcl.tmpl
-        - --secret-path=/var/lib/varnish/secrets/secret
         - --broadcast-addr=:8088
         - --backend=backend:backend
         - --backend=backend-port:backend:8080
@@ -224,18 +224,20 @@ spec:
         - --drain-delay=15s
         - --drain-timeout=30s
         - --
+        - -n
+        - /var/lib/varnish
         - -s
         - default,1M
         - -t
-        - 5s
+        - "5"
         - -p
-        - default_grace=0s
+        - default_grace=0
         - -p
-        - default_keep=0s
+        - default_keep=0
         - -p
-        - timeout_idle=75s
+        - timeout_idle=75
         - -p
-        - backend_idle_timeout=5s
+        - backend_idle_timeout=5
         env:
         - name: NAMESPACE
           valueFrom:
@@ -413,6 +415,7 @@ data:
     }
 
     sub vcl_deliver {
+      set resp.http.X-Shard-Owner = req.http.x-shard;
       set resp.http.X-Values-Test = "<< index .Values.test "greeting" >>";
       set resp.http.X-Values-Nested = "<< .Values.test.server.host >>";
       set resp.http.X-ValuesDir-Test = "<< index .Values.dirtest "greeting" >>";

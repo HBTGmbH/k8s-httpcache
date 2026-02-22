@@ -6,7 +6,7 @@ set -eu
 N=200
 for i in $(seq 1 $N); do
   curl -sf -D- -o /dev/null "http://localhost:8080/backend/shard-test/$i" 2>/dev/null \
-    | grep -i '^via:' | head -1 | awk '{print $3}'
+    | grep -i '^x-shard-owner:' | awk '{print $2}' | tr -d '\r'
 done > /tmp/shard-pods.txt
 
 echo "Shard pod distribution:"

@@ -122,6 +122,18 @@ func main() {
 		log.Fatalf("kubernetes client: %v", err)
 	}
 
+	// Create varnish manager and detect version before rendering VCL,
+	// because the renderer needs the version to generate compatible VCL.
+	listenAddrs := make([]string, len(cfg.ListenAddrs))
+	for i, la := range cfg.ListenAddrs {
+		listenAddrs[i] = la.Raw
+	}
+	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, listenAddrs, cfg.ExtraVarnishd, cfg.VarnishstatPath)
+	mgr.AdminTimeout = cfg.AdminTimeout
+
+	if err := mgr.DetectVersion(); err != nil {
+		log.Fatalf("varnish version: %v", err)
+	}
 	// Parse VCL template.
 	rend, err := renderer.New(cfg.VCLTemplate)
 	if err != nil {
@@ -245,17 +257,9 @@ func main() {
 	// Render VCL with real endpoint data and start varnishd.
 	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends, latestValues)
 	if err != nil {
-		log.Fatalf("initial render: %v", err) //nolint:gocritic // startup fatal; process exits, no cleanup needed
+		log.Fatalf("initial render: %v", err) //nolint:gocritic // fatal before Start is intentional; deferred cancel is harmless to skip
 	}
 	defer func() { _ = os.Remove(initialVCL) }()
-
-	listenAddrs := make([]string, len(cfg.ListenAddrs))
-	for i, la := range cfg.ListenAddrs {
-		listenAddrs[i] = la.Raw
-	}
-	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, cfg.AdminAddr, listenAddrs, cfg.SecretPath, cfg.ExtraVarnishd, cfg.VarnishstatPath)
-	mgr.AdminTimeout = cfg.AdminTimeout
-	defer mgr.Cleanup()
 
 	if err := mgr.Start(initialVCL); err != nil {
 		log.Fatalf("varnish start: %v", err)

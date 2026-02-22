@@ -166,11 +166,9 @@ type Config struct {
 	ServiceNamespace           string // resolved namespace for the frontend service
 	Namespace                  string
 	VCLTemplate                string
-	AdminAddr                  string
 	ListenAddrs                []ListenAddrSpec
 	VarnishdPath               string
 	VarnishadmPath             string
-	SecretPath                 string
 	BroadcastAddr              string
 	BroadcastTargetListenAddr  string
 	BroadcastTargetPort        int32 // resolved from BroadcastTargetListenAddr
@@ -264,12 +262,10 @@ func Parse() (*Config, error) {
 	flag.StringVar(&c.ServiceName, "service-name", "", "Kubernetes Service to watch: [namespace/]service (required)")
 	flag.StringVar(&c.Namespace, "namespace", "", "Kubernetes namespace (required, used as default for services without a namespace/ prefix)")
 	flag.StringVar(&c.VCLTemplate, "vcl-template", "", "Path to VCL Go template file (required)")
-	flag.StringVar(&c.AdminAddr, "admin-addr", "127.0.0.1:6082", "Varnish admin listen address")
 	flag.DurationVar(&c.AdminTimeout, "admin-timeout", 30*time.Second, "Max time to wait for the varnish admin port to become ready")
 	flag.Var(&listenAddrs, "listen-addr", "Varnish listen address: [name=]address[,proto] (repeatable, default: http=:8080,HTTP)")
 	flag.StringVar(&c.VarnishdPath, "varnishd-path", "varnishd", "Path to varnishd binary")
 	flag.StringVar(&c.VarnishadmPath, "varnishadm-path", "varnishadm", "Path to varnishadm binary")
-	flag.StringVar(&c.SecretPath, "secret-path", "", "Path to write the varnishadm secret file (default: auto-generated temp file)")
 	flag.DurationVar(&c.Debounce, "debounce", 2*time.Second, "Debounce duration for endpoint changes")
 	flag.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", 30*time.Second, "Time to wait for varnishd to exit before sending SIGKILL")
 	flag.StringVar(&c.BroadcastAddr, "broadcast-addr", ":8088", "Listen address for the broadcast HTTP server (set empty to disable)")
