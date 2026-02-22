@@ -74,7 +74,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 2. Build and load the test image:
 
    ```bash
-   CGO_ENABLED=0 GOOS=linux go build -trimpath -o k8s-httpcache .
+   CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache .
    mkdir -p .docker-context
    cp k8s-httpcache .docker-context/
    docker build -f .github/test/Dockerfile -t k8s-httpcache:test .docker-context
