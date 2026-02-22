@@ -196,6 +196,8 @@ type Config struct {
 	DrainTimeout               time.Duration
 	VCLTemplateWatchInterval   time.Duration
 	VarnishstatPath            string
+	TemplateDelimLeft          string
+	TemplateDelimRight         string
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -291,7 +293,17 @@ func Parse() (*Config, error) {
 	flag.DurationVar(&c.VCLTemplateWatchInterval, "vcl-template-watch-interval", 5*time.Second, "Poll interval for VCL template file changes")
 	flag.StringVar(&c.VarnishstatPath, "varnishstat-path", "varnishstat", "Path to varnishstat binary")
 
+	var templateDelims string
+	flag.StringVar(&templateDelims, "template-delims", "<< >>", "Template delimiters as a space-separated pair (e.g. \"<< >>\" or \"{{ }}\")")
+
 	flag.Parse()
+
+	parts := strings.Fields(templateDelims)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("--template-delims must be exactly two tokens, got %d in %q", len(parts), templateDelims)
+	}
+	c.TemplateDelimLeft = parts[0]
+	c.TemplateDelimRight = parts[1]
 
 	switch c.LogFormat {
 	case "text", "json":

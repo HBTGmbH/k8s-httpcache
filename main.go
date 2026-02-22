@@ -135,7 +135,7 @@ func main() {
 		log.Fatalf("varnish version: %v", err)
 	}
 	// Parse VCL template.
-	rend, err := renderer.New(cfg.VCLTemplate)
+	rend, err := renderer.New(cfg.VCLTemplate, cfg.TemplateDelimLeft, cfg.TemplateDelimRight)
 	if err != nil {
 		log.Fatalf("renderer: %v", err)
 	}

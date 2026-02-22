@@ -147,7 +147,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 - Follow standard Go conventions ([Effective Go](https://go.dev/doc/effective_go), [Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)).
 - The `.golangci.yml` enforces the project's style rules — if the linter is happy, the style is fine.
 - Use `gofmt` for formatting (enforced by CI).
-- VCL templates use `<<` / `>>` delimiters, not `{{ }}`.
+- VCL templates use `<<` / `>>` delimiters by default (configurable via `--template-delims`).
 
 ## Releasing
 

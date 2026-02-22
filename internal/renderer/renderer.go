@@ -27,6 +27,8 @@ type Renderer struct {
 	templatePath string
 	funcMap      template.FuncMap
 	drainBackend string
+	delimLeft    string
+	delimRight   string
 }
 
 // SetDrainBackend configures the renderer to auto-inject drain VCL using the
@@ -36,7 +38,7 @@ func (r *Renderer) SetDrainBackend(name string) {
 }
 
 // New parses the template file and returns a Renderer.
-func New(templatePath string) (*Renderer, error) {
+func New(templatePath, delimLeft, delimRight string) (*Renderer, error) {
 	funcMap := sprig.TxtFuncMap()
 
 	raw, err := os.ReadFile(templatePath)
@@ -44,12 +46,12 @@ func New(templatePath string) (*Renderer, error) {
 		return nil, fmt.Errorf("reading template %s: %w", templatePath, err)
 	}
 
-	tmpl, err := template.New("vcl").Delims("<<", ">>").Funcs(funcMap).Parse(string(raw))
+	tmpl, err := template.New("vcl").Delims(delimLeft, delimRight).Funcs(funcMap).Parse(string(raw))
 	if err != nil {
 		return nil, fmt.Errorf("parsing template %s: %w", templatePath, err)
 	}
 
-	return &Renderer{tmpl: tmpl, templatePath: templatePath, funcMap: funcMap}, nil
+	return &Renderer{tmpl: tmpl, templatePath: templatePath, funcMap: funcMap, delimLeft: delimLeft, delimRight: delimRight}, nil
 }
 
 // Reload re-reads and re-parses the template file from disk.
@@ -62,7 +64,7 @@ func (r *Renderer) Reload() error {
 		return fmt.Errorf("reading template %s: %w", r.templatePath, err)
 	}
 
-	tmpl, err := template.New("vcl").Delims("<<", ">>").Funcs(r.funcMap).Parse(string(raw))
+	tmpl, err := template.New("vcl").Delims(r.delimLeft, r.delimRight).Funcs(r.funcMap).Parse(string(raw))
 	if err != nil {
 		return fmt.Errorf("parsing template %s: %w", r.templatePath, err)
 	}

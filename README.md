@@ -22,7 +22,7 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
   - https://github.com/mittwald/kube-httpcache/issues/133
 - Supports multiple listen addresses with the full Varnish `-a` syntax, including PROXY protocol
   - https://github.com/mittwald/kube-httpcache/issues/206
-- Uses "<< ... >>" as Template delimiter to not clash with Helm templating
+- Uses `<< ... >>` as default template delimiters to not clash with Helm templating (configurable via `--template-delims`)
 - Graceful connection draining on shutdown with active session polling via varnishstat
 - Broadcast server that fans out requests (e.g. PURGE) to all Varnish frontend pods
 - Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more
@@ -146,6 +146,12 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `--drain-delay` | `15s` | Delay after marking backend sick before polling for active sessions |
 | `--drain-poll-interval` | `1s` | Poll interval for active sessions during graceful drain |
 | `--drain-timeout` | `0` | Max time to wait for active sessions to reach 0. Default `0` skips session polling. Set to a positive duration (e.g. `30s`) to poll and wait for connections to close. |
+
+### Template flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--template-delims` | `<< >>` | Template delimiters as a space-separated pair (e.g. `"<< >>"` or `"{{ }}"`) |
 
 ### Timing and logging flags
 
@@ -331,7 +337,7 @@ The values are accessible in templates as `.Values.tuning.ttl` (300) and `.Value
 
 ## VCL template
 
-The VCL template is a standard Go [`text/template`](https://pkg.go.dev/text/template) with custom delimiters `<<` and `>>` (instead of `{{ }}`) to avoid clashes with Helm templating.
+The VCL template is a standard Go [`text/template`](https://pkg.go.dev/text/template) with custom delimiters `<<` and `>>` by default (instead of `{{ }}`) to avoid clashes with Helm templating. Use `--template-delims` to change the delimiters (e.g. `--template-delims="{{ }}"` for standard Go template syntax).
 
 ### Data model
 

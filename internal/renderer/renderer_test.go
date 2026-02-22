@@ -22,7 +22,7 @@ func writeTempTemplate(t *testing.T, content string) string {
 }
 
 func TestNew_InvalidPath(t *testing.T) {
-	_, err := New("/nonexistent/path.tmpl")
+	_, err := New("/nonexistent/path.tmpl", "<<", ">>")
 	if err == nil {
 		t.Fatal("expected error for nonexistent template path")
 	}
@@ -30,7 +30,7 @@ func TestNew_InvalidPath(t *testing.T) {
 
 func TestNew_InvalidTemplate(t *testing.T) {
 	path := writeTempTemplate(t, `<< if >>`)
-	_, err := New(path)
+	_, err := New(path, "<<", ">>")
 	if err == nil {
 		t.Fatal("expected error for invalid template syntax")
 	}
@@ -39,7 +39,7 @@ func TestNew_InvalidTemplate(t *testing.T) {
 func TestNew_CustomDelimiters(t *testing.T) {
 	// Ensure {{ }} is treated as literal text, not Go template syntax.
 	path := writeTempTemplate(t, `{{ .Helm }} << .Frontends >>`)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,11 +52,271 @@ func TestNew_CustomDelimiters(t *testing.T) {
 	}
 }
 
+func TestNew_ConfigurableDelimiters(t *testing.T) {
+	// Use {{ }} delimiters instead of << >>.
+	path := writeTempTemplate(t, `hello {{ .Frontends }} world`)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "hello [] world") {
+		t.Errorf("expected template to use {{ }} delimiters, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersLiteralPassthrough(t *testing.T) {
+	// When using {{ }} delimiters, << >> should pass through as literal text.
+	path := writeTempTemplate(t, `<< literal >> {{ len .Frontends }}`)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "<< literal >>") {
+		t.Errorf("expected << literal >> preserved as literal text, got: %s", out)
+	}
+	if !strings.Contains(out, "0") {
+		t.Errorf("expected len .Frontends = 0, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
+	tmpl := `{{ range .Frontends }}backend {{ .Name }} { .host = "{{ .IP }}"; .port = "{{ .Port }}"; }
+{{ end }}`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	frontends := []watcher.Frontend{
+		{IP: "10.0.0.1", Port: 8080, Name: "pod-a"},
+		{IP: "10.0.0.2", Port: 8080, Name: "pod-b"},
+	}
+
+	out, err := r.Render(frontends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, `backend pod-a`) {
+		t.Errorf("expected backend pod-a, got: %s", out)
+	}
+	if !strings.Contains(out, `.host = "10.0.0.2"`) {
+		t.Errorf("expected host 10.0.0.2, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
+	tmpl := `{{ range $name, $eps := .Backends }}{{ range $eps }}{{ .Name }}_{{ $name }}={{ .IP }}:{{ .Port }} {{ end }}{{ end }}`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
+		},
+	}
+
+	out, err := r.Render(nil, backends, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api-pod-0_api=10.1.0.1:3000") {
+		t.Errorf("expected backend endpoint data, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersWithValues(t *testing.T) {
+	tmpl := `ttl={{ index .Values.config "ttl" }}`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	values := map[string]map[string]any{
+		"config": {"ttl": "300"},
+	}
+
+	out, err := r.Render(nil, nil, values)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "ttl=300") {
+		t.Errorf("expected ttl=300, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersSprigFunctions(t *testing.T) {
+	tmpl := `{{ "hello world" | upper | replace " " "_" }}`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "HELLO_WORLD" {
+		t.Errorf("expected HELLO_WORLD, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
+	tmpl := `vcl 4.1; {{ range .Frontends }}{{ .IP }} {{ end }}`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	frontends := []watcher.Frontend{
+		{IP: "10.0.0.5", Port: 80, Name: "x"},
+	}
+
+	outPath, err := r.RenderToFile(frontends, nil, nil)
+	if err != nil {
+		t.Fatalf("RenderToFile error: %v", err)
+	}
+	defer func() { _ = os.Remove(outPath) }()
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("reading output file: %v", err)
+	}
+	if !strings.Contains(string(data), "10.0.0.5") {
+		t.Errorf("expected IP in file, got: %s", data)
+	}
+}
+
+func TestNew_ConfigurableDelimitersReload(t *testing.T) {
+	path := writeTempTemplate(t, `BEFORE {{ .Frontends }}`)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out, _ := r.Render(nil, nil, nil)
+	if !strings.Contains(out, "BEFORE") {
+		t.Fatalf("expected BEFORE, got: %s", out)
+	}
+
+	// Update template and reload — delimiters should be preserved.
+	if err := os.WriteFile(path, []byte(`AFTER {{ .Frontends }}`), 0644); err != nil {
+		t.Fatalf("writing updated template: %v", err)
+	}
+	if err := r.Reload(); err != nil {
+		t.Fatalf("reload error: %v", err)
+	}
+	out, _ = r.Render(nil, nil, nil)
+	if !strings.Contains(out, "AFTER") {
+		t.Errorf("expected AFTER after reload, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersRollback(t *testing.T) {
+	path := writeTempTemplate(t, `OLD {{ len .Frontends }}`)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Update and reload.
+	if err := os.WriteFile(path, []byte(`NEW {{ len .Frontends }}`), 0644); err != nil {
+		t.Fatalf("writing updated template: %v", err)
+	}
+	if err := r.Reload(); err != nil {
+		t.Fatalf("reload error: %v", err)
+	}
+	out, _ := r.Render(nil, nil, nil)
+	if !strings.Contains(out, "NEW") {
+		t.Fatalf("expected NEW after reload, got: %s", out)
+	}
+
+	// Rollback should restore the old template.
+	r.Rollback()
+	out, _ = r.Render(nil, nil, nil)
+	if !strings.Contains(out, "OLD") {
+		t.Errorf("expected OLD after rollback, got: %s", out)
+	}
+}
+
+func TestNew_ConfigurableDelimitersInvalidTemplate(t *testing.T) {
+	path := writeTempTemplate(t, `{{ if }}`)
+	_, err := New(path, "{{", "}}")
+	if err == nil {
+		t.Fatal("expected error for invalid template syntax with custom delimiters")
+	}
+}
+
+func TestNew_ConfigurableDelimitersDrainVCL(t *testing.T) {
+	tmpl := `vcl 4.1;
+
+backend origin {
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+sub vcl_deliver {
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "{{", "}}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	if !strings.Contains(out, `backend drain_flag {`) {
+		t.Error("expected drain_flag backend declaration")
+	}
+	if !strings.Contains(out, `std.healthy(drain_flag)`) {
+		t.Error("expected std.healthy(drain_flag) in drain check")
+	}
+	if !strings.Contains(out, "import std;") {
+		t.Error("expected import std to be injected")
+	}
+}
+
+func TestNew_UnusualDelimiters(t *testing.T) {
+	// Verify that arbitrary multi-character delimiters work.
+	tmpl := `result=[% len .Frontends %]`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "[%", "%]")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, err := r.Render(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "result=0" {
+		t.Errorf("expected result=0, got: %s", out)
+	}
+}
+
 func TestRender_EmptyFrontends(t *testing.T) {
 	tmpl := `vcl 4.1;
 << if .Frontends >>HAS_BACKENDS<< else >>NO_BACKENDS<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +337,7 @@ func TestRender_WithFrontends(t *testing.T) {
 	tmpl := `<< range .Frontends >>backend << .Name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +490,7 @@ func TestRender_SprigFunctions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeTempTemplate(t, tt.tmpl)
-			r, err := New(path)
+			r, err := New(path, "<<", ">>")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -247,7 +507,7 @@ func TestRender_SprigFunctions(t *testing.T) {
 
 func TestReload(t *testing.T) {
 	path := writeTempTemplate(t, `BEFORE`)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -274,7 +534,7 @@ func TestReload(t *testing.T) {
 
 func TestRollback(t *testing.T) {
 	path := writeTempTemplate(t, `OLD`)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,7 +563,7 @@ func TestRollback(t *testing.T) {
 
 func TestReload_InvalidTemplate(t *testing.T) {
 	path := writeTempTemplate(t, `VALID`)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -407,7 +667,7 @@ sub vcl_backend_response {
     set beresp.grace = 60s;
 }`
 	path := writeTempTemplate(t, exampleVCL)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("failed to load example template: %v", err)
 	}
@@ -519,7 +779,7 @@ sub vcl_backend_response {
 func TestRenderToFile(t *testing.T) {
 	tmpl := `vcl 4.1; << range .Frontends >><< .IP >> << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -548,7 +808,7 @@ func TestRender_WithBackends(t *testing.T) {
 		`<< range $eps >>backend << .Name >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -589,7 +849,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 	// Template that will fail during execution (call undefined method).
 	tmpl := `<< range .Frontends >><< .Nonexistent >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -606,7 +866,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 
 func TestReload_FileRemoved(t *testing.T) {
 	path := writeTempTemplate(t, `VALID`)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -632,7 +892,7 @@ func TestReload_FileRemoved(t *testing.T) {
 
 func TestRollback_NoOp(t *testing.T) {
 	path := writeTempTemplate(t, `ONLY`)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -653,7 +913,7 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	tmpl := `frontends:<< range .Frontends >> << .IP >><< end >>` +
 		` backends:<< range $name, $eps := .Backends >><< range $eps >> << .IP >>/<< $name >><< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -683,7 +943,7 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 func TestRender_WithValues(t *testing.T) {
 	tmpl := `greeting=<< index .Values.tuning "greeting" >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -704,7 +964,7 @@ func TestRender_WithValues(t *testing.T) {
 func TestRender_EmptyValues(t *testing.T) {
 	tmpl := `<< if .Values >>HAS_VALUES<< else >>NO_VALUES<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -723,7 +983,7 @@ func TestRender_EmptyValues(t *testing.T) {
 func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
 	tmpl := `ttl=<< index .Values.config "ttl" >> frontends=<< len .Frontends >> backends=<< len .Backends >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -763,7 +1023,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -805,7 +1065,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -831,7 +1091,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -858,7 +1118,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -896,7 +1156,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -947,7 +1207,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -992,7 +1252,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1278,7 +1538,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1337,7 +1597,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1368,7 +1628,7 @@ func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpl := "vcl 4.1;\n" + tt.line + "\n\nsub vcl_recv {\n  set req.backend_hint = origin;\n}\n"
 			path := writeTempTemplate(t, tmpl)
-			r, err := New(path)
+			r, err := New(path, "<<", ">>")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1391,7 +1651,7 @@ func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
 func TestRender_NestedValues(t *testing.T) {
 	tmpl := `host=<< index .Values.server "host" >> port=<< index .Values.server "port" >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path)
+	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

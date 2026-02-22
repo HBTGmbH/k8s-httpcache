@@ -1862,3 +1862,78 @@ func TestParseValuesDirValid(t *testing.T) {
 		t.Errorf("ValuesDirs[0].Path = %q, want %q", cfg.ValuesDirs[0].Path, dir)
 	}
 }
+
+// --- --template-delims flag tests ---
+
+func TestParseTemplateDelimsDefault(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TemplateDelimLeft != "<<" {
+		t.Errorf("TemplateDelimLeft = %q, want %q", cfg.TemplateDelimLeft, "<<")
+	}
+	if cfg.TemplateDelimRight != ">>" {
+		t.Errorf("TemplateDelimRight = %q, want %q", cfg.TemplateDelimRight, ">>")
+	}
+}
+
+func TestParseTemplateDelimsCustom(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--template-delims={{ }}",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TemplateDelimLeft != "{{" {
+		t.Errorf("TemplateDelimLeft = %q, want %q", cfg.TemplateDelimLeft, "{{")
+	}
+	if cfg.TemplateDelimRight != "}}" {
+		t.Errorf("TemplateDelimRight = %q, want %q", cfg.TemplateDelimRight, "}}")
+	}
+}
+
+func TestParseTemplateDelimsSingleToken(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--template-delims=<<",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for single-token --template-delims")
+	}
+	if !strings.Contains(err.Error(), "--template-delims must be exactly two tokens") {
+		t.Errorf("error = %q, want substring '--template-delims must be exactly two tokens'", err)
+	}
+}
+
+func TestParseTemplateDelimsThreeTokens(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--template-delims=<< >> extra",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for three-token --template-delims")
+	}
+	if !strings.Contains(err.Error(), "--template-delims must be exactly two tokens") {
+		t.Errorf("error = %q, want substring '--template-delims must be exactly two tokens'", err)
+	}
+}
