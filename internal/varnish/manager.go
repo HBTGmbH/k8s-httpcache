@@ -113,13 +113,26 @@ func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []
 
 var versionRe = regexp.MustCompile(`varnish-(\d+)\.`)
 
+// trunkVersionRe matches "varnish-trunk" (the development branch).
+var trunkVersionRe = regexp.MustCompile(`varnish-trunk\b`)
+
+// trunkMajorVersion is the synthetic major version assigned to trunk builds.
+// It is set high so that trunk is always treated as the latest version.
+const trunkMajorVersion = 99
+
 // DetectVersion runs varnishd -V and stores the major version number.
 // It is safe to call multiple times; Start calls it automatically if
-// the version has not been detected yet.
+// the version has not been detected yet. Trunk builds ("varnish-trunk")
+// are treated as the latest version.
 func (m *Manager) DetectVersion() error {
 	out, err := m.run.Run(m.varnishdPath, []string{"-V"})
 	if err != nil {
 		return fmt.Errorf("running varnishd -V: %w", err)
+	}
+	if trunkVersionRe.MatchString(out) {
+		m.majorVersion = trunkMajorVersion
+		slog.Info("detected varnish version", "major", "trunk")
+		return nil
 	}
 	matches := versionRe.FindStringSubmatch(out)
 	if len(matches) < 2 {

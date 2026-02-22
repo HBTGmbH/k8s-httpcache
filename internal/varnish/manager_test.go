@@ -945,6 +945,11 @@ func TestDetectVersion(t *testing.T) {
 			wantVer: 8,
 		},
 		{
+			name:    "varnish trunk",
+			output:  "varnishd (varnish-trunk revision 382ea77157290253a93203dc60a289925b7bebea)",
+			wantVer: trunkMajorVersion,
+		},
+		{
 			name:    "unparseable output",
 			output:  "some random output",
 			wantErr: true,
