@@ -159,6 +159,20 @@ k8s-httpcache \
   -p timeout_idle=75s
 ```
 
+### Varnish 6 notes
+
+On Varnish 6, the default `varnishd` in `$PATH` is a wrapper script that always passes `-n`, which breaks `varnishd -V` (used to detect the Varnish version at startup). Use `--varnishd-path` to point to the real binary:
+
+```
+--varnishd-path=/usr/sbin/varnishd
+```
+
+Varnish 6 also does not default to `/var/lib/varnish` as working directory. You must pass `-n` explicitly via the `--` separator so that varnishd, varnishadm, and varnishstat all use the same working directory:
+
+```
+-- -n /var/lib/varnish
+```
+
 ## Backend specification
 
 Format: `name:[namespace/]service[:port]`
