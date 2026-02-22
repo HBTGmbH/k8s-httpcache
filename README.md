@@ -17,10 +17,25 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
 - Nicer CLI interface. varnishd cmd args can be directly specified after '--'
 - Watching for changes of the VCL template in file system and dynamically reloading it at runtime
 - Rollback for failed VCL template updates, such that frontend/backend changes still load fine after a failed VCL template was loaded
+  - https://github.com/mittwald/kube-httpcache/issues/138
 - Supports multiple backend groups
+  - https://github.com/mittwald/kube-httpcache/issues/133
 - Supports multiple listen addresses with the full Varnish `-a` syntax, including PROXY protocol
   - https://github.com/mittwald/kube-httpcache/issues/206
 - Uses "<< ... >>" as Template delimiter to not clash with Helm templating
+- Graceful connection draining on shutdown with active session polling via varnishstat
+- Broadcast server that fans out requests (e.g. PURGE) to all Varnish frontend pods
+- Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more
+- ExternalName service support for hostname-based backends
+  - https://github.com/mittwald/kube-httpcache/issues/39
+- Template values from Kubernetes ConfigMaps (`--values`) or mounted directories (`--values-dir`), dynamically reloaded on changes
+- Cross-namespace backends and values via `namespace/service` syntax
+- All [Sprig](http://masterminds.github.io/sprig/) template functions available in VCL templates (including [`env`](http://masterminds.github.io/sprig/os.html) for environment variables)
+  - https://github.com/mittwald/kube-httpcache/issues/53
+- Automatic Varnish version detection with support for Varnish 6, 7, 8, and trunk builds
+- Structured logging with configurable format (text/json) and log level
+- Endpoint change debouncing to avoid rapid VCL reload cycles
+  - https://github.com/mittwald/kube-httpcache/issues/66
 
 ## Container image
 
