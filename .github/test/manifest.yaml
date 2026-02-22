@@ -208,7 +208,7 @@ spec:
             drop:
               - ALL
         args:
-        - --varnishd-path=/usr/sbin/varnishd
+        - --varnishd-path=/usr/sbin/varnishd  # <-- here only necessary for Varnish 6.x
         - --service-name=k8s-httpcache
         - --namespace=$(NAMESPACE)
         - --vcl-template=/etc/k8s-httpcache/vcl.tmpl
@@ -224,8 +224,8 @@ spec:
         - --drain-delay=15s
         - --drain-timeout=30s
         - --
-        - -n
-        - /var/lib/varnish
+        - -n  # <-- here only necessary for Varnish 6.x
+        - /var/lib/varnish  # <-- here only necessary for Varnish 6.x
         - -s
         - default,1M
         - -t
