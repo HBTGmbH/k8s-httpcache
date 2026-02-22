@@ -75,9 +75,10 @@ type loopConfig struct {
 	shutdownTimeout       time.Duration
 	broadcastDrainTimeout time.Duration
 
-	drainBackend string
-	drainDelay   time.Duration
-	drainTimeout time.Duration
+	drainBackend      string
+	drainDelay        time.Duration
+	drainPollInterval time.Duration
+	drainTimeout      time.Duration
 
 	latestFrontends []watcher.Frontend
 	latestBackends  map[string][]watcher.Endpoint
@@ -106,7 +107,7 @@ func main() {
 	if cfg.MetricsAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
-		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout}
 		go func() {
 			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
 			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -253,6 +254,7 @@ func main() {
 		listenAddrs[i] = la.Raw
 	}
 	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, cfg.AdminAddr, listenAddrs, cfg.SecretPath, cfg.ExtraVarnishd, cfg.VarnishstatPath)
+	mgr.AdminTimeout = cfg.AdminTimeout
 	defer mgr.Cleanup()
 
 	if err := mgr.Start(initialVCL); err != nil {
@@ -261,7 +263,7 @@ func main() {
 	telemetry.VarnishdUp.Set(1)
 
 	// Watch VCL template file for changes.
-	templateCh := watchFile(ctx, cfg.VCLTemplate, 5*time.Second)
+	templateCh := watchFile(ctx, cfg.VCLTemplate, cfg.VCLTemplateWatchInterval)
 
 	// Fan-in backend watcher updates to a single channel.
 	var backendCh chan backendChange
@@ -320,9 +322,10 @@ func main() {
 		shutdownTimeout:       cfg.ShutdownTimeout,
 		broadcastDrainTimeout: cfg.BroadcastDrainTimeout,
 
-		drainBackend: drainBackendForLoop(cfg.Drain),
-		drainDelay:   cfg.DrainDelay,
-		drainTimeout: cfg.DrainTimeout,
+		drainBackend:      drainBackendForLoop(cfg.Drain),
+		drainDelay:        cfg.DrainDelay,
+		drainPollInterval: cfg.DrainPollInterval,
+		drainTimeout:      cfg.DrainTimeout,
 
 		latestFrontends: latestFrontends,
 		latestBackends:  latestBackends,
@@ -483,7 +486,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				// long-lived connections that may never close).
 				if !interrupted && lc.drainTimeout > 0 {
 					deadline := time.After(lc.drainTimeout)
-					ticker := time.NewTicker(1 * time.Second)
+					ticker := time.NewTicker(lc.drainPollInterval)
 				drainLoop:
 					for {
 						select {

@@ -187,12 +187,16 @@ type Config struct {
 	ValuesDirs                 []ValuesDirSpec
 	ValuesDirPollInterval      time.Duration
 	MetricsAddr                string
+	MetricsReadHeaderTimeout   time.Duration
 	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
 	LogLevel                   slog.Level
 	LogFormat                  string // "text" or "json"
+	AdminTimeout               time.Duration
 	Drain                      bool
 	DrainDelay                 time.Duration
+	DrainPollInterval          time.Duration
 	DrainTimeout               time.Duration
+	VCLTemplateWatchInterval   time.Duration
 	VarnishstatPath            string
 }
 
@@ -261,6 +265,7 @@ func Parse() (*Config, error) {
 	flag.StringVar(&c.Namespace, "namespace", "", "Kubernetes namespace (required, used as default for services without a namespace/ prefix)")
 	flag.StringVar(&c.VCLTemplate, "vcl-template", "", "Path to VCL Go template file (required)")
 	flag.StringVar(&c.AdminAddr, "admin-addr", "127.0.0.1:6082", "Varnish admin listen address")
+	flag.DurationVar(&c.AdminTimeout, "admin-timeout", 30*time.Second, "Max time to wait for the varnish admin port to become ready")
 	flag.Var(&listenAddrs, "listen-addr", "Varnish listen address: [name=]address[,proto] (repeatable, default: http=:8080,HTTP)")
 	flag.StringVar(&c.VarnishdPath, "varnishd-path", "varnishd", "Path to varnishd binary")
 	flag.StringVar(&c.VarnishadmPath, "varnishadm-path", "varnishadm", "Path to varnishadm binary")
@@ -282,9 +287,12 @@ func Parse() (*Config, error) {
 	flag.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "Log level (DEBUG, INFO, WARN, ERROR)")
 	flag.StringVar(&c.LogFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&c.MetricsAddr, "metrics-addr", ":9101", "Listen address for Prometheus metrics (set empty to disable)")
+	flag.DurationVar(&c.MetricsReadHeaderTimeout, "metrics-read-header-timeout", 10*time.Second, "Max time to read request headers on the metrics server")
 	flag.BoolVar(&c.Drain, "drain", false, "Enable graceful connection draining on shutdown")
 	flag.DurationVar(&c.DrainDelay, "drain-delay", 15*time.Second, "Delay after marking backend sick before polling for active sessions")
+	flag.DurationVar(&c.DrainPollInterval, "drain-poll-interval", 1*time.Second, "Poll interval for active sessions during graceful drain")
 	flag.DurationVar(&c.DrainTimeout, "drain-timeout", 0, "Max time to wait for active sessions to reach 0 (0 to skip session polling)")
+	flag.DurationVar(&c.VCLTemplateWatchInterval, "vcl-template-watch-interval", 5*time.Second, "Poll interval for VCL template file changes")
 	flag.StringVar(&c.VarnishstatPath, "varnishstat-path", "varnishstat", "Path to varnishstat binary")
 
 	flag.Parse()

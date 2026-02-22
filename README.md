@@ -83,7 +83,9 @@ k8s-httpcache [flags] [-- varnishd-args...]
 |------|---------|-------------|
 | `--varnishd-path` | `varnishd` | Path to varnishd binary |
 | `--varnishadm-path` | `varnishadm` | Path to varnishadm binary |
+| `--varnishstat-path` | `varnishstat` | Path to varnishstat binary |
 | `--admin-addr` | `127.0.0.1:6082` | Varnish admin listen address |
+| `--admin-timeout` | `30s` | Max time to wait for the varnish admin port to become ready |
 | `--secret-path` | *(auto-generated)* | Path to write the varnishadm secret file |
 
 ### Broadcast flags
@@ -104,6 +106,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--metrics-addr` | `:9101` | Listen address for Prometheus metrics (set to `""` to disable) |
+| `--metrics-read-header-timeout` | `10s` | Max time to read request headers on the metrics server |
 
 The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`, `process_*`) plus the following application metrics, all prefixed with `k8s_httpcache_`:
 
@@ -128,6 +131,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 |------|---------|-------------|
 | `--drain` | `false` | Enable graceful connection draining on shutdown (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)) |
 | `--drain-delay` | `15s` | Delay after marking backend sick before polling for active sessions |
+| `--drain-poll-interval` | `1s` | Poll interval for active sessions during graceful drain |
 | `--drain-timeout` | `0` | Max time to wait for active sessions to reach 0. Default `0` skips session polling. Set to a positive duration (e.g. `30s`) to poll and wait for connections to close. |
 
 ### Timing and logging flags
@@ -136,6 +140,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 |------|---------|-------------|
 | `--debounce` | `2s` | Debounce duration for endpoint changes |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
+| `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes |
 | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--log-format` | `text` | Log format: `text`, `json` |
 

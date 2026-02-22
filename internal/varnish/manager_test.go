@@ -74,7 +74,8 @@ func newTestManager(r *mockRunner) *Manager {
 			_ = c2.Close()
 			return c1, nil
 		},
-		done: make(chan struct{}),
+		done:         make(chan struct{}),
+		AdminTimeout: 30 * time.Second,
 	}
 }
 
@@ -584,6 +585,9 @@ func TestNew(t *testing.T) {
 	}
 	if m.done == nil {
 		t.Error("done channel should not be nil")
+	}
+	if m.AdminTimeout != 30*time.Second {
+		t.Errorf("AdminTimeout = %v, want 30s", m.AdminTimeout)
 	}
 }
 

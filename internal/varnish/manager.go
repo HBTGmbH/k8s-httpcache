@@ -74,6 +74,7 @@ type Manager struct {
 	done            chan struct{}
 	err             error
 	reloadCounter   atomic.Int64
+	AdminTimeout    time.Duration
 }
 
 // New creates a new varnish Manager. listenAddrs are passed as individual -a
@@ -96,7 +97,8 @@ func New(varnishdPath, varnishadmPath, adminAddr string, listenAddrs []string, s
 		dialFn: func(addr string, timeout time.Duration) (net.Conn, error) {
 			return net.DialTimeout("tcp", addr, timeout) //nolint:noctx // simple TCP poll for admin port readiness; no context needed.
 		},
-		done: make(chan struct{}),
+		done:         make(chan struct{}),
+		AdminTimeout: 30 * time.Second,
 	}
 }
 
@@ -139,7 +141,7 @@ func (m *Manager) Start(initialVCL string) error {
 	}()
 
 	// Wait for admin port to become ready.
-	if err := m.waitForAdmin(30 * time.Second); err != nil {
+	if err := m.waitForAdmin(m.AdminTimeout); err != nil {
 		return fmt.Errorf("waiting for varnish admin: %w", err)
 	}
 

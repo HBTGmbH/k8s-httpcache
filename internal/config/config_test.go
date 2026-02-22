@@ -1060,6 +1060,7 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
+		"--admin-timeout=45s",
 		"--debounce=5s",
 		"--shutdown-timeout=60s",
 		"--broadcast-drain-timeout=45s",
@@ -1068,6 +1069,9 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		"--broadcast-read-header-timeout=15s",
 		"--broadcast-client-idle-timeout=8s",
 		"--broadcast-client-timeout=6s",
+		"--drain-poll-interval=2s",
+		"--metrics-read-header-timeout=20s",
+		"--vcl-template-watch-interval=10s",
 	})
 	cfg, err := Parse()
 	if err != nil {
@@ -1078,6 +1082,7 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		got  time.Duration
 		want time.Duration
 	}{
+		{"AdminTimeout", cfg.AdminTimeout, 45 * time.Second},
 		{"Debounce", cfg.Debounce, 5 * time.Second},
 		{"ShutdownTimeout", cfg.ShutdownTimeout, 60 * time.Second},
 		{"BroadcastDrainTimeout", cfg.BroadcastDrainTimeout, 45 * time.Second},
@@ -1086,6 +1091,9 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		{"BroadcastReadHeaderTimeout", cfg.BroadcastReadHeaderTimeout, 15 * time.Second},
 		{"BroadcastClientIdleTimeout", cfg.BroadcastClientIdleTimeout, 8 * time.Second},
 		{"BroadcastClientTimeout", cfg.BroadcastClientTimeout, 6 * time.Second},
+		{"DrainPollInterval", cfg.DrainPollInterval, 2 * time.Second},
+		{"MetricsReadHeaderTimeout", cfg.MetricsReadHeaderTimeout, 20 * time.Second},
+		{"VCLTemplateWatchInterval", cfg.VCLTemplateWatchInterval, 10 * time.Second},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -1346,6 +1354,7 @@ func TestParseDefaultDurations(t *testing.T) {
 		got  time.Duration
 		want time.Duration
 	}{
+		{"AdminTimeout", cfg.AdminTimeout, 30 * time.Second},
 		{"Debounce", cfg.Debounce, 2 * time.Second},
 		{"ShutdownTimeout", cfg.ShutdownTimeout, 30 * time.Second},
 		{"BroadcastDrainTimeout", cfg.BroadcastDrainTimeout, 30 * time.Second},
@@ -1354,6 +1363,9 @@ func TestParseDefaultDurations(t *testing.T) {
 		{"BroadcastReadHeaderTimeout", cfg.BroadcastReadHeaderTimeout, 10 * time.Second},
 		{"BroadcastClientIdleTimeout", cfg.BroadcastClientIdleTimeout, 4 * time.Second},
 		{"BroadcastClientTimeout", cfg.BroadcastClientTimeout, 3 * time.Second},
+		{"DrainPollInterval", cfg.DrainPollInterval, 1 * time.Second},
+		{"MetricsReadHeaderTimeout", cfg.MetricsReadHeaderTimeout, 10 * time.Second},
+		{"VCLTemplateWatchInterval", cfg.VCLTemplateWatchInterval, 5 * time.Second},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

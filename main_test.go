@@ -357,6 +357,8 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 		shutdownTimeout:       1 * time.Second,
 		broadcastDrainTimeout: 1 * time.Second,
 
+		drainPollInterval: 1 * time.Second,
+
 		latestFrontends: nil,
 		latestBackends:  make(map[string][]watcher.Endpoint),
 		latestValues:    make(map[string]map[string]any),
@@ -1395,5 +1397,14 @@ func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
 	// Verify ActiveSessions was never polled.
 	if h.mgr.getSessionsCalls() != 0 {
 		t.Fatalf("expected 0 ActiveSessions calls, got %d", h.mgr.getSessionsCalls())
+	}
+}
+
+func TestDrainBackendForLoop(t *testing.T) {
+	if got := drainBackendForLoop(true); got != drainBackendName {
+		t.Errorf("drainBackendForLoop(true) = %q, want %q", got, drainBackendName)
+	}
+	if got := drainBackendForLoop(false); got != "" {
+		t.Errorf("drainBackendForLoop(false) = %q, want empty", got)
 	}
 }
