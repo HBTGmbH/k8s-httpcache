@@ -4,7 +4,7 @@
 # Requires: oha, kubectl, jq
 set -eu
 
-oha -c 5 -q 10 -z 180s -u s -m POST --no-tui --output-format json http://localhost:8080/backend/ > /tmp/oha.json 2>/dev/null &
+oha -c 20 -q 200 -z 180s -u s -m POST --no-tui --output-format json http://localhost:8080/backend/ > /tmp/oha.json 2>/dev/null &
 OHA_PID=$!
 
 sleep 3
