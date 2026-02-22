@@ -36,7 +36,7 @@ ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
 
 ## Quick start
 
-[`deploy/kube-manifest.yaml`](deploy/kube-manifest.yaml) contains a complete working example. It creates the following resources:
+[`.github/test/manifest.yaml`](.github/test/manifest.yaml) contains a complete working example. It creates the following resources:
 
 - **ServiceAccount** — identity for the k8s-httpcache pod
 - **Role** — permissions to list/watch services and endpointslices
@@ -48,7 +48,7 @@ ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
 Apply it with:
 
 ```bash
-kubectl apply -f deploy/kube-manifest.yaml
+kubectl apply -f .github/test/manifest.yaml
 ```
 
 ## Configuration
@@ -358,7 +358,7 @@ The VCL template file is watched for changes. When a change is detected, k8s-htt
 
 ### Reference VCL template
 
-The following template from [`deploy/kube-manifest.yaml`](deploy/kube-manifest.yaml) demonstrates shard-based routing, multiple backend groups, and PURGE handling. Note that drain VCL is **not** included here — when `--drain` is enabled, k8s-httpcache automatically injects the necessary VCL (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)).
+The following template from [`.github/test/manifest.yaml`](.github/test/manifest.yaml) demonstrates shard-based routing, multiple backend groups, and PURGE handling. Note that drain VCL is **not** included here — when `--drain` is enabled, k8s-httpcache automatically injects the necessary VCL (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)).
 
 ```vcl
 vcl 4.1;
