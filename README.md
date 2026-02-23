@@ -92,7 +92,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--backend`, `-b` | | Backend service (repeatable). See [Backend specification](#backend-specification). |
 | `--values` | | ConfigMap to watch for template values (repeatable). See [Values specification](#values-specification). |
 | `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
-| `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories |
+| `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories (only effective when `--file-watch` is enabled) |
 
 ### Varnish paths
 
@@ -108,13 +108,13 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--broadcast-addr` | `:8088` | Broadcast server listen address (`none` to disable) |
-| `--broadcast-target-listen-addr` | *(first `--listen-addr`)* | Name of the `--listen-addr` to target for fan-out |
-| `--broadcast-drain-timeout` | `30s` | Time to wait for broadcast connections to drain before shutting down |
-| `--broadcast-shutdown-timeout` | `5s` | Time to wait for in-flight broadcast requests to finish after draining |
-| `--broadcast-server-idle-timeout` | `120s` | Max idle time for client keep-alive connections to the broadcast server |
-| `--broadcast-read-header-timeout` | `10s` | Max time to read request headers on the broadcast server |
-| `--broadcast-client-idle-timeout` | `4s` | Max idle time for connections to Varnish pods in the broadcast client pool |
-| `--broadcast-client-timeout` | `3s` | Timeout for each fan-out request to a Varnish pod |
+| `--broadcast-target-listen-addr` | *(first `--listen-addr`)* | Name of the `--listen-addr` to target for fan-out (only effective when broadcast is enabled) |
+| `--broadcast-drain-timeout` | `30s` | Time to wait for broadcast connections to drain before shutting down (only effective when broadcast is enabled) |
+| `--broadcast-shutdown-timeout` | `5s` | Time to wait for in-flight broadcast requests to finish after draining (only effective when broadcast is enabled) |
+| `--broadcast-server-idle-timeout` | `120s` | Max idle time for client keep-alive connections to the broadcast server (only effective when broadcast is enabled) |
+| `--broadcast-read-header-timeout` | `10s` | Max time to read request headers on the broadcast server (only effective when broadcast is enabled) |
+| `--broadcast-client-idle-timeout` | `4s` | Max idle time for connections to Varnish pods in the broadcast client pool (only effective when broadcast is enabled) |
+| `--broadcast-client-timeout` | `3s` | Timeout for each fan-out request to a Varnish pod (only effective when broadcast is enabled) |
 
 ### Metrics flags
 
@@ -146,9 +146,9 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--drain` | `false` | Enable graceful connection draining on shutdown (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)) |
-| `--drain-delay` | `15s` | Delay after marking backend sick before polling for active sessions |
-| `--drain-poll-interval` | `1s` | Poll interval for active sessions during graceful drain |
-| `--drain-timeout` | `0` | Max time to wait for active sessions to reach 0. Default `0` skips session polling. Set to a positive duration (e.g. `30s`) to poll and wait for connections to close. |
+| `--drain-delay` | `15s` | Delay after marking backend sick before polling for active sessions (only effective when `--drain` is enabled) |
+| `--drain-poll-interval` | `1s` | Poll interval for active sessions during graceful drain (only effective when `--drain` is enabled) |
+| `--drain-timeout` | `0` | Max time to wait for active sessions to reach 0 (only effective when `--drain` is enabled). Default `0` skips session polling. Set to a positive duration (e.g. `30s`) to poll and wait for connections to close. |
 
 ### Template flags
 
@@ -162,7 +162,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 |------|---------|-------------|
 | `--debounce` | `2s` | Debounce duration for endpoint changes |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
-| `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes |
+| `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes (only effective when `--file-watch` is enabled) |
 | `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
 | `--vcl-reload-retries` | `3` | Max retry attempts for `vcl.load` failures (`0` disables retries) |
 | `--vcl-reload-retry-interval` | `2s` | Wait between `vcl.load` retry attempts |
