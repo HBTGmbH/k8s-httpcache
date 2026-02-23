@@ -130,6 +130,8 @@ func main() {
 	}
 	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, listenAddrs, cfg.ExtraVarnishd, cfg.VarnishstatPath)
 	mgr.AdminTimeout = cfg.AdminTimeout
+	mgr.ReloadRetries = cfg.VCLReloadRetries
+	mgr.ReloadRetryInterval = cfg.VCLReloadRetryInterval
 
 	if err := mgr.DetectVersion(); err != nil {
 		log.Fatalf("varnish version: %v", err)

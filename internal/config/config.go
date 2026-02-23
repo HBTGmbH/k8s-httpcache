@@ -198,6 +198,8 @@ type Config struct {
 	VarnishstatPath            string
 	TemplateDelimLeft          string
 	TemplateDelimRight         string
+	VCLReloadRetries           int
+	VCLReloadRetryInterval     time.Duration
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -293,6 +295,9 @@ func Parse() (*Config, error) {
 	flag.DurationVar(&c.VCLTemplateWatchInterval, "vcl-template-watch-interval", 5*time.Second, "Poll interval for VCL template file changes")
 	flag.StringVar(&c.VarnishstatPath, "varnishstat-path", "varnishstat", "Path to varnishstat binary")
 
+	flag.IntVar(&c.VCLReloadRetries, "vcl-reload-retries", 3, "Max retry attempts for vcl.load failures (0 disables retries)")
+	flag.DurationVar(&c.VCLReloadRetryInterval, "vcl-reload-retry-interval", 2*time.Second, "Wait between vcl.load retry attempts")
+
 	var templateDelims string
 	flag.StringVar(&templateDelims, "template-delims", "<< >>", "Template delimiters as a space-separated pair (e.g. \"<< >>\" or \"{{ }}\")")
 
@@ -304,6 +309,13 @@ func Parse() (*Config, error) {
 	}
 	c.TemplateDelimLeft = parts[0]
 	c.TemplateDelimRight = parts[1]
+
+	if c.VCLReloadRetries < 0 {
+		return nil, fmt.Errorf("--vcl-reload-retries must be >= 0, got %d", c.VCLReloadRetries)
+	}
+	if c.VCLReloadRetryInterval < 0 {
+		return nil, fmt.Errorf("--vcl-reload-retry-interval must be >= 0, got %v", c.VCLReloadRetryInterval)
+	}
 
 	switch c.LogFormat {
 	case "text", "json":

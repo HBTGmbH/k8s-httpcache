@@ -1061,6 +1061,7 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		"--drain-poll-interval=2s",
 		"--metrics-read-header-timeout=20s",
 		"--vcl-template-watch-interval=10s",
+		"--vcl-reload-retry-interval=5s",
 	})
 	cfg, err := Parse()
 	if err != nil {
@@ -1083,6 +1084,7 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		{"DrainPollInterval", cfg.DrainPollInterval, 2 * time.Second},
 		{"MetricsReadHeaderTimeout", cfg.MetricsReadHeaderTimeout, 20 * time.Second},
 		{"VCLTemplateWatchInterval", cfg.VCLTemplateWatchInterval, 10 * time.Second},
+		{"VCLReloadRetryInterval", cfg.VCLReloadRetryInterval, 5 * time.Second},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -1355,6 +1357,7 @@ func TestParseDefaultDurations(t *testing.T) {
 		{"DrainPollInterval", cfg.DrainPollInterval, 1 * time.Second},
 		{"MetricsReadHeaderTimeout", cfg.MetricsReadHeaderTimeout, 10 * time.Second},
 		{"VCLTemplateWatchInterval", cfg.VCLTemplateWatchInterval, 5 * time.Second},
+		{"VCLReloadRetryInterval", cfg.VCLReloadRetryInterval, 2 * time.Second},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -1935,5 +1938,172 @@ func TestParseTemplateDelimsThreeTokens(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--template-delims must be exactly two tokens") {
 		t.Errorf("error = %q, want substring '--template-delims must be exactly two tokens'", err)
+	}
+}
+
+func TestParseVCLReloadRetriesDefaults(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLReloadRetries != 3 {
+		t.Errorf("VCLReloadRetries = %d, want 3", cfg.VCLReloadRetries)
+	}
+	if cfg.VCLReloadRetryInterval != 2*time.Second {
+		t.Errorf("VCLReloadRetryInterval = %v, want 2s", cfg.VCLReloadRetryInterval)
+	}
+}
+
+func TestParseVCLReloadRetriesCustom(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retries=5",
+		"--vcl-reload-retry-interval=500ms",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLReloadRetries != 5 {
+		t.Errorf("VCLReloadRetries = %d, want 5", cfg.VCLReloadRetries)
+	}
+	if cfg.VCLReloadRetryInterval != 500*time.Millisecond {
+		t.Errorf("VCLReloadRetryInterval = %v, want 500ms", cfg.VCLReloadRetryInterval)
+	}
+}
+
+func TestParseVCLReloadRetriesZero(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retries=0",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLReloadRetries != 0 {
+		t.Errorf("VCLReloadRetries = %d, want 0", cfg.VCLReloadRetries)
+	}
+}
+
+func TestParseVCLReloadRetriesNegative(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retries=-1",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for negative --vcl-reload-retries")
+	}
+	if !strings.Contains(err.Error(), "--vcl-reload-retries must be >= 0") {
+		t.Errorf("error = %q, want substring '--vcl-reload-retries must be >= 0'", err)
+	}
+}
+
+func TestParseVCLReloadRetryIntervalNegative(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retry-interval=-1s",
+	})
+	_, err := Parse()
+	if err == nil {
+		t.Fatal("expected error for negative --vcl-reload-retry-interval")
+	}
+	if !strings.Contains(err.Error(), "--vcl-reload-retry-interval must be >= 0") {
+		t.Errorf("error = %q, want substring '--vcl-reload-retry-interval must be >= 0'", err)
+	}
+}
+
+func TestParseVCLReloadRetryIntervalZero(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retry-interval=0s",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLReloadRetryInterval != 0 {
+		t.Errorf("VCLReloadRetryInterval = %v, want 0s", cfg.VCLReloadRetryInterval)
+	}
+}
+
+func TestParseVCLReloadRetryIntervalSubSecond(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retry-interval=100ms",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLReloadRetryInterval != 100*time.Millisecond {
+		t.Errorf("VCLReloadRetryInterval = %v, want 100ms", cfg.VCLReloadRetryInterval)
+	}
+}
+
+func TestParseVCLReloadRetriesOnlyRetriesSet(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retries=10",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLReloadRetries != 10 {
+		t.Errorf("VCLReloadRetries = %d, want 10", cfg.VCLReloadRetries)
+	}
+	// Interval should remain at default.
+	if cfg.VCLReloadRetryInterval != 2*time.Second {
+		t.Errorf("VCLReloadRetryInterval = %v, want 2s (default)", cfg.VCLReloadRetryInterval)
+	}
+}
+
+func TestParseVCLReloadRetriesOnlyIntervalSet(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-reload-retry-interval=10s",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Retries should remain at default.
+	if cfg.VCLReloadRetries != 3 {
+		t.Errorf("VCLReloadRetries = %d, want 3 (default)", cfg.VCLReloadRetries)
+	}
+	if cfg.VCLReloadRetryInterval != 10*time.Second {
+		t.Errorf("VCLReloadRetryInterval = %v, want 10s", cfg.VCLReloadRetryInterval)
 	}
 }

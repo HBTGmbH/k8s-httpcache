@@ -18,6 +18,8 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
 - Watching for changes of the VCL template in file system and dynamically reloading it at runtime
 - Rollback for failed VCL template updates, such that frontend/backend changes still load fine after a failed VCL template was loaded
   - https://github.com/mittwald/kube-httpcache/issues/138
+- Automatic retry of transient `vcl.load` failures (e.g. during Varnish child process restarts), configurable via `--vcl-reload-retries` and `--vcl-reload-retry-interval`
+  - https://github.com/mittwald/kube-httpcache/issues/138
 - Supports multiple backend groups
   - https://github.com/mittwald/kube-httpcache/issues/133
 - Supports multiple listen addresses with the full Varnish `-a` syntax, including PROXY protocol
@@ -126,6 +128,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `vcl_reloads_total` | Counter | `result` | VCL reload attempts (`success` or `error`) |
+| `vcl_reload_retries_total` | Counter | | VCL reload retry attempts |
 | `vcl_render_errors_total` | Counter | | VCL template render failures |
 | `vcl_template_changes_total` | Counter | | VCL template file changes detected on disk |
 | `vcl_template_parse_errors_total` | Counter | | VCL template parse failures |
@@ -160,6 +163,8 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `--debounce` | `2s` | Debounce duration for endpoint changes |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
 | `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes |
+| `--vcl-reload-retries` | `3` | Max retry attempts for `vcl.load` failures (`0` disables retries) |
+| `--vcl-reload-retry-interval` | `2s` | Wait between `vcl.load` retry attempts |
 | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--log-format` | `text` | Log format: `text`, `json` |
 

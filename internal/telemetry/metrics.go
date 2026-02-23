@@ -78,6 +78,13 @@ var (
 		Help:      "Number of frontend pods targeted by the last broadcast fan-out.",
 	})
 
+	// VCLReloadRetriesTotal counts VCL reload retry attempts (each retry increments this counter).
+	VCLReloadRetriesTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "vcl_reload_retries_total",
+		Help:      "Total number of VCL reload retry attempts.",
+	})
+
 	// ValuesUpdatesTotal counts ConfigMap value updates received by the event loop.
 	ValuesUpdatesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
@@ -97,6 +104,7 @@ func init() {
 	prometheus.MustRegister(
 		VCLReloadsTotal,
 		VCLRenderErrorsTotal,
+		VCLReloadRetriesTotal,
 		VCLTemplateChangesTotal,
 		VCLTemplateParseErrorsTotal,
 		VCLRollbacksTotal,

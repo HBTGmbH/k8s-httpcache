@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1349,5 +1350,506 @@ func TestAdmArgsWithoutWorkDir(t *testing.T) {
 	}
 	if !slices.Contains(gotArgs, "vcl.load") {
 		t.Errorf("expected args to contain vcl.load, got %v", gotArgs)
+	}
+}
+
+func TestReloadRetrySucceeds(t *testing.T) {
+	var loadCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				n := loadCount.Add(1)
+				if n <= 2 {
+					return "VCL compilation failed", errors.New("exit status 1")
+				}
+				return "200", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 3
+	m.ReloadRetryInterval = time.Millisecond
+
+	err := m.Reload("/tmp/test.vcl")
+	if err != nil {
+		t.Fatalf("expected Reload to succeed after retries, got: %v", err)
+	}
+	if got := loadCount.Load(); got != 3 {
+		t.Errorf("vcl.load called %d times, want 3", got)
+	}
+}
+
+func TestReloadRetriesExhausted(t *testing.T) {
+	var loadCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				loadCount.Add(1)
+				return "VCL compilation failed", errors.New("exit status 1")
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 2
+	m.ReloadRetryInterval = time.Millisecond
+
+	err := m.Reload("/tmp/test.vcl")
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if !strings.Contains(err.Error(), "vcl.load") {
+		t.Errorf("error = %q, want substring 'vcl.load'", err.Error())
+	}
+	// 1 initial + 2 retries = 3 attempts.
+	if got := loadCount.Load(); got != 3 {
+		t.Errorf("vcl.load called %d times, want 3", got)
+	}
+}
+
+func TestReloadRetriesDisabled(t *testing.T) {
+	var loadCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				loadCount.Add(1)
+				return "VCL compilation failed", errors.New("exit status 1")
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 0
+	m.ReloadRetryInterval = time.Millisecond
+
+	err := m.Reload("/tmp/test.vcl")
+	if err == nil {
+		t.Fatal("expected error with retries disabled")
+	}
+	if got := loadCount.Load(); got != 1 {
+		t.Errorf("vcl.load called %d times, want 1 (single attempt)", got)
+	}
+}
+
+func TestReloadVCLUseNotRetried(t *testing.T) {
+	var loadCount, useCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				loadCount.Add(1)
+				return "200", nil
+			}
+			if slices.Contains(args, "vcl.use") {
+				useCount.Add(1)
+				return "VCL in use", errors.New("exit status 1")
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 3
+	m.ReloadRetryInterval = time.Millisecond
+
+	err := m.Reload("/tmp/test.vcl")
+	if err == nil {
+		t.Fatal("expected error from vcl.use failure")
+	}
+	if !strings.Contains(err.Error(), "vcl.use") {
+		t.Errorf("error = %q, want substring 'vcl.use'", err.Error())
+	}
+	// vcl.load should succeed on first attempt; no retries.
+	if got := loadCount.Load(); got != 1 {
+		t.Errorf("vcl.load called %d times, want 1", got)
+	}
+	if got := useCount.Load(); got != 1 {
+		t.Errorf("vcl.use called %d times, want 1", got)
+	}
+}
+
+func TestReloadRetryCounterIncrements(t *testing.T) {
+	var loadCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				n := loadCount.Add(1)
+				if n <= 2 {
+					return "VCL compilation failed", errors.New("exit status 1")
+				}
+				return "200", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 3
+	m.ReloadRetryInterval = time.Millisecond
+
+	err := m.Reload("/tmp/test.vcl")
+	if err != nil {
+		t.Fatalf("expected Reload to succeed, got: %v", err)
+	}
+	// Each attempt increments reloadCounter. 3 attempts total.
+	if got := m.reloadCounter.Load(); got != 3 {
+		t.Errorf("reloadCounter = %d, want 3", got)
+	}
+}
+
+func TestReloadRetryVCLNamesAndCallSequence(t *testing.T) {
+	// vcl.load fails twice, then succeeds on the 3rd attempt.
+	// Verify the exact names passed to vcl.load/vcl.use and that
+	// vcl.use is only called once with the successful name.
+	var loadCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				n := loadCount.Add(1)
+				if n <= 2 {
+					return "VCL compilation failed", errors.New("exit status 1")
+				}
+				return "200", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 3
+	m.ReloadRetryInterval = time.Millisecond
+
+	if err := m.Reload("/tmp/test.vcl"); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	r.mu.Lock()
+	calls := r.calls
+	r.mu.Unlock()
+
+	// Extract vcl.load and vcl.use calls in order.
+	var loadUseCalls [][]string
+	for _, c := range calls {
+		for i, arg := range c {
+			if arg == "vcl.load" || arg == "vcl.use" {
+				loadUseCalls = append(loadUseCalls, c[i:])
+				break
+			}
+		}
+	}
+
+	// Expect: 3x vcl.load (kv_reload_1 fail, kv_reload_2 fail, kv_reload_3 ok)
+	// then 1x vcl.use (kv_reload_3).
+	expected := [][]string{
+		{"vcl.load", "kv_reload_1", "/tmp/test.vcl"},
+		{"vcl.load", "kv_reload_2", "/tmp/test.vcl"},
+		{"vcl.load", "kv_reload_3", "/tmp/test.vcl"},
+		{"vcl.use", "kv_reload_3"},
+	}
+
+	if len(loadUseCalls) != len(expected) {
+		t.Fatalf("got %d vcl.load/vcl.use calls, want %d\ncalls: %v",
+			len(loadUseCalls), len(expected), loadUseCalls)
+	}
+	for i, want := range expected {
+		got := loadUseCalls[i]
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("call[%d] = %v, want %v", i, got, want)
+		}
+	}
+}
+
+func TestReloadRetryNoDiscardOnExhausted(t *testing.T) {
+	// When all retries are exhausted, discardOldVCLs should NOT be called.
+	var discardCalls atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				return "VCL compilation failed", errors.New("exit status 1")
+			}
+			if slices.Contains(args, "vcl.list") {
+				discardCalls.Add(1)
+				return "", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 2
+	m.ReloadRetryInterval = time.Millisecond
+
+	_ = m.Reload("/tmp/test.vcl")
+
+	if got := discardCalls.Load(); got != 0 {
+		t.Errorf("vcl.list called %d times, want 0 (no discard after exhausting retries)", got)
+	}
+}
+
+func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
+	// When vcl.load succeeds (after retries), discardOldVCLs should be
+	// called with the correct (successful) VCL name.
+	var loadCount atomic.Int32
+	var discardCurrentName string
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				n := loadCount.Add(1)
+				if n <= 1 {
+					return "VCL compilation failed", errors.New("exit status 1")
+				}
+				return "200", nil
+			}
+			if slices.Contains(args, "vcl.list") {
+				// Return the successful name as active so discardOldVCLs
+				// has something to work with.
+				return "active      0 warm          0 kv_reload_2\n" +
+					"available   0 warm          0 old_1", nil
+			}
+			if slices.Contains(args, "vcl.discard") {
+				for i, a := range args {
+					if a == "vcl.discard" && i+1 < len(args) {
+						discardCurrentName = args[i+1]
+					}
+				}
+				return "", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 2
+	m.ReloadRetryInterval = time.Millisecond
+
+	if err := m.Reload("/tmp/test.vcl"); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	// discardOldVCLs should have discarded "old_1".
+	if discardCurrentName != "old_1" {
+		t.Errorf("discarded %q, want old_1", discardCurrentName)
+	}
+}
+
+func TestReloadRetryVCLUseNotCalledOnFailedAttempts(t *testing.T) {
+	// Verify that vcl.use is never called for attempts where vcl.load failed.
+	var loadCount atomic.Int32
+	var useNames []string
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				n := loadCount.Add(1)
+				if n <= 2 {
+					return "VCL compilation failed", errors.New("exit status 1")
+				}
+				return "200", nil
+			}
+			if slices.Contains(args, "vcl.use") {
+				for i, a := range args {
+					if a == "vcl.use" && i+1 < len(args) {
+						useNames = append(useNames, args[i+1])
+					}
+				}
+				return "200", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 3
+	m.ReloadRetryInterval = time.Millisecond
+
+	if err := m.Reload("/tmp/test.vcl"); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	// vcl.use should be called exactly once, with the name from the
+	// successful (3rd) vcl.load attempt.
+	if len(useNames) != 1 {
+		t.Fatalf("vcl.use called %d times, want 1: %v", len(useNames), useNames)
+	}
+	if useNames[0] != "kv_reload_3" {
+		t.Errorf("vcl.use name = %q, want kv_reload_3", useNames[0])
+	}
+}
+
+func TestReloadRetryLogMessages(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	var loadCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				n := loadCount.Add(1)
+				if n <= 1 {
+					return "VCL compilation failed", errors.New("exit status 1")
+				}
+				return "200", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 2
+	m.ReloadRetryInterval = time.Millisecond
+
+	if err := m.Reload("/tmp/test.vcl"); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	output := buf.String()
+
+	// Should contain a retry warning.
+	if !strings.Contains(output, "vcl.load failed, retrying") {
+		t.Errorf("expected retry warning log, got: %s", output)
+	}
+	// Should contain success-after-retry info.
+	if !strings.Contains(output, "activated VCL after retry") {
+		t.Errorf("expected success-after-retry log, got: %s", output)
+	}
+}
+
+func TestReloadFirstAttemptSuccessWithRetriesConfigured(t *testing.T) {
+	// When vcl.load succeeds on the first attempt despite retries being
+	// configured, the normal "activated VCL" message (not "after retry")
+	// should be logged, and only one vcl.load + one vcl.use should occur.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn:   func(string, []string) (string, error) { return "200", nil },
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 5
+	m.ReloadRetryInterval = time.Millisecond
+
+	if err := m.Reload("/tmp/test.vcl"); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	r.mu.Lock()
+	calls := r.calls
+	r.mu.Unlock()
+
+	// Count vcl.load and vcl.use calls.
+	var loadCount, useCount int
+	for _, c := range calls {
+		for _, a := range c {
+			if a == "vcl.load" {
+				loadCount++
+			}
+			if a == "vcl.use" {
+				useCount++
+			}
+		}
+	}
+	if loadCount != 1 {
+		t.Errorf("vcl.load called %d times, want 1", loadCount)
+	}
+	if useCount != 1 {
+		t.Errorf("vcl.use called %d times, want 1", useCount)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "after retry") {
+		t.Errorf("unexpected 'after retry' in log when first attempt succeeded: %s", output)
+	}
+	if !strings.Contains(output, "activated VCL") {
+		t.Errorf("expected 'activated VCL' log, got: %s", output)
+	}
+}
+
+func TestReloadRetryCounterContinuityAcrossCalls(t *testing.T) {
+	// Two successive Reload() calls, each with retries, should produce
+	// a continuous reloadCounter sequence.
+	var loadCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "vcl.load") {
+				n := loadCount.Add(1)
+				// First call: fail once (n=1), succeed (n=2).
+				// Second call: fail once (n=3), succeed (n=4).
+				if n == 1 || n == 3 {
+					return "VCL compilation failed", errors.New("exit status 1")
+				}
+				return "200", nil
+			}
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 2
+	m.ReloadRetryInterval = time.Millisecond
+
+	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
+		t.Fatalf("first Reload() error: %v", err)
+	}
+	if err := m.Reload("/tmp/vcl2.vcl"); err != nil {
+		t.Fatalf("second Reload() error: %v", err)
+	}
+
+	// First Reload: 2 attempts (kv_reload_1 fail, kv_reload_2 ok).
+	// Second Reload: 2 attempts (kv_reload_3 fail, kv_reload_4 ok).
+	if got := m.reloadCounter.Load(); got != 4 {
+		t.Errorf("reloadCounter = %d, want 4", got)
+	}
+
+	r.mu.Lock()
+	calls := r.calls
+	r.mu.Unlock()
+
+	// Verify vcl.use was called with kv_reload_2 and kv_reload_4.
+	var useNames []string
+	for _, c := range calls {
+		for i, a := range c {
+			if a == "vcl.use" && i+1 < len(c) {
+				useNames = append(useNames, c[i+1])
+			}
+		}
+	}
+	if len(useNames) != 2 {
+		t.Fatalf("vcl.use called %d times, want 2: %v", len(useNames), useNames)
+	}
+	if useNames[0] != "kv_reload_2" {
+		t.Errorf("first vcl.use name = %q, want kv_reload_2", useNames[0])
+	}
+	if useNames[1] != "kv_reload_4" {
+		t.Errorf("second vcl.use name = %q, want kv_reload_4", useNames[1])
 	}
 }

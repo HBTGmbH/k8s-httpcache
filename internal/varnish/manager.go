@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"k8s-httpcache/internal/telemetry"
 )
 
 // runner abstracts external command execution for testing.
@@ -59,19 +61,21 @@ func (p *execProc) Pid() int                   { return p.cmd.Process.Pid }
 
 // Manager manages the varnishd process and performs VCL reloads via varnishadm.
 type Manager struct {
-	varnishdPath    string
-	varnishadmPath  string
-	varnishstatPath string
-	listenAddrs     []string
-	extraArgs       []string
-	workDir         string // varnishd -n instance name, forwarded to varnishadm/varnishstat
-	run             runner
-	proc            proc
-	majorVersion    int // major version of varnishd (e.g. 6, 7, 8)
-	done            chan struct{}
-	err             error
-	reloadCounter   atomic.Int64
-	AdminTimeout    time.Duration
+	varnishdPath        string
+	varnishadmPath      string
+	varnishstatPath     string
+	listenAddrs         []string
+	extraArgs           []string
+	workDir             string // varnishd -n instance name, forwarded to varnishadm/varnishstat
+	run                 runner
+	proc                proc
+	majorVersion        int // major version of varnishd (e.g. 6, 7, 8)
+	done                chan struct{}
+	err                 error
+	reloadCounter       atomic.Int64
+	AdminTimeout        time.Duration
+	ReloadRetries       int
+	ReloadRetryInterval time.Duration
 }
 
 // extractWorkDir scans args for a -n flag and returns its value.
@@ -202,28 +206,53 @@ func (m *Manager) Start(initialVCL string) error {
 }
 
 // Reload loads a new VCL file and activates it.
+// It retries vcl.load failures up to ReloadRetries times (vcl.use failures
+// are not retried). Each attempt uses a fresh VCL name.
 func (m *Manager) Reload(vclPath string) error {
-	n := m.reloadCounter.Add(1)
-	name := fmt.Sprintf("kv_reload_%d", n)
+	maxAttempts := 1 + m.ReloadRetries
 
-	// Load the new VCL.
-	resp, err := m.adm("vcl.load", name, vclPath)
-	if err != nil {
-		return fmt.Errorf("vcl.load: %w: %s", err, resp)
+	var lastErr error
+	for attempt := range maxAttempts {
+		n := m.reloadCounter.Add(1)
+		name := fmt.Sprintf("kv_reload_%d", n)
+
+		// Load the new VCL.
+		resp, err := m.adm("vcl.load", name, vclPath)
+		if err != nil {
+			lastErr = fmt.Errorf("vcl.load: %w: %s", err, resp)
+
+			if attempt < maxAttempts-1 {
+				telemetry.VCLReloadRetriesTotal.Inc()
+				slog.Warn("vcl.load failed, retrying",
+					"attempt", attempt+1,
+					"max_attempts", maxAttempts,
+					"error", lastErr,
+				)
+				time.Sleep(m.ReloadRetryInterval)
+				continue
+			}
+			return lastErr
+		}
+
+		// Activate it.
+		resp, err = m.adm("vcl.use", name)
+		if err != nil {
+			return fmt.Errorf("vcl.use: %w: %s", err, resp)
+		}
+
+		if attempt > 0 {
+			slog.Info("activated VCL after retry", "name", name, "attempts", attempt+1)
+		} else {
+			slog.Info("activated VCL", "name", name)
+		}
+
+		// Discard old available VCLs in the background (best-effort).
+		m.discardOldVCLs(name)
+
+		return nil
 	}
 
-	// Activate it.
-	resp, err = m.adm("vcl.use", name)
-	if err != nil {
-		return fmt.Errorf("vcl.use: %w: %s", err, resp)
-	}
-
-	slog.Info("activated VCL", "name", name)
-
-	// Discard old available VCLs in the background (best-effort).
-	m.discardOldVCLs(name)
-
-	return nil
+	return lastErr
 }
 
 // ForwardSignal sends a signal to the varnishd process.
