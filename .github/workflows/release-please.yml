@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   release-please:
+    if: >-
+      !startsWith(github.event.head_commit.message, 'docs:') &&
+      !startsWith(github.event.head_commit.message, 'docs(')
     runs-on: ubuntu-latest
     steps:
     - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38  # v4
