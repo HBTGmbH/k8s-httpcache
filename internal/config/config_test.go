@@ -2284,3 +2284,86 @@ func TestParseInvalidValuesDirFormat(t *testing.T) {
 		t.Fatal("expected error for values-dir without colon separator")
 	}
 }
+
+// --- --debounce-max flag tests ---
+
+func TestParseDebounceMaxDefault(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DebounceMax != 0 {
+		t.Errorf("DebounceMax = %v, want 0", cfg.DebounceMax)
+	}
+}
+
+func TestParseDebounceMaxCustom(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-max=10s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DebounceMax != 10*time.Second {
+		t.Errorf("DebounceMax = %v, want 10s", cfg.DebounceMax)
+	}
+}
+
+func TestParseDebounceMaxNegative(t *testing.T) {
+	vcl := makeTempVCL(t)
+	_, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-max=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --debounce-max")
+	}
+	if !strings.Contains(err.Error(), "--debounce-max must be >= 0") {
+		t.Errorf("error = %q, want substring '--debounce-max must be >= 0'", err)
+	}
+}
+
+func TestParseDebounceMaxLessThanDebounce(t *testing.T) {
+	vcl := makeTempVCL(t)
+	_, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=5s",
+		"--debounce-max=2s",
+	})
+	if err == nil {
+		t.Fatal("expected error when --debounce-max < --debounce")
+	}
+	if !strings.Contains(err.Error(), "--debounce-max") && !strings.Contains(err.Error(), "--debounce") {
+		t.Errorf("error = %q, want substring about --debounce-max and --debounce", err)
+	}
+}
+
+func TestParseDebounceMaxEqualToDebounce(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=2s",
+		"--debounce-max=2s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DebounceMax != 2*time.Second {
+		t.Errorf("DebounceMax = %v, want 2s", cfg.DebounceMax)
+	}
+}

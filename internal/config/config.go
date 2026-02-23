@@ -181,6 +181,7 @@ type Config struct {
 	BroadcastClientIdleTimeout time.Duration
 	BroadcastClientTimeout     time.Duration
 	Debounce                   time.Duration
+	DebounceMax                time.Duration
 	ShutdownTimeout            time.Duration
 	Backends                   []BackendSpec
 	Values                     []ValuesSpec
@@ -498,6 +499,12 @@ func Parse(args []string) (*Config, error) {
 				Destination: &c.Debounce,
 			},
 			&cli.DurationFlag{
+				Name:        "debounce-max",
+				Category:    "Timing and logging:",
+				Usage:       "Maximum debounce duration before a reload is forced (0 disables; only effective when events arrive within the --debounce window)",
+				Destination: &c.DebounceMax,
+			},
+			&cli.DurationFlag{
 				Name:        "shutdown-timeout",
 				Category:    "Timing and logging:",
 				Usage:       "Time to wait for varnishd to exit before sending SIGKILL",
@@ -591,6 +598,16 @@ func Parse(args []string) (*Config, error) {
 			case "text", "json":
 			default:
 				actionErr = validationError(cmd, "--log-format must be \"text\" or \"json\", got %q", c.LogFormat)
+				return nil
+			}
+
+			// Validate debounce-max.
+			if c.DebounceMax < 0 {
+				actionErr = validationError(cmd, "--debounce-max must be >= 0, got %v", c.DebounceMax)
+				return nil
+			}
+			if c.DebounceMax > 0 && c.DebounceMax < c.Debounce {
+				actionErr = validationError(cmd, "--debounce-max (%v) must be >= --debounce (%v)", c.DebounceMax, c.Debounce)
 				return nil
 			}
 

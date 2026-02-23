@@ -72,6 +72,7 @@ type loopConfig struct {
 
 	serviceName           string
 	debounce              time.Duration
+	debounceMax           time.Duration
 	shutdownTimeout       time.Duration
 	broadcastDrainTimeout time.Duration
 
@@ -343,6 +344,7 @@ func main() {
 
 		serviceName:           cfg.ServiceName,
 		debounce:              cfg.Debounce,
+		debounceMax:           cfg.DebounceMax,
 		shutdownTimeout:       cfg.ShutdownTimeout,
 		broadcastDrainTimeout: cfg.BroadcastDrainTimeout,
 
@@ -360,10 +362,32 @@ func main() {
 // runLoop runs the main event loop, returning 0 for clean shutdown and 1 for error.
 func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 	var (
-		debounceTimer   *time.Timer
-		pendingReload   bool
-		templateChanged bool
+		debounceTimer    *time.Timer
+		debounceDeadline time.Time
+		pendingReload    bool
+		templateChanged  bool
 	)
+
+	// resetDebounce stops the current timer and starts a new one,
+	// capping the duration at debounceDeadline when debounce-max is active.
+	resetDebounce := func() {
+		if debounceDeadline.IsZero() && lc.debounceMax > 0 {
+			debounceDeadline = time.Now().Add(lc.debounceMax)
+		}
+		d := lc.debounce
+		if !debounceDeadline.IsZero() {
+			if remaining := time.Until(debounceDeadline); remaining < d {
+				d = remaining
+			}
+		}
+		if d <= 0 {
+			d = 1 // fire immediately on next iteration
+		}
+		if debounceTimer != nil {
+			debounceTimer.Stop()
+		}
+		debounceTimer = time.NewTimer(d)
+	}
 
 	for {
 		select {
@@ -372,11 +396,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Info("VCL template changed on disk, scheduling reload")
 			pendingReload = true
 			templateChanged = true
-
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-			debounceTimer = time.NewTimer(lc.debounce)
+			resetDebounce()
 
 		case frontends := <-lc.frontendCh:
 			lc.latestFrontends = frontends
@@ -386,37 +406,25 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				lc.bcast.SetFrontends(lc.latestFrontends)
 			}
 			pendingReload = true
-
-			// Reset debounce timer.
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-			debounceTimer = time.NewTimer(lc.debounce)
+			resetDebounce()
 
 		case bc := <-backendChan(lc.backendCh):
 			lc.latestBackends[bc.name] = bc.endpoints
 			telemetry.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
 			telemetry.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			pendingReload = true
-
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-			debounceTimer = time.NewTimer(lc.debounce)
+			resetDebounce()
 
 		case vc := <-valuesChan(lc.valuesCh):
 			lc.latestValues[vc.name] = vc.data
 			telemetry.ValuesUpdatesTotal.WithLabelValues(vc.name).Inc()
 			slog.Info("values ConfigMap updated", "name", vc.name)
 			pendingReload = true
-
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-			debounceTimer = time.NewTimer(lc.debounce)
+			resetDebounce()
 
 		case <-timerChan(debounceTimer):
 			debounceTimer = nil
+			debounceDeadline = time.Time{}
 			if !pendingReload {
 				continue
 			}

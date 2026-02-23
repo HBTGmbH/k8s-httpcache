@@ -161,6 +161,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--debounce` | `2s` | Debounce duration for endpoint changes |
+| `--debounce-max` | `0` | Maximum debounce duration before a reload is forced (`0` disables; only effective when events arrive within the `--debounce` window) |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
 | `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes (only effective when `--file-watch` is enabled) |
 | `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
