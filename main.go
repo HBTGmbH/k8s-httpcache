@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -88,7 +90,9 @@ type loopConfig struct {
 func main() {
 	cfg, err := config.Parse()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		fmt.Fprintf(os.Stderr, "config: %v\n\n", err)
+		flag.Usage()
+		os.Exit(2)
 	}
 
 	logOpts := &slog.HandlerOptions{Level: cfg.LogLevel}
