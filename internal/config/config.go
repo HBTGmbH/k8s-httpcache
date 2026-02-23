@@ -2,8 +2,8 @@
 package config
 
 import (
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	cli "github.com/urfave/cli/v3"
 )
 
 // BackendSpec describes one upstream backend service to watch.
@@ -43,7 +45,7 @@ type ListenAddrSpec struct {
 	Raw  string // original flag value passed through to varnishd
 }
 
-// listenAddrFlags implements flag.Value for repeatable --listen-addr flags.
+// listenAddrFlags implements a parser for repeatable --listen-addr flags.
 type listenAddrFlags []ListenAddrSpec
 
 func (l *listenAddrFlags) String() string { return fmt.Sprintf("%v", *l) }
@@ -78,7 +80,7 @@ func (l *listenAddrFlags) Set(val string) error {
 	return nil
 }
 
-// valuesFlags implements flag.Value for repeatable --values flags.
+// valuesFlags implements a parser for repeatable --values flags.
 type valuesFlags []ValuesSpec
 
 func (v *valuesFlags) String() string { return fmt.Sprintf("%v", *v) }
@@ -101,7 +103,7 @@ func (v *valuesFlags) Set(val string) error {
 	return nil
 }
 
-// valuesDirFlags implements flag.Value for repeatable --values-dir flags.
+// valuesDirFlags implements a parser for repeatable --values-dir flags.
 type valuesDirFlags []ValuesDirSpec
 
 func (v *valuesDirFlags) String() string { return fmt.Sprintf("%v", *v) }
@@ -124,7 +126,7 @@ func (v *valuesDirFlags) Set(val string) error {
 	return nil
 }
 
-// backendFlags implements flag.Value for repeatable --backend flags.
+// backendFlags implements a parser for repeatable --backend flags.
 type backendFlags []BackendSpec
 
 func (b *backendFlags) String() string { return fmt.Sprintf("%v", *b) }
@@ -253,190 +255,514 @@ func parseNamespacedService(s, defaultNS string) (namespace, service string, err
 	return namespace, service, nil
 }
 
-// Parse parses command-line flags and returns a validated Config.
-func Parse() (*Config, error) {
+// ErrHelp is returned by Parse when --help is shown. The caller should
+// treat this as a successful exit (exit code 0).
+var ErrHelp = errors.New("help requested")
+
+// validationError is returned from the Action for validation failures.
+// It prints the error message and help before Parse returns, so callers
+// can rely on output already being written.
+func validationError(cmd *cli.Command, format string, args ...any) error {
+	err := fmt.Errorf(format, args...)
+	_, _ = fmt.Fprintf(cmd.Root().ErrWriter, "error: %v\n\n", err)
+	_ = cli.ShowRootCommandHelp(cmd)
+	return err
+}
+
+// Parse parses command-line flags from args and returns a validated Config.
+// The first element of args should be the program name (i.e. os.Args).
+// Returns (nil, nil) when --help is shown.
+func Parse(args []string) (*Config, error) {
 	c := &Config{}
 
 	var (
-		backends    backendFlags
-		listenAddrs listenAddrFlags
-		values      valuesFlags
-		valuesDirs  valuesDirFlags
+		rawBackends    []string
+		rawListenAddrs []string
+		rawValues      []string
+		rawValuesDirs  []string
+		templateDelims string
+		logLevel       string
+		parsed         bool
+		actionErr      error
 	)
 
-	flag.StringVar(&c.ServiceName, "service-name", "", "Kubernetes Service to watch: [namespace/]service (required)")
-	flag.StringVar(&c.Namespace, "namespace", "", "Kubernetes namespace (required, used as default for services without a namespace/ prefix)")
-	flag.StringVar(&c.VCLTemplate, "vcl-template", "", "Path to VCL Go template file (required)")
-	flag.DurationVar(&c.AdminTimeout, "admin-timeout", 30*time.Second, "Max time to wait for the varnish admin CLI to become ready")
-	flag.Var(&listenAddrs, "listen-addr", "Varnish listen address: [name=]address[,proto] (repeatable, default: http=:8080,HTTP)")
-	flag.StringVar(&c.VarnishdPath, "varnishd-path", "varnishd", "Path to varnishd binary")
-	flag.StringVar(&c.VarnishadmPath, "varnishadm-path", "varnishadm", "Path to varnishadm binary")
-	flag.DurationVar(&c.Debounce, "debounce", 2*time.Second, "Debounce duration for endpoint changes")
-	flag.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", 30*time.Second, "Time to wait for varnishd to exit before sending SIGKILL")
-	flag.StringVar(&c.BroadcastAddr, "broadcast-addr", ":8088", "Listen address for the broadcast HTTP server (set empty to disable)")
-	flag.StringVar(&c.BroadcastTargetListenAddr, "broadcast-target-listen-addr", "", "Name of the --listen-addr to target for fan-out (default: first --listen-addr)")
-	flag.DurationVar(&c.BroadcastDrainTimeout, "broadcast-drain-timeout", 30*time.Second, "Time to wait for broadcast connections to drain before shutting down. This should ideally be the idle timeout of the clients calling the broadcast endpoint.")
-	flag.DurationVar(&c.BroadcastShutdownTimeout, "broadcast-shutdown-timeout", 5*time.Second, "Time to wait for in-flight broadcast requests to finish after draining")
-	flag.DurationVar(&c.BroadcastServerIdleTimeout, "broadcast-server-idle-timeout", 120*time.Second, "Max time a client keep-alive connection to the broadcast server can stay idle. This should ideally be greater than the idle timeout of the clients calling the broadcast endpoint.")
-	flag.DurationVar(&c.BroadcastReadHeaderTimeout, "broadcast-read-header-timeout", 10*time.Second, "Max time to read request headers on the broadcast server")
-	flag.DurationVar(&c.BroadcastClientIdleTimeout, "broadcast-client-idle-timeout", 4*time.Second, "Max time an idle connection to a Varnish pod is kept in the broadcast client pool. This should ideally be lower than the Varnish timeout_idle parameter.")
-	flag.DurationVar(&c.BroadcastClientTimeout, "broadcast-client-timeout", 3*time.Second, "Timeout for each fan-out request to a Varnish pod")
-	flag.Var(&backends, "backend", "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)")
-	flag.Var(&values, "values", "ConfigMap to watch for template values: name:[namespace/]configmap (repeatable)")
-	flag.Var(&valuesDirs, "values-dir", "Directory to poll for YAML template values: name:/path/to/dir (repeatable)")
-	flag.DurationVar(&c.ValuesDirPollInterval, "values-dir-poll-interval", 5*time.Second, "Poll interval for --values-dir directories")
-	flag.TextVar(&c.LogLevel, "log-level", slog.LevelInfo, "Log level (DEBUG, INFO, WARN, ERROR)")
-	flag.StringVar(&c.LogFormat, "log-format", "text", "Log format (text, json)")
-	flag.StringVar(&c.MetricsAddr, "metrics-addr", ":9101", "Listen address for Prometheus metrics (set empty to disable)")
-	flag.DurationVar(&c.MetricsReadHeaderTimeout, "metrics-read-header-timeout", 10*time.Second, "Max time to read request headers on the metrics server")
-	flag.BoolVar(&c.Drain, "drain", false, "Enable graceful connection draining on shutdown")
-	flag.DurationVar(&c.DrainDelay, "drain-delay", 15*time.Second, "Delay after marking backend sick before polling for active sessions")
-	flag.DurationVar(&c.DrainPollInterval, "drain-poll-interval", 1*time.Second, "Poll interval for active sessions during graceful drain")
-	flag.DurationVar(&c.DrainTimeout, "drain-timeout", 0, "Max time to wait for active sessions to reach 0 (0 to skip session polling)")
-	flag.DurationVar(&c.VCLTemplateWatchInterval, "vcl-template-watch-interval", 5*time.Second, "Poll interval for VCL template file changes")
-	flag.BoolVar(&c.FileWatch, "file-watch", true, "Watch VCL template and --values-dir paths for changes (disable with --file-watch=false)")
-	flag.StringVar(&c.VarnishstatPath, "varnishstat-path", "varnishstat", "Path to varnishstat binary")
+	cmd := &cli.Command{
+		Name:                      "k8s-httpcache",
+		Usage:                     "Kubernetes-native HTTP caching proxy built on Varnish",
+		UsageText:                 "k8s-httpcache [flags] [-- varnishd-args...]",
+		DisableSliceFlagSeparator: true,
+		Flags: []cli.Flag{
+			// Required
+			&cli.StringFlag{
+				Name:        "service-name",
+				Aliases:     []string{"s"},
+				Usage:       "Kubernetes Service to watch: [namespace/]service",
+				Destination: &c.ServiceName,
+			},
+			&cli.StringFlag{
+				Name:        "namespace",
+				Aliases:     []string{"n"},
+				Usage:       "Kubernetes namespace (used as default for services without a namespace/ prefix)",
+				Destination: &c.Namespace,
+			},
+			&cli.StringFlag{
+				Name:        "vcl-template",
+				Aliases:     []string{"t"},
+				Usage:       "Path to VCL Go template file",
+				Destination: &c.VCLTemplate,
+			},
 
-	flag.IntVar(&c.VCLReloadRetries, "vcl-reload-retries", 3, "Max retry attempts for vcl.load failures (0 disables retries)")
-	flag.DurationVar(&c.VCLReloadRetryInterval, "vcl-reload-retry-interval", 2*time.Second, "Wait between vcl.load retry attempts")
+			// Listen, backend, and values
+			&cli.StringSliceFlag{
+				Name:        "listen-addr",
+				Aliases:     []string{"l"},
+				Category:    "Listen, backend, and values:",
+				Usage:       "Varnish listen address: [name=]address[,proto] (repeatable)",
+				DefaultText: "http=:8080,HTTP",
+				Destination: &rawListenAddrs,
+			},
+			&cli.StringSliceFlag{
+				Name:        "backend",
+				Aliases:     []string{"b"},
+				Category:    "Listen, backend, and values:",
+				Usage:       "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)",
+				Destination: &rawBackends,
+			},
+			&cli.StringSliceFlag{
+				Name:        "values",
+				Category:    "Listen, backend, and values:",
+				Usage:       "ConfigMap to watch for template values: name:[namespace/]configmap (repeatable)",
+				Destination: &rawValues,
+			},
+			&cli.StringSliceFlag{
+				Name:        "values-dir",
+				Category:    "Listen, backend, and values:",
+				Usage:       "Directory to poll for YAML template values: name:/path/to/dir (repeatable)",
+				Destination: &rawValuesDirs,
+			},
+			&cli.DurationFlag{
+				Name:        "values-dir-poll-interval",
+				Category:    "Listen, backend, and values:",
+				Usage:       "Poll interval for --values-dir directories",
+				Value:       5 * time.Second,
+				Destination: &c.ValuesDirPollInterval,
+			},
 
-	var templateDelims string
-	flag.StringVar(&templateDelims, "template-delims", "<< >>", "Template delimiters as a space-separated pair (e.g. \"<< >>\" or \"{{ }}\")")
+			// Varnish paths
+			&cli.StringFlag{
+				Name:        "varnishd-path",
+				Category:    "Varnish paths:",
+				Usage:       "Path to varnishd binary",
+				Value:       "varnishd",
+				Destination: &c.VarnishdPath,
+			},
+			&cli.StringFlag{
+				Name:        "varnishadm-path",
+				Category:    "Varnish paths:",
+				Usage:       "Path to varnishadm binary",
+				Value:       "varnishadm",
+				Destination: &c.VarnishadmPath,
+			},
+			&cli.StringFlag{
+				Name:        "varnishstat-path",
+				Category:    "Varnish paths:",
+				Usage:       "Path to varnishstat binary",
+				Value:       "varnishstat",
+				Destination: &c.VarnishstatPath,
+			},
+			&cli.DurationFlag{
+				Name:        "admin-timeout",
+				Category:    "Varnish paths:",
+				Usage:       "Max time to wait for the varnish admin CLI to become ready",
+				Value:       30 * time.Second,
+				Destination: &c.AdminTimeout,
+			},
 
-	flag.Parse()
+			// Broadcast
+			&cli.StringFlag{
+				Name:        "broadcast-addr",
+				Category:    "Broadcast:",
+				Usage:       `Listen address for the broadcast HTTP server ("none" to disable)`,
+				Value:       ":8088",
+				Destination: &c.BroadcastAddr,
+			},
+			&cli.StringFlag{
+				Name:        "broadcast-target-listen-addr",
+				Category:    "Broadcast:",
+				Usage:       "Name of the --listen-addr to target for fan-out (default: first --listen-addr)",
+				Destination: &c.BroadcastTargetListenAddr,
+			},
+			&cli.DurationFlag{
+				Name:        "broadcast-drain-timeout",
+				Category:    "Broadcast:",
+				Usage:       "Time to wait for broadcast connections to drain before shutting down",
+				Value:       30 * time.Second,
+				Destination: &c.BroadcastDrainTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "broadcast-shutdown-timeout",
+				Category:    "Broadcast:",
+				Usage:       "Time to wait for in-flight broadcast requests to finish after draining",
+				Value:       5 * time.Second,
+				Destination: &c.BroadcastShutdownTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "broadcast-server-idle-timeout",
+				Category:    "Broadcast:",
+				Usage:       "Max time a client keep-alive connection to the broadcast server can stay idle",
+				Value:       120 * time.Second,
+				Destination: &c.BroadcastServerIdleTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "broadcast-read-header-timeout",
+				Category:    "Broadcast:",
+				Usage:       "Max time to read request headers on the broadcast server",
+				Value:       10 * time.Second,
+				Destination: &c.BroadcastReadHeaderTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "broadcast-client-idle-timeout",
+				Category:    "Broadcast:",
+				Usage:       "Max time an idle connection to a Varnish pod is kept in the broadcast client pool",
+				Value:       4 * time.Second,
+				Destination: &c.BroadcastClientIdleTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "broadcast-client-timeout",
+				Category:    "Broadcast:",
+				Usage:       "Timeout for each fan-out request to a Varnish pod",
+				Value:       3 * time.Second,
+				Destination: &c.BroadcastClientTimeout,
+			},
 
-	parts := strings.Fields(templateDelims)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("--template-delims must be exactly two tokens, got %d in %q", len(parts), templateDelims)
-	}
-	c.TemplateDelimLeft = parts[0]
-	c.TemplateDelimRight = parts[1]
+			// Metrics
+			&cli.StringFlag{
+				Name:        "metrics-addr",
+				Category:    "Metrics:",
+				Usage:       `Listen address for Prometheus metrics ("none" to disable)`,
+				Value:       ":9101",
+				Destination: &c.MetricsAddr,
+			},
+			&cli.DurationFlag{
+				Name:        "metrics-read-header-timeout",
+				Category:    "Metrics:",
+				Usage:       "Max time to read request headers on the metrics server",
+				Value:       10 * time.Second,
+				Destination: &c.MetricsReadHeaderTimeout,
+			},
 
-	if c.VCLReloadRetries < 0 {
-		return nil, fmt.Errorf("--vcl-reload-retries must be >= 0, got %d", c.VCLReloadRetries)
-	}
-	if c.VCLReloadRetryInterval < 0 {
-		return nil, fmt.Errorf("--vcl-reload-retry-interval must be >= 0, got %v", c.VCLReloadRetryInterval)
-	}
+			// Drain
+			&cli.BoolFlag{
+				Name:        "drain",
+				Category:    "Drain:",
+				Usage:       "Enable graceful connection draining on shutdown",
+				Destination: &c.Drain,
+			},
+			&cli.DurationFlag{
+				Name:        "drain-delay",
+				Category:    "Drain:",
+				Usage:       "Delay after marking backend sick before polling for active sessions",
+				Value:       15 * time.Second,
+				Destination: &c.DrainDelay,
+			},
+			&cli.DurationFlag{
+				Name:        "drain-poll-interval",
+				Category:    "Drain:",
+				Usage:       "Poll interval for active sessions during graceful drain",
+				Value:       1 * time.Second,
+				Destination: &c.DrainPollInterval,
+			},
+			&cli.DurationFlag{
+				Name:        "drain-timeout",
+				Category:    "Drain:",
+				Usage:       "Max time to wait for active sessions to reach 0 (0 to skip session polling)",
+				Destination: &c.DrainTimeout,
+			},
 
-	switch c.LogFormat {
-	case "text", "json":
-	default:
-		return nil, fmt.Errorf("--log-format must be \"text\" or \"json\", got %q", c.LogFormat)
-	}
+			// Template
+			&cli.StringFlag{
+				Name:        "template-delims",
+				Category:    "Template:",
+				Usage:       `Template delimiters as a space-separated pair (e.g. "<< >>" or "{{ }}")`,
+				Value:       "<< >>",
+				Destination: &templateDelims,
+			},
 
-	if c.ServiceName == "" {
-		return nil, errors.New("--service-name is required")
-	}
-	if c.Namespace == "" {
-		return nil, errors.New("--namespace is required")
-	}
-	if c.VCLTemplate == "" {
-		return nil, errors.New("--vcl-template is required")
-	}
+			// Timing and logging
+			&cli.DurationFlag{
+				Name:        "debounce",
+				Category:    "Timing and logging:",
+				Usage:       "Debounce duration for endpoint changes",
+				Value:       2 * time.Second,
+				Destination: &c.Debounce,
+			},
+			&cli.DurationFlag{
+				Name:        "shutdown-timeout",
+				Category:    "Timing and logging:",
+				Usage:       "Time to wait for varnishd to exit before sending SIGKILL",
+				Value:       30 * time.Second,
+				Destination: &c.ShutdownTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "vcl-template-watch-interval",
+				Category:    "Timing and logging:",
+				Usage:       "Poll interval for VCL template file changes",
+				Value:       5 * time.Second,
+				Destination: &c.VCLTemplateWatchInterval,
+			},
+			&cli.BoolFlag{
+				Name:        "file-watch",
+				Category:    "Timing and logging:",
+				Usage:       "Watch VCL template and --values-dir paths for changes (disable with --file-watch=false)",
+				Value:       true,
+				Destination: &c.FileWatch,
+			},
+			&cli.IntFlag{
+				Name:        "vcl-reload-retries",
+				Category:    "Timing and logging:",
+				Usage:       "Max retry attempts for vcl.load failures (0 disables retries)",
+				Value:       3,
+				Destination: &c.VCLReloadRetries,
+			},
+			&cli.DurationFlag{
+				Name:        "vcl-reload-retry-interval",
+				Category:    "Timing and logging:",
+				Usage:       "Wait between vcl.load retry attempts",
+				Value:       2 * time.Second,
+				Destination: &c.VCLReloadRetryInterval,
+			},
+			&cli.StringFlag{
+				Name:        "log-level",
+				Category:    "Timing and logging:",
+				Usage:       "Log level (DEBUG, INFO, WARN, ERROR)",
+				Value:       "INFO",
+				Destination: &logLevel,
+			},
+			&cli.StringFlag{
+				Name:        "log-format",
+				Category:    "Timing and logging:",
+				Usage:       "Log format (text, json)",
+				Value:       "text",
+				Destination: &c.LogFormat,
+			},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			parsed = true
 
-	if _, err := os.Stat(c.VCLTemplate); err != nil {
-		return nil, fmt.Errorf("vcl-template file %q: %w", c.VCLTemplate, err)
-	}
-
-	// Default listen address if none provided.
-	if len(listenAddrs) == 0 {
-		if err := listenAddrs.Set("http=:8080,HTTP"); err != nil {
-			return nil, fmt.Errorf("default --listen-addr: %w", err)
-		}
-	}
-
-	// Validate listen address name uniqueness.
-	seenLA := make(map[string]bool, len(listenAddrs))
-	for _, la := range listenAddrs {
-		if la.Name != "" {
-			if seenLA[la.Name] {
-				return nil, fmt.Errorf("duplicate --listen-addr name %q", la.Name)
+			// Check required flags.
+			if c.ServiceName == "" {
+				actionErr = validationError(cmd, "--service-name is required")
+				return nil
 			}
-			seenLA[la.Name] = true
-		}
-	}
-	c.ListenAddrs = []ListenAddrSpec(listenAddrs)
+			if c.Namespace == "" {
+				actionErr = validationError(cmd, "--namespace is required")
+				return nil
+			}
+			if c.VCLTemplate == "" {
+				actionErr = validationError(cmd, "--vcl-template is required")
+				return nil
+			}
 
-	// Resolve broadcast target port from the named listen address.
-	if c.BroadcastAddr != "" {
-		if c.BroadcastTargetListenAddr == "" {
-			c.BroadcastTargetPort = c.ListenAddrs[0].Port
-		} else {
-			found := false
-			for _, la := range c.ListenAddrs {
-				if la.Name == c.BroadcastTargetListenAddr {
-					c.BroadcastTargetPort = la.Port
-					found = true
-					break
+			// Parse template delimiters.
+			parts := strings.Fields(templateDelims)
+			if len(parts) != 2 {
+				actionErr = validationError(cmd, "--template-delims must be exactly two tokens, got %d in %q", len(parts), templateDelims)
+				return nil
+			}
+			c.TemplateDelimLeft = parts[0]
+			c.TemplateDelimRight = parts[1]
+
+			// Validate log level.
+			if err := c.LogLevel.UnmarshalText([]byte(logLevel)); err != nil {
+				actionErr = validationError(cmd, "--log-level: %v", err)
+				return nil
+			}
+
+			// Validate log format.
+			switch c.LogFormat {
+			case "text", "json":
+			default:
+				actionErr = validationError(cmd, "--log-format must be \"text\" or \"json\", got %q", c.LogFormat)
+				return nil
+			}
+
+			// Validate VCL reload retries.
+			if c.VCLReloadRetries < 0 {
+				actionErr = validationError(cmd, "--vcl-reload-retries must be >= 0, got %d", c.VCLReloadRetries)
+				return nil
+			}
+			if c.VCLReloadRetryInterval < 0 {
+				actionErr = validationError(cmd, "--vcl-reload-retry-interval must be >= 0, got %v", c.VCLReloadRetryInterval)
+				return nil
+			}
+
+			// Validate VCL template file exists.
+			if _, err := os.Stat(c.VCLTemplate); err != nil {
+				actionErr = validationError(cmd, "vcl-template file %q: %v", c.VCLTemplate, err)
+				return nil
+			}
+
+			// Parse listen addresses.
+			var listenAddrs listenAddrFlags
+			for _, raw := range rawListenAddrs {
+				if err := listenAddrs.Set(raw); err != nil {
+					actionErr = validationError(cmd, "%v", err)
+					return nil
 				}
 			}
-			if !found {
-				return nil, fmt.Errorf("--broadcast-target-listen-addr %q does not match any --listen-addr name", c.BroadcastTargetListenAddr)
+
+			// Default listen address if none provided.
+			if len(listenAddrs) == 0 {
+				if err := listenAddrs.Set("http=:8080,HTTP"); err != nil {
+					actionErr = fmt.Errorf("default --listen-addr: %w", err)
+					return nil
+				}
 			}
-		}
+
+			// Validate listen address name uniqueness.
+			seenLA := make(map[string]bool, len(listenAddrs))
+			for _, la := range listenAddrs {
+				if la.Name != "" {
+					if seenLA[la.Name] {
+						actionErr = validationError(cmd, "duplicate --listen-addr name %q", la.Name)
+						return nil
+					}
+					seenLA[la.Name] = true
+				}
+			}
+			c.ListenAddrs = []ListenAddrSpec(listenAddrs)
+
+			// Normalize "none" to empty string to disable optional servers.
+			if c.BroadcastAddr == "none" {
+				c.BroadcastAddr = ""
+			}
+			if c.MetricsAddr == "none" {
+				c.MetricsAddr = ""
+			}
+
+			// Resolve broadcast target port from the named listen address.
+			if c.BroadcastAddr != "" {
+				if c.BroadcastTargetListenAddr == "" {
+					c.BroadcastTargetPort = c.ListenAddrs[0].Port
+				} else {
+					found := false
+					for _, la := range c.ListenAddrs {
+						if la.Name == c.BroadcastTargetListenAddr {
+							c.BroadcastTargetPort = la.Port
+							found = true
+							break
+						}
+					}
+					if !found {
+						actionErr = validationError(cmd, "--broadcast-target-listen-addr %q does not match any --listen-addr name", c.BroadcastTargetListenAddr)
+						return nil
+					}
+				}
+			}
+
+			// Resolve frontend service namespace.
+			ns, svc, err := parseNamespacedService(c.ServiceName, c.Namespace)
+			if err != nil {
+				actionErr = validationError(cmd, "--service-name: %v", err)
+				return nil
+			}
+			c.ServiceNamespace = ns
+			c.ServiceName = svc
+
+			// Parse and validate backends.
+			var backends backendFlags
+			for _, raw := range rawBackends {
+				if err := backends.Set(raw); err != nil {
+					actionErr = validationError(cmd, "%v", err)
+					return nil
+				}
+			}
+			seen := make(map[string]bool, len(backends))
+			for i, b := range backends {
+				if seen[b.Name] {
+					actionErr = validationError(cmd, "duplicate --backend name %q", b.Name)
+					return nil
+				}
+				seen[b.Name] = true
+
+				ns, svc, err := parseNamespacedService(b.ServiceName, c.Namespace)
+				if err != nil {
+					actionErr = validationError(cmd, "--backend %q: %v", b.Name, err)
+					return nil
+				}
+				backends[i].Namespace = ns
+				backends[i].ServiceName = svc
+			}
+			c.Backends = []BackendSpec(backends)
+
+			// Parse and validate values.
+			var values valuesFlags
+			for _, raw := range rawValues {
+				if err := values.Set(raw); err != nil {
+					actionErr = validationError(cmd, "%v", err)
+					return nil
+				}
+			}
+			seenValues := make(map[string]bool, len(values)+len(rawValuesDirs))
+			for i, v := range values {
+				if seenValues[v.Name] {
+					actionErr = validationError(cmd, "duplicate --values name %q", v.Name)
+					return nil
+				}
+				seenValues[v.Name] = true
+
+				ns, cm, err := parseNamespacedService(v.ConfigMapName, c.Namespace)
+				if err != nil {
+					actionErr = validationError(cmd, "--values %q: %v", v.Name, err)
+					return nil
+				}
+				values[i].Namespace = ns
+				values[i].ConfigMapName = cm
+			}
+			c.Values = []ValuesSpec(values)
+
+			// Parse and validate values-dir.
+			var valuesDirs valuesDirFlags
+			for _, raw := range rawValuesDirs {
+				if err := valuesDirs.Set(raw); err != nil {
+					actionErr = validationError(cmd, "%v", err)
+					return nil
+				}
+			}
+			for _, vd := range valuesDirs {
+				if seenValues[vd.Name] {
+					actionErr = validationError(cmd, "duplicate values name %q (across --values and --values-dir)", vd.Name)
+					return nil
+				}
+				seenValues[vd.Name] = true
+
+				info, err := os.Stat(vd.Path)
+				if err != nil {
+					actionErr = validationError(cmd, "--values-dir %q: %v", vd.Name, err)
+					return nil
+				}
+				if !info.IsDir() {
+					actionErr = validationError(cmd, "--values-dir %q: path %q is not a directory", vd.Name, vd.Path)
+					return nil
+				}
+			}
+			c.ValuesDirs = []ValuesDirSpec(valuesDirs)
+
+			// Extra varnishd args (after --).
+			c.ExtraVarnishd = cmd.Args().Slice()
+
+			return nil
+		},
 	}
 
-	// Resolve frontend service namespace.
-	ns, svc, err := parseNamespacedService(c.ServiceName, c.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("--service-name: %w", err)
+	if err := cmd.Run(context.Background(), args); err != nil {
+		return nil, err
 	}
-	c.ServiceNamespace = ns
-	c.ServiceName = svc
-
-	// Validate backend name uniqueness and resolve namespaces.
-	seen := make(map[string]bool, len(backends))
-	for i, b := range backends {
-		if seen[b.Name] {
-			return nil, fmt.Errorf("duplicate --backend name %q", b.Name)
-		}
-		seen[b.Name] = true
-
-		ns, svc, err := parseNamespacedService(b.ServiceName, c.Namespace)
-		if err != nil {
-			return nil, fmt.Errorf("--backend %q: %w", b.Name, err)
-		}
-		backends[i].Namespace = ns
-		backends[i].ServiceName = svc
+	if actionErr != nil {
+		return nil, actionErr
 	}
-	c.Backends = []BackendSpec(backends)
-
-	// Validate values name uniqueness and resolve namespaces.
-	seenValues := make(map[string]bool, len(values)+len(valuesDirs))
-	for i, v := range values {
-		if seenValues[v.Name] {
-			return nil, fmt.Errorf("duplicate --values name %q", v.Name)
-		}
-		seenValues[v.Name] = true
-
-		ns, cm, err := parseNamespacedService(v.ConfigMapName, c.Namespace)
-		if err != nil {
-			return nil, fmt.Errorf("--values %q: %w", v.Name, err)
-		}
-		values[i].Namespace = ns
-		values[i].ConfigMapName = cm
+	if !parsed {
+		return nil, ErrHelp
 	}
-	c.Values = []ValuesSpec(values)
-
-	// Validate --values-dir name uniqueness (also against --values) and directory existence.
-	for _, vd := range valuesDirs {
-		if seenValues[vd.Name] {
-			return nil, fmt.Errorf("duplicate values name %q (across --values and --values-dir)", vd.Name)
-		}
-		seenValues[vd.Name] = true
-
-		info, err := os.Stat(vd.Path)
-		if err != nil {
-			return nil, fmt.Errorf("--values-dir %q: %w", vd.Name, err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("--values-dir %q: path %q is not a directory", vd.Name, vd.Path)
-		}
-	}
-	c.ValuesDirs = []ValuesDirSpec(valuesDirs)
-
-	c.ExtraVarnishd = flag.Args()
-
 	return c, nil
 }

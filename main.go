@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -88,10 +86,11 @@ type loopConfig struct {
 }
 
 func main() {
-	cfg, err := config.Parse()
+	cfg, err := config.Parse(os.Args)
+	if errors.Is(err, config.ErrHelp) {
+		os.Exit(0)
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n\n", err)
-		flag.Usage()
 		os.Exit(2)
 	}
 

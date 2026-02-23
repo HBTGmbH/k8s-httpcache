@@ -80,16 +80,16 @@ k8s-httpcache [flags] [-- varnishd-args...]
 
 | Flag | Description |
 |------|-------------|
-| `--service-name` | Kubernetes Service to watch for frontends: `[namespace/]service` |
-| `--namespace` | Kubernetes namespace (also used as default for services without a `namespace/` prefix) |
-| `--vcl-template` | Path to VCL Go template file |
+| `--service-name`, `-s` | Kubernetes Service to watch for frontends: `[namespace/]service` |
+| `--namespace`, `-n` | Kubernetes namespace (also used as default for services without a `namespace/` prefix) |
+| `--vcl-template`, `-t` | Path to VCL Go template file |
 
 ### Listen, backend, and values flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--listen-addr` | `http=:8080,HTTP` | Varnish listen address (repeatable). See [Listen address specification](#listen-address-specification). |
-| `--backend` | | Backend service (repeatable). See [Backend specification](#backend-specification). |
+| `--listen-addr`, `-l` | `http=:8080,HTTP` | Varnish listen address (repeatable). See [Listen address specification](#listen-address-specification). |
+| `--backend`, `-b` | | Backend service (repeatable). See [Backend specification](#backend-specification). |
 | `--values` | | ConfigMap to watch for template values (repeatable). See [Values specification](#values-specification). |
 | `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
 | `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories |
@@ -107,7 +107,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--broadcast-addr` | `:8088` | Broadcast server listen address (set to `""` to disable) |
+| `--broadcast-addr` | `:8088` | Broadcast server listen address (`none` to disable) |
 | `--broadcast-target-listen-addr` | *(first `--listen-addr`)* | Name of the `--listen-addr` to target for fan-out |
 | `--broadcast-drain-timeout` | `30s` | Time to wait for broadcast connections to drain before shutting down |
 | `--broadcast-shutdown-timeout` | `5s` | Time to wait for in-flight broadcast requests to finish after draining |
@@ -120,7 +120,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--metrics-addr` | `:9101` | Listen address for Prometheus metrics (set to `""` to disable) |
+| `--metrics-addr` | `:9101` | Listen address for Prometheus metrics (`none` to disable) |
 | `--metrics-read-header-timeout` | `10s` | Max time to read request headers on the metrics server |
 
 The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`, `process_*`) plus the following application metrics, all prefixed with `k8s_httpcache_`:
@@ -467,7 +467,7 @@ sub vcl_purge {
 
 The broadcast server fans out incoming HTTP requests (e.g. PURGE) to all Varnish frontend pods and returns an aggregated JSON response.
 
-Default listen address: `:8088`. Disable with `--broadcast-addr=""`.
+Default listen address: `:8088`. Disable with `--broadcast-addr=none`.
 
 ### Usage
 
