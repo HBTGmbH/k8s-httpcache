@@ -60,20 +60,27 @@ type broadcaster interface {
 
 // debounceState tracks the timer and deadline for one debounce group.
 type debounceState struct {
-	timer    *time.Timer
-	deadline time.Time
+	timer      *time.Timer
+	deadline   time.Time
+	firstEvent time.Time // wall-clock time of the first event in the current burst
+	capped     bool      // true when debounce-max forced a shorter timer
 }
 
 // resetDebounce stops the current timer and starts a new one,
 // capping the duration at the deadline when debounceMax is active.
 func resetDebounce(s *debounceState, debounce, debounceMax time.Duration) {
+	if s.firstEvent.IsZero() {
+		s.firstEvent = time.Now()
+	}
 	if s.deadline.IsZero() && debounceMax > 0 {
 		s.deadline = time.Now().Add(debounceMax)
 	}
 	d := debounce
+	s.capped = false
 	if !s.deadline.IsZero() {
 		if remaining := time.Until(s.deadline); remaining < d {
 			d = remaining
+			s.capped = true
 		}
 	}
 	if d <= 0 {
@@ -132,6 +139,9 @@ func main() {
 		logHandler = slog.NewTextHandler(os.Stderr, logOpts)
 	}
 	slog.SetDefault(slog.New(logHandler))
+
+	// Register configurable histogram before any metrics are observed.
+	telemetry.RegisterDebounceLatency(cfg.DebounceLatencyBuckets)
 
 	// Set build info metric.
 	telemetry.BuildInfo.WithLabelValues(version, runtime.Version()).Set(1)
@@ -408,11 +418,15 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		}
 		frontend.timer = nil
 		frontend.deadline = time.Time{}
+		frontend.firstEvent = time.Time{}
+		frontend.capped = false
 		if backend.timer != nil {
 			backend.timer.Stop()
 		}
 		backend.timer = nil
 		backend.deadline = time.Time{}
+		backend.firstEvent = time.Time{}
+		backend.capped = false
 
 		if !pendingReload {
 			return
@@ -483,6 +497,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		select {
 		case <-lc.templateCh:
 			telemetry.VCLTemplateChangesTotal.Inc()
+			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("VCL template changed on disk, scheduling reload")
 			pendingReload = true
 			templateChanged = true
@@ -492,6 +507,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			lc.latestFrontends = frontends
 			telemetry.EndpointUpdatesTotal.WithLabelValues("frontend", lc.serviceName).Inc()
 			telemetry.Endpoints.WithLabelValues("frontend", lc.serviceName).Set(float64(len(lc.latestFrontends)))
+			telemetry.DebounceEventsTotal.WithLabelValues("frontend").Inc()
 			if lc.bcast != nil {
 				lc.bcast.SetFrontends(lc.latestFrontends)
 			}
@@ -502,20 +518,42 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			lc.latestBackends[bc.name] = bc.endpoints
 			telemetry.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
 			telemetry.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
+			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			pendingReload = true
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case vc := <-valuesChan(lc.valuesCh):
 			lc.latestValues[vc.name] = vc.data
 			telemetry.ValuesUpdatesTotal.WithLabelValues(vc.name).Inc()
+			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("values ConfigMap updated", "name", vc.name)
 			pendingReload = true
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case <-timerChan(frontend.timer):
+			telemetry.DebounceFiresTotal.WithLabelValues("frontend").Inc()
+			if frontend.capped {
+				telemetry.DebounceMaxEnforcementsTotal.WithLabelValues("frontend").Inc()
+			}
+			if !frontend.firstEvent.IsZero() {
+				telemetry.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
+			}
+			if !backend.firstEvent.IsZero() {
+				telemetry.DebounceLatencySeconds.WithLabelValues("backend").Observe(time.Since(backend.firstEvent).Seconds())
+			}
 			handleReload()
 
 		case <-timerChan(backend.timer):
+			telemetry.DebounceFiresTotal.WithLabelValues("backend").Inc()
+			if backend.capped {
+				telemetry.DebounceMaxEnforcementsTotal.WithLabelValues("backend").Inc()
+			}
+			if !backend.firstEvent.IsZero() {
+				telemetry.DebounceLatencySeconds.WithLabelValues("backend").Observe(time.Since(backend.firstEvent).Seconds())
+			}
+			if !frontend.firstEvent.IsZero() {
+				telemetry.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
+			}
 			handleReload()
 
 		case sig := <-lc.sigCh:

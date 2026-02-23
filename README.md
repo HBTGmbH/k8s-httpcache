@@ -140,6 +140,12 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
 | `broadcast_fanout_targets` | Gauge | | Number of frontend pods targeted by the last broadcast |
 | `build_info` | Gauge | `version`, `goversion` | Build metadata (always 1) |
+| `debounce_events_total` | Counter | `group` | Events received per debounce group |
+| `debounce_fires_total` | Counter | `group` | Debounce timer fires per group |
+| `debounce_max_enforcements_total` | Counter | `group` | Reloads forced by the debounce-max deadline |
+| `debounce_latency_seconds` | Histogram | `group` | Wall-clock time from first event in a debounce burst to the reload |
+
+The `group` label is either `frontend` (`--service-name` endpoint changes) or `backend` (`--backend`, `--values`, `--values-dir`, and VCL template changes).
 
 ### Drain flags
 
@@ -172,6 +178,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `--vcl-reload-retries` | `3` | Max retry attempts for `vcl.load` failures (`0` disables retries) |
 | `--vcl-reload-retry-interval` | `2s` | Wait between `vcl.load` retry attempts |
 | `--vcl-kept` | `0` | Number of old VCL objects to retain after reload (`0` discards all) |
+| `--debounce-latency-buckets` | `0.01,0.05,0.1,0.25,0.5,1,2.5,5,10` | Comma-separated histogram bucket boundaries (seconds) for `debounce_latency_seconds` |
 | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--log-format` | `text` | Log format: `text`, `json` |
 

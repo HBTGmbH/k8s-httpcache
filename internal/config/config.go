@@ -8,12 +8,17 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	cli "github.com/urfave/cli/v3"
 )
+
+// DefaultDebounceLatencyBuckets are the default histogram bucket boundaries
+// (in seconds) for the debounce_latency_seconds metric.
+var DefaultDebounceLatencyBuckets = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
 // BackendSpec describes one upstream backend service to watch.
 type BackendSpec struct {
@@ -209,6 +214,7 @@ type Config struct {
 	VCLReloadRetries           int
 	VCLReloadRetryInterval     time.Duration
 	VCLKept                    int
+	DebounceLatencyBuckets     []float64
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -282,18 +288,19 @@ func Parse(args []string) (*Config, error) {
 	c := &Config{}
 
 	var (
-		rawBackends            []string
-		rawListenAddrs         []string
-		rawValues              []string
-		rawValuesDirs          []string
-		templateDelims         string
-		logLevel               string
-		rawFrontendDebounce    = time.Duration(-1)
-		rawFrontendDebounceMax = time.Duration(-1)
-		rawBackendDebounce     = time.Duration(-1)
-		rawBackendDebounceMax  = time.Duration(-1)
-		parsed                 bool
-		actionErr              error
+		rawBackends               []string
+		rawListenAddrs            []string
+		rawValues                 []string
+		rawValuesDirs             []string
+		templateDelims            string
+		logLevel                  string
+		rawFrontendDebounce       = time.Duration(-1)
+		rawFrontendDebounceMax    = time.Duration(-1)
+		rawBackendDebounce        = time.Duration(-1)
+		rawBackendDebounceMax     = time.Duration(-1)
+		rawDebounceLatencyBuckets string
+		parsed                    bool
+		actionErr                 error
 	)
 
 	cmd := &cli.Command{
@@ -587,6 +594,13 @@ func Parse(args []string) (*Config, error) {
 				Destination: &c.VCLKept,
 			},
 			&cli.StringFlag{
+				Name:        "debounce-latency-buckets",
+				Category:    "Timing and logging:",
+				Usage:       "Comma-separated histogram bucket boundaries (seconds) for debounce_latency_seconds",
+				Value:       "0.01,0.05,0.1,0.25,0.5,1,2.5,5,10",
+				Destination: &rawDebounceLatencyBuckets,
+			},
+			&cli.StringFlag{
 				Name:        "log-level",
 				Category:    "Timing and logging:",
 				Usage:       "Log level (DEBUG, INFO, WARN, ERROR)",
@@ -698,6 +712,21 @@ func Parse(args []string) (*Config, error) {
 				actionErr = validationError(cmd, "--vcl-kept must be >= 0, got %d", c.VCLKept)
 				return nil
 			}
+
+			// Parse debounce latency buckets.
+			for p := range strings.SplitSeq(rawDebounceLatencyBuckets, ",") {
+				v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+				if err != nil {
+					actionErr = validationError(cmd, "--debounce-latency-buckets: invalid value %q: %v", p, err)
+					return nil
+				}
+				if v <= 0 {
+					actionErr = validationError(cmd, "--debounce-latency-buckets: bucket boundaries must be positive, got %v", v)
+					return nil
+				}
+				c.DebounceLatencyBuckets = append(c.DebounceLatencyBuckets, v)
+			}
+			sort.Float64s(c.DebounceLatencyBuckets)
 
 			// Validate VCL template file exists.
 			if _, err := os.Stat(c.VCLTemplate); err != nil {

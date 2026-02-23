@@ -11,8 +11,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
+	"k8s-httpcache/internal/config"
+	"k8s-httpcache/internal/telemetry"
 	"k8s-httpcache/internal/watcher"
 )
+
+func TestMain(m *testing.M) {
+	telemetry.RegisterDebounceLatency(config.DefaultDebounceLatencyBuckets)
+	os.Exit(m.Run())
+}
 
 func TestBackendChanNil(t *testing.T) {
 	ch := backendChan(nil)
@@ -424,6 +434,10 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 		mu.Unlock()
 		return "test.vcl", nil
 	}
+
+	euBefore := getCounter2Value(t, "frontend", "test-svc", telemetry.EndpointUpdatesTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	pods := []watcher.Frontend{
@@ -440,6 +454,17 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 		t.Fatalf("expected 2 frontends, got %d", n)
 	}
 
+	// Verify metrics.
+	if delta := getCounter2Value(t, "frontend", "test-svc", telemetry.EndpointUpdatesTotal) - euBefore; delta < 1 {
+		t.Errorf("endpoint_updates_total(frontend) delta = %v, want >= 1", delta)
+	}
+	if got := getGauge2Value(t, "frontend", "test-svc", telemetry.Endpoints); got != 2 {
+		t.Errorf("endpoints(frontend) = %v, want 2", got)
+	}
+	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1", delta)
+	}
+
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
@@ -448,6 +473,9 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 
 func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 	h := newTestHarness()
+	euBefore := getCounter2Value(t, "backend", "api", telemetry.EndpointUpdatesTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	h.backendCh <- backendChange{
@@ -464,6 +492,17 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 		t.Fatal("expected mgr.Reload after backend update")
 	}
 
+	// Verify metrics.
+	if delta := getCounter2Value(t, "backend", "api", telemetry.EndpointUpdatesTotal) - euBefore; delta < 1 {
+		t.Errorf("endpoint_updates_total(backend) delta = %v, want >= 1", delta)
+	}
+	if got := getGauge2Value(t, "backend", "api", telemetry.Endpoints); got != 1 {
+		t.Errorf("endpoints(backend,api) = %v, want 1", got)
+	}
+	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1", delta)
+	}
+
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
@@ -472,6 +511,8 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 
 func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
 	h := newTestHarness()
+	vuBefore := getCounterValue(t, "tuning", telemetry.ValuesUpdatesTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	h.valuesCh <- valuesChange{
@@ -486,6 +527,11 @@ func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
 	}
 	if h.mgr.getReloadCount() < 1 {
 		t.Fatal("expected mgr.Reload after values update")
+	}
+
+	// Verify metric.
+	if delta := getCounterValue(t, "tuning", telemetry.ValuesUpdatesTotal) - vuBefore; delta < 1 {
+		t.Errorf("values_updates_total(tuning) delta = %v, want >= 1", delta)
 	}
 
 	code := wait()
@@ -521,6 +567,9 @@ func TestValuesChanNonNil(t *testing.T) {
 
 func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 	h := newTestHarness()
+	tcBefore := getSingleCounterValue(t, telemetry.VCLTemplateChangesTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	h.templateCh <- struct{}{}
@@ -534,6 +583,14 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 		t.Fatal("expected RenderToFile after template change")
 	}
 
+	// Verify metrics.
+	if delta := getSingleCounterValue(t, telemetry.VCLTemplateChangesTotal) - tcBefore; delta < 1 {
+		t.Errorf("vcl_template_changes_total delta = %v, want >= 1", delta)
+	}
+	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1", delta)
+	}
+
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
@@ -543,6 +600,8 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 	h := newTestHarness()
 	h.rend.reloadFn = func() error { return errors.New("parse error") }
+	parseBefore := getSingleCounterValue(t, telemetry.VCLTemplateParseErrorsTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	h.templateCh <- struct{}{}
@@ -554,6 +613,11 @@ func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 	}
 	if rollbackCount != 0 {
 		t.Fatal("expected no Rollback when template parse fails (old template kept)")
+	}
+
+	// Verify metric.
+	if delta := getSingleCounterValue(t, telemetry.VCLTemplateParseErrorsTotal) - parseBefore; delta < 1 {
+		t.Errorf("vcl_template_parse_errors_total delta = %v, want >= 1", delta)
 	}
 
 	code := wait()
@@ -571,6 +635,9 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 		}
 		return "test.vcl", nil
 	}
+	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
+	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	// Template change → Reload succeeds → RenderToFile fails → Rollback
@@ -580,6 +647,14 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 	_, _, rollbackCount := h.rend.counts()
 	if rollbackCount < 1 {
 		t.Fatal("expected Rollback after render error with new template")
+	}
+
+	// Verify metrics.
+	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+		t.Errorf("vcl_render_errors_total delta = %v, want >= 1", delta)
+	}
+	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
 
 	code := wait()
@@ -597,6 +672,10 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 		}
 		return nil
 	}
+	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
+	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	// Template change → Reload succeeds → RenderToFile succeeds →
@@ -613,6 +692,17 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 		t.Fatal("expected retry mgr.Reload after rollback")
 	}
 
+	// Verify metrics.
+	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 1", delta)
+	}
+	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
+	}
+	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1 (retry succeeded)", delta)
+	}
+
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
@@ -624,6 +714,9 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render always fails")
 	}
+	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
+	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	// Template change → rend.Reload ok → RenderToFile fails → Rollback →
@@ -638,6 +731,14 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 		t.Fatal("expected Rollback")
 	}
 
+	// Verify metrics.
+	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+		t.Errorf("vcl_render_errors_total delta = %v, want >= 1", delta)
+	}
+	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
+	}
+
 	// Loop still alive — send another event and terminate normally.
 	code := wait()
 	if code != 0 {
@@ -650,12 +751,23 @@ func TestRunLoop_RollbackReloadError(t *testing.T) {
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish always rejects")
 	}
+	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
+	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	// Template change → rend.Reload ok → RenderToFile ok → mgr.Reload fails →
 	// Rollback → retry RenderToFile ok → retry mgr.Reload fails again → continue
 	h.templateCh <- struct{}{}
 	time.Sleep(20 * time.Millisecond)
+
+	// Verify metrics: two reload errors (initial + retry) and one rollback.
+	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 2 {
+		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 2", delta)
+	}
+	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
+	}
 
 	// Loop still alive — terminate normally.
 	code := wait()
@@ -719,6 +831,11 @@ func TestRunLoop_VarnishdUnexpectedExit(t *testing.T) {
 	if result != 1 {
 		t.Fatalf("expected exit 1, got %d", result)
 	}
+
+	// Verify metric.
+	if got := getGaugeValue(t, telemetry.VarnishdUp); got != 0 {
+		t.Errorf("varnishd_up = %v, want 0", got)
+	}
 }
 
 func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
@@ -726,6 +843,8 @@ func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
 	}
+	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	// Frontend update (not a template change) → RenderToFile fails → no Rollback.
@@ -740,6 +859,11 @@ func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 		t.Fatal("expected no Rollback on render error without template change")
 	}
 
+	// Verify metric.
+	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+		t.Errorf("vcl_render_errors_total delta = %v, want >= 1", delta)
+	}
+
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
@@ -751,6 +875,8 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish reload error")
 	}
+	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	// Frontend update → RenderToFile ok → mgr.Reload fails → no Rollback.
@@ -763,6 +889,11 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 	_, _, rollbackCount := h.rend.counts()
 	if rollbackCount != 0 {
 		t.Fatal("expected no Rollback on reload error without template change")
+	}
+
+	// Verify metric.
+	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 1", delta)
 	}
 
 	code := wait()
@@ -783,6 +914,10 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish reload error")
 	}
+	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
+	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
+
 	wait := h.runAndWait(h.bcast)
 
 	// Template change → rend.Reload ok → RenderToFile ok (1st) →
@@ -796,6 +931,17 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	}
 	if rollbackCount < 1 {
 		t.Fatal("expected Rollback")
+	}
+
+	// Verify metrics.
+	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 1", delta)
+	}
+	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
+	}
+	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+		t.Errorf("vcl_render_errors_total delta = %v, want >= 1 (retry render failed)", delta)
 	}
 
 	code := wait()
@@ -2408,4 +2554,345 @@ func TestResetDebounce_NoDeadlineWhenMaxIsZero(t *testing.T) {
 	if !s.deadline.IsZero() {
 		t.Fatal("expected deadline to remain zero when debounceMax is 0")
 	}
+}
+
+func TestResetDebounce_SetsFirstEventOnFirstCall(t *testing.T) {
+	var s debounceState
+	before := time.Now()
+	resetDebounce(&s, 100*time.Millisecond, 0)
+	defer s.timer.Stop()
+
+	if s.firstEvent.IsZero() {
+		t.Fatal("expected firstEvent to be set on first call")
+	}
+	if s.firstEvent.Before(before) {
+		t.Error("firstEvent is before the call")
+	}
+}
+
+func TestResetDebounce_PreservesFirstEventOnSubsequentCalls(t *testing.T) {
+	var s debounceState
+	resetDebounce(&s, 100*time.Millisecond, 0)
+	first := s.firstEvent
+	s.timer.Stop()
+
+	time.Sleep(5 * time.Millisecond)
+	resetDebounce(&s, 100*time.Millisecond, 0)
+	defer s.timer.Stop()
+
+	if s.firstEvent != first {
+		t.Errorf("firstEvent changed from %v to %v on second call", first, s.firstEvent)
+	}
+}
+
+func TestResetDebounce_CappedSetWhenDeadlineForcesShortTimer(t *testing.T) {
+	var s debounceState
+	s.deadline = time.Now().Add(10 * time.Millisecond)
+
+	resetDebounce(&s, 500*time.Millisecond, 100*time.Millisecond)
+	defer s.timer.Stop()
+
+	if !s.capped {
+		t.Fatal("expected capped=true when deadline forces shorter timer")
+	}
+}
+
+func TestResetDebounce_CappedFalseWhenNotConstrained(t *testing.T) {
+	var s debounceState
+	resetDebounce(&s, 100*time.Millisecond, 5*time.Second)
+	defer s.timer.Stop()
+
+	if s.capped {
+		t.Fatal("expected capped=false when debounce < debounceMax remaining")
+	}
+}
+
+// --- Debounce metrics integration tests ---
+
+func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 50 * time.Millisecond
+	lc.backendDebounce = 50 * time.Millisecond
+
+	// Snapshot counters before the test (other tests may have incremented them).
+	feEventsBefore := getCounterValue(t, "frontend", telemetry.DebounceEventsTotal)
+	beEventsBefore := getCounterValue(t, "backend", telemetry.DebounceEventsTotal)
+	feFiresBefore := getCounterValue(t, "frontend", telemetry.DebounceFiresTotal)
+	beFiresBefore := getCounterValue(t, "backend", telemetry.DebounceFiresTotal)
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send 3 frontend events and 2 backend events.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.2", Port: 80, Name: "pod-2"}}
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.3", Port: 80, Name: "pod-3"}}
+	time.Sleep(200 * time.Millisecond)
+
+	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}}
+	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.2", Port: 8080, Name: "api-1"}}}
+	time.Sleep(200 * time.Millisecond)
+
+	feEventsAfter := getCounterValue(t, "frontend", telemetry.DebounceEventsTotal)
+	beEventsAfter := getCounterValue(t, "backend", telemetry.DebounceEventsTotal)
+	feFiresAfter := getCounterValue(t, "frontend", telemetry.DebounceFiresTotal)
+	beFiresAfter := getCounterValue(t, "backend", telemetry.DebounceFiresTotal)
+
+	if feEventsDelta := feEventsAfter - feEventsBefore; feEventsDelta < 3 {
+		t.Errorf("frontend debounce_events_total delta = %v, want >= 3", feEventsDelta)
+	}
+	if beEventsDelta := beEventsAfter - beEventsBefore; beEventsDelta < 2 {
+		t.Errorf("backend debounce_events_total delta = %v, want >= 2", beEventsDelta)
+	}
+	if feFiresDelta := feFiresAfter - feFiresBefore; feFiresDelta < 1 {
+		t.Errorf("frontend debounce_fires_total delta = %v, want >= 1", feFiresDelta)
+	}
+	if beFiresDelta := beFiresAfter - beFiresBefore; beFiresDelta < 1 {
+		t.Errorf("backend debounce_fires_total delta = %v, want >= 1", beFiresDelta)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 250 * time.Millisecond
+	lc.frontendDebounceMax = 250 * time.Millisecond
+	lc.backendDebounce = 250 * time.Millisecond
+	lc.backendDebounceMax = 0
+
+	enforceBefore := getCounterValue(t, "frontend", telemetry.DebounceMaxEnforcementsTotal)
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Rapid frontend events for 600ms — debounceMax=250ms should force reloads.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(600 * time.Millisecond)
+	close(stop)
+	time.Sleep(300 * time.Millisecond) // let final timer fire
+
+	enforceAfter := getCounterValue(t, "frontend", telemetry.DebounceMaxEnforcementsTotal)
+	if enforceDelta := enforceAfter - enforceBefore; enforceDelta < 1 {
+		t.Errorf("frontend debounce_max_enforcements_total delta = %v, want >= 1", enforceDelta)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 50 * time.Millisecond
+
+	samplesBefore := getHistogramSampleCount(t, "frontend", telemetry.DebounceLatencySeconds)
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(200 * time.Millisecond)
+
+	samplesAfter := getHistogramSampleCount(t, "frontend", telemetry.DebounceLatencySeconds)
+	if samplesDelta := samplesAfter - samplesBefore; samplesDelta < 1 {
+		t.Errorf("frontend debounce_latency_seconds sample count delta = %d, want >= 1", samplesDelta)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.backendDebounce = 250 * time.Millisecond
+	lc.backendDebounceMax = 250 * time.Millisecond
+
+	enforceBefore := getCounterValue(t, "backend", telemetry.DebounceMaxEnforcementsTotal)
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Rapid backend events for 600ms — debounceMax=250ms should force reloads.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(600 * time.Millisecond)
+	close(stop)
+	time.Sleep(300 * time.Millisecond) // let final timer fire
+
+	enforceAfter := getCounterValue(t, "backend", telemetry.DebounceMaxEnforcementsTotal)
+	if enforceDelta := enforceAfter - enforceBefore; enforceDelta < 1 {
+		t.Errorf("backend debounce_max_enforcements_total delta = %v, want >= 1", enforceDelta)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.backendDebounce = 50 * time.Millisecond
+
+	samplesBefore := getHistogramSampleCount(t, "backend", telemetry.DebounceLatencySeconds)
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}}
+	time.Sleep(200 * time.Millisecond)
+
+	samplesAfter := getHistogramSampleCount(t, "backend", telemetry.DebounceLatencySeconds)
+	if samplesDelta := samplesAfter - samplesBefore; samplesDelta < 1 {
+		t.Errorf("backend debounce_latency_seconds sample count delta = %d, want >= 1", samplesDelta)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+// getCounterValue reads the current value of a CounterVec for a given label.
+func getCounterValue(t *testing.T, label string, cv *prometheus.CounterVec) float64 {
+	t.Helper()
+	var m dto.Metric
+	c := cv.WithLabelValues(label)
+	pm, ok := c.(prometheus.Metric)
+	if !ok {
+		t.Fatal("counter does not implement prometheus.Metric")
+	}
+	if err := pm.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// getCounter2Value reads the current value of a CounterVec with two labels.
+func getCounter2Value(t *testing.T, l1, l2 string, cv *prometheus.CounterVec) float64 {
+	t.Helper()
+	var m dto.Metric
+	c := cv.WithLabelValues(l1, l2)
+	pm, ok := c.(prometheus.Metric)
+	if !ok {
+		t.Fatal("counter does not implement prometheus.Metric")
+	}
+	if err := pm.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// getSingleCounterValue reads the current value of a plain Counter.
+func getSingleCounterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	pm, ok := c.(prometheus.Metric)
+	if !ok {
+		t.Fatal("counter does not implement prometheus.Metric")
+	}
+	if err := pm.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// getGauge2Value reads the current value of a GaugeVec with two labels.
+func getGauge2Value(t *testing.T, l1, l2 string, gv *prometheus.GaugeVec) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := gv.WithLabelValues(l1, l2).Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetGauge().GetValue()
+}
+
+// getGaugeValue reads the current value of a plain Gauge.
+func getGaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := g.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetGauge().GetValue()
+}
+
+// getHistogramSampleCount reads the current sample count from a HistogramVec.
+func getHistogramSampleCount(t *testing.T, label string, hv *prometheus.HistogramVec) uint64 {
+	t.Helper()
+	var m dto.Metric
+	obs := hv.WithLabelValues(label)
+	pm, ok := obs.(prometheus.Metric)
+	if !ok {
+		t.Fatal("histogram does not implement prometheus.Metric")
+	}
+	if err := pm.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetHistogram().GetSampleCount()
 }

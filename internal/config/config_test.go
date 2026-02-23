@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -966,6 +967,75 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if cfg.BackendDebounceMax != cfg.DebounceMax {
 		t.Errorf("BackendDebounceMax = %v, want %v (same as DebounceMax)", cfg.BackendDebounceMax, cfg.DebounceMax)
+	}
+	if !slices.Equal(cfg.DebounceLatencyBuckets, DefaultDebounceLatencyBuckets) {
+		t.Errorf("DebounceLatencyBuckets = %v, want %v", cfg.DebounceLatencyBuckets, DefaultDebounceLatencyBuckets)
+	}
+}
+
+func TestParseDebounceLatencyBucketsCustom(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-latency-buckets=0.001,0.01,0.1,1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []float64{0.001, 0.01, 0.1, 1}
+	if !slices.Equal(cfg.DebounceLatencyBuckets, want) {
+		t.Errorf("DebounceLatencyBuckets = %v, want %v", cfg.DebounceLatencyBuckets, want)
+	}
+}
+
+func TestParseDebounceLatencyBucketsInvalidValue(t *testing.T) {
+	vcl := makeTempVCL(t)
+	_, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-latency-buckets=0.1,abc",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid bucket value")
+	}
+	if !strings.Contains(err.Error(), "invalid value") {
+		t.Errorf("error = %q, want it to mention invalid value", err)
+	}
+}
+
+func TestParseDebounceLatencyBucketsNegativeValue(t *testing.T) {
+	vcl := makeTempVCL(t)
+	_, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-latency-buckets=0.1,-0.5",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative bucket value")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("error = %q, want it to mention positive", err)
+	}
+}
+
+func TestParseDebounceLatencyBucketsSorted(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-latency-buckets=1,0.1,0.5",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []float64{0.1, 0.5, 1}
+	if !slices.Equal(cfg.DebounceLatencyBuckets, want) {
+		t.Errorf("DebounceLatencyBuckets = %v, want %v", cfg.DebounceLatencyBuckets, want)
 	}
 }
 

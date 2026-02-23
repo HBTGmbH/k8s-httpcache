@@ -98,6 +98,39 @@ var (
 		Name:      "build_info",
 		Help:      "Build information. Always 1.",
 	}, []string{"version", "goversion"})
+
+	// DebounceEventsTotal counts events received per debounce group.
+	// Each call to resetDebounce (i.e. each event that resets/starts the
+	// timer) increments this counter. Compare with DebounceFiresTotal to
+	// see the coalescing ratio.
+	DebounceEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "debounce_events_total",
+		Help:      "Total number of events received per debounce group.",
+	}, []string{"group"})
+
+	// DebounceFiresTotal counts debounce timer fires per group — the group
+	// whose timer triggered the reload.
+	DebounceFiresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "debounce_fires_total",
+		Help:      "Total number of debounce timer fires per group.",
+	}, []string{"group"})
+
+	// DebounceMaxEnforcementsTotal counts reloads where the debounce-max
+	// deadline forced the timer to fire earlier than the normal debounce
+	// window.
+	DebounceMaxEnforcementsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "debounce_max_enforcements_total",
+		Help:      "Total number of reloads forced by the debounce-max deadline.",
+	}, []string{"group"})
+
+	// DebounceLatencySeconds observes wall-clock time from the first event
+	// in a debounce burst to the reload, per group. It is registered via
+	// RegisterDebounceLatency after CLI parsing so bucket boundaries can
+	// be configured at runtime.
+	DebounceLatencySeconds *prometheus.HistogramVec
 )
 
 func init() {
@@ -115,5 +148,21 @@ func init() {
 		BroadcastRequestsTotal,
 		BroadcastFanoutTargets,
 		BuildInfo,
+		DebounceEventsTotal,
+		DebounceFiresTotal,
+		DebounceMaxEnforcementsTotal,
 	)
+}
+
+// RegisterDebounceLatency creates and registers the DebounceLatencySeconds
+// histogram with the given bucket boundaries. It must be called once after
+// CLI parsing and before any metrics are observed.
+func RegisterDebounceLatency(buckets []float64) {
+	DebounceLatencySeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "debounce_latency_seconds",
+		Help:      "Wall-clock time from first event in a debounce burst to the reload.",
+		Buckets:   buckets,
+	}, []string{"group"})
+	prometheus.MustRegister(DebounceLatencySeconds)
 }
