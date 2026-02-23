@@ -3,9 +3,11 @@ extends: default
 rules:
   line-length:
     max: 150
-  # Multi-document Kubernetes manifests and GitHub Actions conventions
-  # use indentation styles that the default rule flags incorrectly.
-  indentation: disable
+  # Kubernetes manifests and GitHub Actions use compact sequence style
+  # (list items at the same level as the key) which the default rejects.
+  indentation:
+    spaces: 2
+    indent-sequences: whatever
   # It is okay to omit the leading '---'.
   document-start: disable
   # GitHub Actions uses bare 'on:' which triggers a truthy warning.

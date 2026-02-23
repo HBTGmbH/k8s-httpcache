@@ -129,7 +129,7 @@ jobs:
     - name: ShellCheck
       run: shellcheck .github/test/*.sh
     - name: YAML lint
-      run: yamllint .
+      run: yamllint --strict .
 
 
   go-build:
