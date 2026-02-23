@@ -171,6 +171,31 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--log-format` | `text` | Log format: `text`, `json` |
 
+### Tuning debounce
+
+In a typical Kubernetes deployment, endpoint changes arrive in bursts — for example when a `Deployment` scales up/down or a rolling update replaces pods. The `--debounce` and `--debounce-max` flags control how these bursts are batched into VCL reloads.
+
+**Why two settings?** `--debounce` alone handles short bursts well: it waits for a quiet period before reloading, so a flurry of near-simultaneous changes produces a single reload. But during a sustained stream of events — e.g. a rolling update replacing pods one at a time every few seconds — there is never a quiet period long enough for the debounce timer to fire. `--debounce-max` solves this by putting an upper bound on how long the system will wait. Together, the two settings give you the best of both worlds: short bursts are coalesced into one reload (thanks to `--debounce`), while prolonged activity still triggers periodic reloads (thanks to `--debounce-max`). Setting both to the same value would effectively disable the coalescing benefit — every burst would trigger a reload after exactly that duration, even if waiting just a little longer would have captured all changes in a single reload.
+
+**Recommended starting point:**
+
+```
+--debounce=2s --debounce-max=10s
+```
+
+- `--debounce=2s` (the default) coalesces rapid-fire endpoint updates into a single reload. Most rolling updates emit several changes within a few seconds, so 2s is a good balance between responsiveness and avoiding unnecessary reloads.
+- `--debounce-max=10s` caps the total wait. Without it, a long rolling update (e.g. replacing 100 pods one by one) can keep resetting the debounce timer indefinitely, leaving Varnish with a stale backend list for the entire rollout. With `--debounce-max=10s`, a reload is forced at least every 10 seconds during sustained activity.
+
+**When to adjust:**
+
+| Situation | Suggestion                                                                                     |
+|-----------|------------------------------------------------------------------------------------------------|
+| Small clusters with few pods | Lower both values (e.g. `--debounce=1s --debounce-max=5s`) for faster convergence              |
+| Large clusters or slow rollouts (100+ pods) | Raise `--debounce-max` (e.g. `5s`–`10s`) to batch more changes per reload and reduce VCL churn |
+| Near-instant convergence required | `--debounce=500ms --debounce-max=2s`, at the cost of more frequent reloads                     |
+
+**Caution:** Setting either value too high can cause Varnish to keep routing requests to pods that have already been terminated or are no longer accepting traffic. During a rolling update, Kubernetes removes old pods while adding new ones — if the VCL reload is delayed too long, Varnish's backend list becomes stale and requests to removed pods will fail with backend connection errors. Ideally, keep `--debounce-max` shorter than any `preStop` sleep or graceful shutdown timeout configured on your backend pods — this ensures Varnish updates its backend list before the old pods actually stop accepting connections.
+
 ### Passing arguments to varnishd
 
 Use the `--` separator to pass arguments directly to `varnishd`:
