@@ -275,18 +275,13 @@ spec:
         resources:
           requests:
             cpu: 10m
-            memory: 1Gi
-          limits:
-            cpu: "1"
-            memory: 1Gi
+            memory: 8Mi
       volumes:
       - name: tmp
         emptyDir:
-          sizeLimit: 256Mi
           medium: Memory
       - name: varlibvarnish
         emptyDir:
-          sizeLimit: 512Mi
           medium: Memory
       - name: vcl-template
         configMap:
