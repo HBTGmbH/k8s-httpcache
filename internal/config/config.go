@@ -203,6 +203,7 @@ type Config struct {
 	TemplateDelimRight         string
 	VCLReloadRetries           int
 	VCLReloadRetryInterval     time.Duration
+	VCLKept                    int
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -531,6 +532,13 @@ func Parse(args []string) (*Config, error) {
 				Value:       2 * time.Second,
 				Destination: &c.VCLReloadRetryInterval,
 			},
+			&cli.IntFlag{
+				Name:        "vcl-kept",
+				Category:    "Timing and logging:",
+				Usage:       "Number of old VCL objects to retain after reload (0 discards all)",
+				Value:       0,
+				Destination: &c.VCLKept,
+			},
 			&cli.StringFlag{
 				Name:        "log-level",
 				Category:    "Timing and logging:",
@@ -593,6 +601,12 @@ func Parse(args []string) (*Config, error) {
 			}
 			if c.VCLReloadRetryInterval < 0 {
 				actionErr = validationError(cmd, "--vcl-reload-retry-interval must be >= 0, got %v", c.VCLReloadRetryInterval)
+				return nil
+			}
+
+			// Validate VCL kept.
+			if c.VCLKept < 0 {
+				actionErr = validationError(cmd, "--vcl-kept must be >= 0, got %d", c.VCLKept)
 				return nil
 			}
 

@@ -135,6 +135,7 @@ func main() {
 	mgr.AdminTimeout = cfg.AdminTimeout
 	mgr.ReloadRetries = cfg.VCLReloadRetries
 	mgr.ReloadRetryInterval = cfg.VCLReloadRetryInterval
+	mgr.VCLKept = cfg.VCLKept
 
 	if err := mgr.DetectVersion(); err != nil {
 		log.Fatalf("varnish version: %v", err)

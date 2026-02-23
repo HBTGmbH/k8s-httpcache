@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -76,6 +77,7 @@ type Manager struct {
 	AdminTimeout        time.Duration
 	ReloadRetries       int
 	ReloadRetryInterval time.Duration
+	VCLKept             int
 }
 
 // extractWorkDir scans args for a -n flag and returns its value.
@@ -117,6 +119,9 @@ func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []
 		AdminTimeout:    30 * time.Second,
 	}
 }
+
+// vclReloadPrefix is the naming prefix for VCL objects loaded by k8s-httpcache.
+const vclReloadPrefix = "kv_reload_"
 
 var versionRe = regexp.MustCompile(`varnish-(\d+)\.`)
 
@@ -214,7 +219,7 @@ func (m *Manager) Reload(vclPath string) error {
 	var lastErr error
 	for attempt := range maxAttempts {
 		n := m.reloadCounter.Add(1)
-		name := fmt.Sprintf("kv_reload_%d", n)
+		name := fmt.Sprintf("%s%d", vclReloadPrefix, n)
 
 		// Load the new VCL.
 		resp, err := m.adm("vcl.load", name, vclPath)
@@ -367,12 +372,27 @@ func (m *Manager) adm(args ...string) (string, error) {
 	return m.run.Run(m.varnishadmPath, cmdArgs)
 }
 
+// vclSuffix parses the numeric suffix from a VCL name matching the
+// vclReloadPrefix pattern (e.g. "kv_reload_42" → 42).
+// Returns -1 for names that don't match.
+func vclSuffix(name string) int64 {
+	if !strings.HasPrefix(name, vclReloadPrefix) {
+		return -1
+	}
+	n, err := strconv.ParseInt(name[len(vclReloadPrefix):], 10, 64)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
 func (m *Manager) discardOldVCLs(currentName string) {
 	resp, err := m.adm("vcl.list")
 	if err != nil {
 		return
 	}
 
+	var available []string
 	scanner := bufio.NewScanner(strings.NewReader(resp))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -382,11 +402,33 @@ func (m *Manager) discardOldVCLs(currentName string) {
 		state := fields[0]
 		name := fields[len(fields)-1]
 
-		// Only discard "available" VCLs that are not the current one.
 		if state == "available" && name != currentName {
-			if _, err := m.adm("vcl.discard", name); err != nil {
-				slog.Warn("failed to discard VCL", "name", name, "error", err)
-			}
+			available = append(available, name)
+		}
+	}
+
+	if len(available) == 0 {
+		return
+	}
+
+	// When VCLKept > 0 and we have fewer (or equal) available VCLs than
+	// the retention limit, keep everything.
+	if m.VCLKept > 0 && len(available) <= m.VCLKept {
+		return
+	}
+
+	// When VCLKept > 0, sort descending by suffix (higher = newer) and
+	// only discard the tail beyond the retention limit.
+	if m.VCLKept > 0 {
+		sort.Slice(available, func(i, j int) bool {
+			return vclSuffix(available[i]) > vclSuffix(available[j])
+		})
+		available = available[m.VCLKept:]
+	}
+
+	for _, name := range available {
+		if _, err := m.adm("vcl.discard", name); err != nil {
+			slog.Warn("failed to discard VCL", "name", name, "error", err)
 		}
 	}
 }

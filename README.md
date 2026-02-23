@@ -166,6 +166,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
 | `--vcl-reload-retries` | `3` | Max retry attempts for `vcl.load` failures (`0` disables retries) |
 | `--vcl-reload-retry-interval` | `2s` | Wait between `vcl.load` retry attempts |
+| `--vcl-kept` | `0` | Number of old VCL objects to retain after reload (`0` discards all) |
 | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--log-format` | `text` | Log format: `text`, `json` |
 

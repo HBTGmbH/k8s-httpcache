@@ -1821,6 +1821,227 @@ func TestReloadFirstAttemptSuccessWithRetriesConfigured(t *testing.T) {
 	}
 }
 
+func TestVCLSuffix(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int64
+	}{
+		{"valid prefix", "kv_reload_42", 42},
+		{"valid prefix zero", "kv_reload_0", 0},
+		{"valid prefix large", "kv_reload_999999", 999999},
+		{"no prefix", "boot", -1},
+		{"partial prefix", "kv_reload_", -1},
+		{"non-numeric suffix", "kv_reload_abc", -1},
+		{"different prefix", "other_reload_5", -1},
+		{"empty string", "", -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := vclSuffix(tt.input)
+			if got != tt.want {
+				t.Errorf("vclSuffix(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDiscardOldVCLsKeepTwo(t *testing.T) {
+	vclListOutput := strings.Join([]string{
+		"active      0 warm          0 kv_reload_5",
+		"available   0 warm          0 kv_reload_1",
+		"available   0 warm          0 kv_reload_2",
+		"available   0 warm          0 kv_reload_3",
+		"available   0 warm          0 kv_reload_4",
+	}, "\n")
+
+	var discarded []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for i, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" && i+1 < len(args) {
+					discarded = append(discarded, args[i+1])
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.VCLKept = 2
+
+	m.discardOldVCLs("kv_reload_5")
+
+	// Should keep kv_reload_4 and kv_reload_3 (newest 2), discard kv_reload_1 and kv_reload_2.
+	if len(discarded) != 2 {
+		t.Fatalf("discarded %d VCLs, want 2: %v", len(discarded), discarded)
+	}
+	want := map[string]bool{"kv_reload_1": true, "kv_reload_2": true}
+	for _, name := range discarded {
+		if !want[name] {
+			t.Errorf("unexpectedly discarded %q", name)
+		}
+	}
+}
+
+func TestDiscardOldVCLsKeepMoreThanAvailable(t *testing.T) {
+	vclListOutput := strings.Join([]string{
+		"active      0 warm          0 kv_reload_3",
+		"available   0 warm          0 kv_reload_1",
+		"available   0 warm          0 kv_reload_2",
+	}, "\n")
+
+	var discardCalls int
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for _, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" {
+					discardCalls++
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.VCLKept = 5
+
+	m.discardOldVCLs("kv_reload_3")
+
+	if discardCalls != 0 {
+		t.Fatalf("expected 0 discard calls, got %d", discardCalls)
+	}
+}
+
+func TestDiscardOldVCLsKeepZeroDiscardsAll(t *testing.T) {
+	vclListOutput := strings.Join([]string{
+		"active      0 warm          0 kv_reload_3",
+		"available   0 warm          0 kv_reload_1",
+		"available   0 warm          0 kv_reload_2",
+	}, "\n")
+
+	var discarded []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for i, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" && i+1 < len(args) {
+					discarded = append(discarded, args[i+1])
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.VCLKept = 0
+
+	m.discardOldVCLs("kv_reload_3")
+
+	if len(discarded) != 2 {
+		t.Fatalf("discarded %d VCLs, want 2: %v", len(discarded), discarded)
+	}
+	want := map[string]bool{"kv_reload_1": true, "kv_reload_2": true}
+	for _, name := range discarded {
+		if !want[name] {
+			t.Errorf("unexpectedly discarded %q", name)
+		}
+	}
+}
+
+func TestDiscardOldVCLsNonKVNames(t *testing.T) {
+	vclListOutput := strings.Join([]string{
+		"active      0 warm          0 kv_reload_4",
+		"available   0 warm          0 kv_reload_2",
+		"available   0 warm          0 kv_reload_3",
+		"available   0 warm          0 manual_vcl",
+		"available   0 warm          0 old_config",
+	}, "\n")
+
+	var discarded []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for i, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" && i+1 < len(args) {
+					discarded = append(discarded, args[i+1])
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.VCLKept = 2
+
+	m.discardOldVCLs("kv_reload_4")
+
+	// 4 available. Keep 2 newest: kv_reload_3 (suffix 3), kv_reload_2 (suffix 2).
+	// Discard: manual_vcl (suffix -1), old_config (suffix -1) — these sort as oldest.
+	if len(discarded) != 2 {
+		t.Fatalf("discarded %d VCLs, want 2: %v", len(discarded), discarded)
+	}
+	want := map[string]bool{"manual_vcl": true, "old_config": true}
+	for _, name := range discarded {
+		if !want[name] {
+			t.Errorf("unexpectedly discarded %q", name)
+		}
+	}
+}
+
+func TestDiscardOldVCLsKeepExactCount(t *testing.T) {
+	vclListOutput := strings.Join([]string{
+		"active      0 warm          0 kv_reload_4",
+		"available   0 warm          0 kv_reload_2",
+		"available   0 warm          0 kv_reload_3",
+	}, "\n")
+
+	var discardCalls int
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for _, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" {
+					discardCalls++
+					return "", nil
+				}
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.VCLKept = 2
+
+	m.discardOldVCLs("kv_reload_4")
+
+	// available == kept, nothing to discard.
+	if discardCalls != 0 {
+		t.Fatalf("expected 0 discard calls, got %d", discardCalls)
+	}
+}
+
 func TestReloadRetryCounterContinuityAcrossCalls(t *testing.T) {
 	// Two successive Reload() calls, each with retries, should produce
 	// a continuous reloadCounter sequence.

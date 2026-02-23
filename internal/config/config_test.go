@@ -2107,6 +2107,55 @@ func TestParseVCLReloadRetriesOnlyIntervalSet(t *testing.T) {
 	}
 }
 
+// --- --vcl-kept flag tests ---
+
+func TestParseVCLKeptDefault(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLKept != 0 {
+		t.Errorf("VCLKept = %d, want 0", cfg.VCLKept)
+	}
+}
+
+func TestParseVCLKeptCustom(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-kept=3",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VCLKept != 3 {
+		t.Errorf("VCLKept = %d, want 3", cfg.VCLKept)
+	}
+}
+
+func TestParseVCLKeptNegative(t *testing.T) {
+	vcl := makeTempVCL(t)
+	_, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-kept=-1",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --vcl-kept")
+	}
+	if !strings.Contains(err.Error(), "--vcl-kept must be >= 0") {
+		t.Errorf("error = %q, want substring '--vcl-kept must be >= 0'", err)
+	}
+}
+
 // --- --file-watch flag tests ---
 
 func TestParseFileWatchDefault(t *testing.T) {
