@@ -10,6 +10,7 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [golangci-lint](https://golangci-lint.run/welcome/install/)
 - [hurl](https://hurl.dev/) for E2E test assertions
 - A Kubernetes cluster for E2E testing (the CI uses [kind](https://kind.sigs.k8s.io/))
+- [curl](https://curl.se/) for HTTP assertions in E2E tests
 - [jq](https://jqlang.github.io/jq/) for JSON assertions in E2E tests
 - [oha](https://github.com/hatoo/oha) (optional, only needed for the zero-downtime rollout test)
 
@@ -43,6 +44,13 @@ The project uses [golangci-lint](https://golangci-lint.run/) with an extensive r
 
 ```bash
 golangci-lint run
+```
+
+YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config in [`.yamllint.yml`](.yamllint.yml)), and shell scripts with [ShellCheck](https://www.shellcheck.net/):
+
+```bash
+yamllint --strict .
+shellcheck .github/test/*.sh
 ```
 
 The CI also runs [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) and [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode) detection:
