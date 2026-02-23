@@ -99,7 +99,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--varnishd-path` | `varnishd` | Path to varnishd binary |
 | `--varnishadm-path` | `varnishadm` | Path to varnishadm binary |
 | `--varnishstat-path` | `varnishstat` | Path to varnishstat binary |
-| `--admin-timeout` | `30s` | Max time to wait for the varnish admin port to become ready |
+| `--admin-timeout` | `30s` | Max time to wait for the varnish admin CLI to become ready |
 
 ### Broadcast flags
 
@@ -379,7 +379,7 @@ The VCL template file is watched for changes. When a change is detected, k8s-htt
 
 ### Reference VCL template
 
-The following template from [`.github/test/manifest.yaml`](.github/test/manifest.yaml) demonstrates shard-based routing, multiple backend groups, and PURGE handling. Note that drain VCL is **not** included here — when `--drain` is enabled, k8s-httpcache automatically injects the necessary VCL (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)).
+The following template (based on [`.github/test/manifest.yaml`](.github/test/manifest.yaml)) demonstrates shard-based routing, multiple backend groups, and PURGE handling. Note that drain VCL is **not** included here — when `--drain` is enabled, k8s-httpcache automatically injects the necessary VCL (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)).
 
 ```vcl
 vcl 4.1;
@@ -448,7 +448,6 @@ sub vcl_recv {
   <<- range $name, $_ := .Backends >>
   if (req.url ~ "^/<< $name >>/") {
     set req.backend_hint = backend_<< $name >>.backend();
-    set req.url = regsub(req.url, "^/<< $name >>/", "/");
   }
   <<- end >>
 }
