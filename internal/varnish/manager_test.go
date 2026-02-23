@@ -531,6 +531,35 @@ func TestStartDetectVersionError(t *testing.T) {
 	}
 }
 
+func TestStartAdminTimeoutViaStart(t *testing.T) {
+	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
+	defer close(mp.waitCh)
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return mp, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+			if slices.Contains(args, "ping") {
+				return "", errors.New("connection refused")
+			}
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.AdminTimeout = 500 * time.Millisecond
+
+	err := m.Start("/tmp/test.vcl")
+	if err == nil {
+		t.Fatal("expected error from Start due to admin timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "waiting for varnish admin") {
+		t.Errorf("error = %q, want substring 'waiting for varnish admin'", err.Error())
+	}
+}
+
 func TestStartRunnerError(t *testing.T) {
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) {

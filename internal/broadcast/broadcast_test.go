@@ -3,6 +3,7 @@ package broadcast
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,13 @@ import (
 
 	"k8s-httpcache/internal/watcher"
 )
+
+// errorReader is an io.Reader that always returns an error.
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) {
+	return 0, errors.New("simulated read error")
+}
 
 // newTestServer creates a broadcast Server with default test timeouts.
 func newTestServer() *Server {
@@ -564,6 +572,107 @@ func TestMaxBodySizeTruncation(t *testing.T) {
 	// Body should be truncated to maxBodySize (1 MiB = 1048576 bytes).
 	if len(r.Body) != maxBodySize {
 		t.Fatalf("expected body length %d, got %d", maxBodySize, len(r.Body))
+	}
+}
+
+func TestRedirectNotFollowed(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/other", http.StatusFound)
+	}))
+	defer backend.Close()
+
+	s := newTestServer()
+	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
+
+	req := httptest.NewRequest(http.MethodGet, "/redirect-me", nil)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var results map[string]PodResult
+	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	r := results["pod-0"]
+	if r.Status != http.StatusFound {
+		t.Fatalf("expected pod result status 302, got %d", r.Status)
+	}
+}
+
+func TestRequestBodyReadError(t *testing.T) {
+	s := newTestServer()
+	s.SetFrontends([]watcher.Frontend{
+		{Name: "pod-0", IP: "127.0.0.1", Port: 9999},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/purge/foo", &errorReader{})
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(body["error"], "failed to read request body") {
+		t.Fatalf("expected body read error, got %q", body["error"])
+	}
+}
+
+func TestRequestBodyReadErrorDraining(t *testing.T) {
+	s := newTestServer()
+	s.draining.Store(true)
+	s.SetFrontends([]watcher.Frontend{
+		{Name: "pod-0", IP: "127.0.0.1", Port: 9999},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/purge/foo", &errorReader{})
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if rec.Header().Get("Connection") != "close" {
+		t.Fatal("expected Connection: close during drain on body read error")
+	}
+}
+
+func TestListenAndServe(t *testing.T) {
+	s := New(Options{
+		Addr:              "127.0.0.1:0",
+		ServerIdleTimeout: 120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		ClientTimeout:     10 * time.Second,
+		ClientIdleTimeout: 90 * time.Second,
+		ShutdownTimeout:   5 * time.Second,
+	})
+
+	// ListenAndServe blocks, so start it in a goroutine and then shut down.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.ListenAndServe()
+	}()
+
+	// Give the server a moment to start.
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	err := <-errCh
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("ListenAndServe: %v", err)
 	}
 }
 
