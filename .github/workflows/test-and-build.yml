@@ -34,8 +34,7 @@ jobs:
             - 'go.mod'
             - 'go.sum'
           src:
-            - '**/*.go'
-            - '!**/*_test.go'
+            - '**/!(*_test).go'
             - 'go.mod'
             - 'go.sum'
           ci:
