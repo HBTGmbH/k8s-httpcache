@@ -1400,6 +1400,217 @@ func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
 	}
 }
 
+func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
+	// Create a temp VCL file and start a real watchFile to prove the
+	// file actually changes on disk.
+	f, err := os.CreateTemp(t.TempDir(), "vcl-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Name()
+	if _, err := f.WriteString("initial"); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	ctx := t.Context()
+	watchCh := watchFile(ctx, path, 50*time.Millisecond)
+
+	// Wait a tick so the watcher reads the initial content.
+	time.Sleep(100 * time.Millisecond)
+
+	h := newTestHarness()
+	h.templateCh = nil // simulate --file-watch=false
+	wait := h.runAndWait(h.bcast)
+
+	// Modify the file on disk.
+	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for watchFile to detect the change, proving the file did change.
+	select {
+	case <-watchCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout: watchFile did not detect file change")
+	}
+
+	// Wait long enough for the debounce to fire if a reload were going to happen.
+	time.Sleep(50 * time.Millisecond)
+
+	reloadCount, renderCount, _ := h.rend.counts()
+	if reloadCount != 0 {
+		t.Fatalf("expected 0 rend.Reload calls, got %d", reloadCount)
+	}
+	if renderCount != 0 {
+		t.Fatalf("expected 0 RenderToFile calls, got %d", renderCount)
+	}
+	if h.mgr.getReloadCount() != 0 {
+		t.Fatalf("expected 0 mgr.Reload calls, got %d", h.mgr.getReloadCount())
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start a real FileValuesWatcher with a fast poll interval.
+	fvw := watcher.NewFileValuesWatcher(dir, 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = fvw.Run(ctx) }()
+
+	// Consume initial state from the watcher.
+	var initialData map[string]any
+	select {
+	case initialData = <-fvw.Changes():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for initial FileValuesWatcher state")
+	}
+
+	h := newTestHarness()
+	// Do NOT wire fvw.Changes() into valuesCh — simulates --file-watch=false.
+	// The default valuesCh from newTestHarness is a buffered channel that
+	// nobody sends to, so the select case never fires.
+
+	// Set up the loop manually so we can seed latestValues.
+	ctxLoop, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.latestValues["tuning"] = initialData
+	go func() {
+		code.Store(int32(runLoop(ctxLoop, cancel, lc)))
+		close(done)
+	}()
+
+	// Modify the YAML file on disk.
+	if err := os.WriteFile(dir+"/ttl.yaml", []byte("600"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the FileValuesWatcher to detect the change (proves the
+	// file did change and the watcher noticed).
+	select {
+	case <-fvw.Changes():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for FileValuesWatcher to detect change")
+	}
+
+	// Wait long enough for the debounce to fire if a reload were going to happen.
+	time.Sleep(50 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 0 {
+		t.Fatalf("expected 0 mgr.Reload calls, got %d", h.mgr.getReloadCount())
+	}
+	_, renderCount, _ := h.rend.counts()
+	if renderCount != 0 {
+		t.Fatalf("expected 0 RenderToFile calls, got %d", renderCount)
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/greeting.yaml", []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start a real FileValuesWatcher.
+	fvw := watcher.NewFileValuesWatcher(dir, 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = fvw.Run(ctx) }()
+
+	// Consume initial state.
+	var initialData map[string]any
+	select {
+	case initialData = <-fvw.Changes():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for initial FileValuesWatcher state")
+	}
+
+	// Track values passed to RenderToFile.
+	var (
+		renderMu     sync.Mutex
+		renderedVals map[string]map[string]any
+	)
+
+	h := newTestHarness()
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, vals map[string]map[string]any) (string, error) {
+		copied := make(map[string]map[string]any, len(vals))
+		for k, v := range vals {
+			inner := make(map[string]any, len(v))
+			maps.Copy(inner, v)
+			copied[k] = inner
+		}
+		renderMu.Lock()
+		renderedVals = copied
+		renderMu.Unlock()
+		return "test.vcl", nil
+	}
+
+	// Do NOT wire fvw.Changes() into valuesCh — simulates --file-watch=false.
+
+	// Set up loop manually to seed latestValues with initial directory state.
+	ctxLoop, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.latestValues["dirtest"] = initialData
+	go func() {
+		code.Store(int32(runLoop(ctxLoop, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger a frontend update to cause a render.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(20 * time.Millisecond) // debounce
+
+	// Assert RenderToFile was called with latestValues containing
+	// dirtest.greeting == "hello".
+	renderMu.Lock()
+	vals := renderedVals
+	renderMu.Unlock()
+
+	if vals == nil {
+		t.Fatal("expected RenderToFile to be called")
+	}
+	dirtest, ok := vals["dirtest"]
+	if !ok {
+		t.Fatal("expected 'dirtest' key in rendered values")
+	}
+	if greeting, ok := dirtest["greeting"].(string); !ok || greeting != "hello" {
+		t.Errorf("expected greeting=\"hello\", got %v (%T)", dirtest["greeting"], dirtest["greeting"])
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
 func TestDrainBackendForLoop(t *testing.T) {
 	if got := drainBackendForLoop(true); got != drainBackendName {
 		t.Errorf("drainBackendForLoop(true) = %q, want %q", got, drainBackendName)

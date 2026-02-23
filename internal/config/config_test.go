@@ -2107,3 +2107,38 @@ func TestParseVCLReloadRetriesOnlyIntervalSet(t *testing.T) {
 		t.Errorf("VCLReloadRetryInterval = %v, want 10s", cfg.VCLReloadRetryInterval)
 	}
 }
+
+// --- --file-watch flag tests ---
+
+func TestParseFileWatchDefault(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.FileWatch {
+		t.Error("FileWatch = false, want true (default)")
+	}
+}
+
+func TestParseFileWatchDisabled(t *testing.T) {
+	vcl := makeTempVCL(t)
+	setupParse(t, []string{
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--file-watch=false",
+	})
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.FileWatch {
+		t.Error("FileWatch = true, want false")
+	}
+}

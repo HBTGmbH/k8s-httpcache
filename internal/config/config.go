@@ -195,6 +195,7 @@ type Config struct {
 	DrainPollInterval          time.Duration
 	DrainTimeout               time.Duration
 	VCLTemplateWatchInterval   time.Duration
+	FileWatch                  bool
 	VarnishstatPath            string
 	TemplateDelimLeft          string
 	TemplateDelimRight         string
@@ -293,6 +294,7 @@ func Parse() (*Config, error) {
 	flag.DurationVar(&c.DrainPollInterval, "drain-poll-interval", 1*time.Second, "Poll interval for active sessions during graceful drain")
 	flag.DurationVar(&c.DrainTimeout, "drain-timeout", 0, "Max time to wait for active sessions to reach 0 (0 to skip session polling)")
 	flag.DurationVar(&c.VCLTemplateWatchInterval, "vcl-template-watch-interval", 5*time.Second, "Poll interval for VCL template file changes")
+	flag.BoolVar(&c.FileWatch, "file-watch", true, "Watch VCL template and --values-dir paths for changes (disable with --file-watch=false)")
 	flag.StringVar(&c.VarnishstatPath, "varnishstat-path", "varnishstat", "Path to varnishstat binary")
 
 	flag.IntVar(&c.VCLReloadRetries, "vcl-reload-retries", 3, "Max retry attempts for vcl.load failures (0 disables retries)")

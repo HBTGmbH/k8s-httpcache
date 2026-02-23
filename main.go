@@ -269,7 +269,12 @@ func main() {
 	telemetry.VarnishdUp.Set(1)
 
 	// Watch VCL template file for changes.
-	templateCh := watchFile(ctx, cfg.VCLTemplate, cfg.VCLTemplateWatchInterval)
+	var templateCh <-chan struct{}
+	if cfg.FileWatch {
+		templateCh = watchFile(ctx, cfg.VCLTemplate, cfg.VCLTemplateWatchInterval)
+	} else {
+		slog.Info("file watching disabled, skipping VCL template and --values-dir watchers")
+	}
 
 	// Fan-in backend watcher updates to a single channel.
 	var backendCh chan backendChange
@@ -286,9 +291,16 @@ func main() {
 	}
 
 	// Fan-in ConfigMapWatcher and FileValuesWatcher updates to a single channel.
+	// When file watching is disabled, FileValuesWatcher goroutines are not
+	// wired into valuesCh so disk changes won't trigger reloads. (The
+	// watchers were still started above to provide initial directory state.)
 	var valuesCh chan valuesChange
-	if len(vwWatchers) > 0 || len(fvwWatchers) > 0 {
-		valuesCh = make(chan valuesChange, len(vwWatchers)+len(fvwWatchers))
+	fvwCount := len(fvwWatchers)
+	if !cfg.FileWatch {
+		fvwCount = 0
+	}
+	if len(vwWatchers) > 0 || fvwCount > 0 {
+		valuesCh = make(chan valuesChange, len(vwWatchers)+fvwCount)
 		for i, vw := range vwWatchers {
 			name := vwNames[i]
 			go func() {
@@ -297,13 +309,15 @@ func main() {
 				}
 			}()
 		}
-		for i, fvw := range fvwWatchers {
-			name := fvwNames[i]
-			go func() {
-				for data := range fvw.Changes() {
-					valuesCh <- valuesChange{name: name, data: data}
-				}
-			}()
+		if cfg.FileWatch {
+			for i, fvw := range fvwWatchers {
+				name := fvwNames[i]
+				go func() {
+					for data := range fvw.Changes() {
+						valuesCh <- valuesChange{name: name, data: data}
+					}
+				}()
+			}
 		}
 	}
 
