@@ -954,6 +954,19 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.DrainTimeout != 0 {
 		t.Errorf("DrainTimeout = %v, want 0", cfg.DrainTimeout)
 	}
+	// Per-source debounce fields default to global values.
+	if cfg.FrontendDebounce != cfg.Debounce {
+		t.Errorf("FrontendDebounce = %v, want %v (same as Debounce)", cfg.FrontendDebounce, cfg.Debounce)
+	}
+	if cfg.FrontendDebounceMax != cfg.DebounceMax {
+		t.Errorf("FrontendDebounceMax = %v, want %v (same as DebounceMax)", cfg.FrontendDebounceMax, cfg.DebounceMax)
+	}
+	if cfg.BackendDebounce != cfg.Debounce {
+		t.Errorf("BackendDebounce = %v, want %v (same as Debounce)", cfg.BackendDebounce, cfg.Debounce)
+	}
+	if cfg.BackendDebounceMax != cfg.DebounceMax {
+		t.Errorf("BackendDebounceMax = %v, want %v (same as DebounceMax)", cfg.BackendDebounceMax, cfg.DebounceMax)
+	}
 }
 
 func TestParseExtraVarnishdArgs(t *testing.T) {
@@ -1087,6 +1100,11 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		"--vcl-template=" + vcl,
 		"--admin-timeout=45s",
 		"--debounce=5s",
+		"--debounce-max=15s",
+		"--frontend-debounce=500ms",
+		"--frontend-debounce-max=3s",
+		"--backend-debounce=1s",
+		"--backend-debounce-max=8s",
 		"--shutdown-timeout=60s",
 		"--broadcast-drain-timeout=45s",
 		"--broadcast-shutdown-timeout=10s",
@@ -1112,6 +1130,11 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 	}{
 		{"AdminTimeout", cfg.AdminTimeout, 45 * time.Second},
 		{"Debounce", cfg.Debounce, 5 * time.Second},
+		{"DebounceMax", cfg.DebounceMax, 15 * time.Second},
+		{"FrontendDebounce", cfg.FrontendDebounce, 500 * time.Millisecond},
+		{"FrontendDebounceMax", cfg.FrontendDebounceMax, 3 * time.Second},
+		{"BackendDebounce", cfg.BackendDebounce, 1 * time.Second},
+		{"BackendDebounceMax", cfg.BackendDebounceMax, 8 * time.Second},
 		{"ShutdownTimeout", cfg.ShutdownTimeout, 60 * time.Second},
 		{"BroadcastDrainTimeout", cfg.BroadcastDrainTimeout, 45 * time.Second},
 		{"BroadcastShutdownTimeout", cfg.BroadcastShutdownTimeout, 10 * time.Second},
@@ -2365,5 +2388,170 @@ func TestParseDebounceMaxEqualToDebounce(t *testing.T) {
 	}
 	if cfg.DebounceMax != 2*time.Second {
 		t.Errorf("DebounceMax = %v, want 2s", cfg.DebounceMax)
+	}
+}
+
+// --- Per-source debounce tests ---
+
+func TestParsePerSourceDebounceDefaultsToGlobal(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=3s",
+		"--debounce-max=15s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.FrontendDebounce != 3*time.Second {
+		t.Errorf("FrontendDebounce = %v, want 3s", cfg.FrontendDebounce)
+	}
+	if cfg.FrontendDebounceMax != 15*time.Second {
+		t.Errorf("FrontendDebounceMax = %v, want 15s", cfg.FrontendDebounceMax)
+	}
+	if cfg.BackendDebounce != 3*time.Second {
+		t.Errorf("BackendDebounce = %v, want 3s", cfg.BackendDebounce)
+	}
+	if cfg.BackendDebounceMax != 15*time.Second {
+		t.Errorf("BackendDebounceMax = %v, want 15s", cfg.BackendDebounceMax)
+	}
+}
+
+func TestParsePerSourceDebounceExplicitOverride(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=3s",
+		"--debounce-max=15s",
+		"--frontend-debounce=500ms",
+		"--frontend-debounce-max=3s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Frontend uses explicit values.
+	if cfg.FrontendDebounce != 500*time.Millisecond {
+		t.Errorf("FrontendDebounce = %v, want 500ms", cfg.FrontendDebounce)
+	}
+	if cfg.FrontendDebounceMax != 3*time.Second {
+		t.Errorf("FrontendDebounceMax = %v, want 3s", cfg.FrontendDebounceMax)
+	}
+	// Backend inherits global.
+	if cfg.BackendDebounce != 3*time.Second {
+		t.Errorf("BackendDebounce = %v, want 3s", cfg.BackendDebounce)
+	}
+	if cfg.BackendDebounceMax != 15*time.Second {
+		t.Errorf("BackendDebounceMax = %v, want 15s", cfg.BackendDebounceMax)
+	}
+}
+
+func TestParsePerSourceDebounceMaxExplicitZero(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-max=10s",
+		"--frontend-debounce-max=0s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Frontend ceiling disabled.
+	if cfg.FrontendDebounceMax != 0 {
+		t.Errorf("FrontendDebounceMax = %v, want 0", cfg.FrontendDebounceMax)
+	}
+	// Backend inherits global.
+	if cfg.BackendDebounceMax != 10*time.Second {
+		t.Errorf("BackendDebounceMax = %v, want 10s", cfg.BackendDebounceMax)
+	}
+}
+
+func TestParsePerSourceFrontendDebounceMaxLessThanDebounceError(t *testing.T) {
+	vcl := makeTempVCL(t)
+	_, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=5s",
+		"--frontend-debounce-max=1s",
+	})
+	if err == nil {
+		t.Fatal("expected error when resolved frontend debounce-max < debounce")
+	}
+	if !strings.Contains(err.Error(), "--frontend-debounce-max") {
+		t.Errorf("error = %q, want substring '--frontend-debounce-max'", err)
+	}
+}
+
+func TestParsePerSourceBackendDebounceMaxLessThanDebounceError(t *testing.T) {
+	vcl := makeTempVCL(t)
+	_, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=5s",
+		"--backend-debounce-max=1s",
+	})
+	if err == nil {
+		t.Fatal("expected error when resolved backend debounce-max < debounce")
+	}
+	if !strings.Contains(err.Error(), "--backend-debounce-max") {
+		t.Errorf("error = %q, want substring '--backend-debounce-max'", err)
+	}
+}
+
+func TestParsePerSourceBackendOverrideFrontendInheritsGlobal(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=3s",
+		"--debounce-max=15s",
+		"--backend-debounce=1s",
+		"--backend-debounce-max=5s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Backend uses explicit values.
+	if cfg.BackendDebounce != 1*time.Second {
+		t.Errorf("BackendDebounce = %v, want 1s", cfg.BackendDebounce)
+	}
+	if cfg.BackendDebounceMax != 5*time.Second {
+		t.Errorf("BackendDebounceMax = %v, want 5s", cfg.BackendDebounceMax)
+	}
+	// Frontend inherits global.
+	if cfg.FrontendDebounce != 3*time.Second {
+		t.Errorf("FrontendDebounce = %v, want 3s", cfg.FrontendDebounce)
+	}
+	if cfg.FrontendDebounceMax != 15*time.Second {
+		t.Errorf("FrontendDebounceMax = %v, want 15s", cfg.FrontendDebounceMax)
+	}
+}
+
+func TestParsePerSourceDebounceExplicitZero(t *testing.T) {
+	vcl := makeTempVCL(t)
+	cfg, err := Parse([]string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=3s",
+		"--frontend-debounce=0s",
+		"--backend-debounce=0s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.FrontendDebounce != 0 {
+		t.Errorf("FrontendDebounce = %v, want 0", cfg.FrontendDebounce)
+	}
+	if cfg.BackendDebounce != 0 {
+		t.Errorf("BackendDebounce = %v, want 0", cfg.BackendDebounce)
 	}
 }

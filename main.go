@@ -58,6 +58,33 @@ type broadcaster interface {
 	Drain(time.Duration) error
 }
 
+// debounceState tracks the timer and deadline for one debounce group.
+type debounceState struct {
+	timer    *time.Timer
+	deadline time.Time
+}
+
+// resetDebounce stops the current timer and starts a new one,
+// capping the duration at the deadline when debounceMax is active.
+func resetDebounce(s *debounceState, debounce, debounceMax time.Duration) {
+	if s.deadline.IsZero() && debounceMax > 0 {
+		s.deadline = time.Now().Add(debounceMax)
+	}
+	d := debounce
+	if !s.deadline.IsZero() {
+		if remaining := time.Until(s.deadline); remaining < d {
+			d = remaining
+		}
+	}
+	if d <= 0 {
+		d = 1 // fire immediately on next iteration
+	}
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	s.timer = time.NewTimer(d)
+}
+
 // loopConfig holds all inputs for the main event loop.
 type loopConfig struct {
 	rend  vclRenderer
@@ -71,8 +98,10 @@ type loopConfig struct {
 	sigCh      <-chan os.Signal
 
 	serviceName           string
-	debounce              time.Duration
-	debounceMax           time.Duration
+	frontendDebounce      time.Duration
+	frontendDebounceMax   time.Duration
+	backendDebounce       time.Duration
+	backendDebounceMax    time.Duration
 	shutdownTimeout       time.Duration
 	broadcastDrainTimeout time.Duration
 
@@ -343,8 +372,10 @@ func main() {
 		sigCh:      sigCh,
 
 		serviceName:           cfg.ServiceName,
-		debounce:              cfg.Debounce,
-		debounceMax:           cfg.DebounceMax,
+		frontendDebounce:      cfg.FrontendDebounce,
+		frontendDebounceMax:   cfg.FrontendDebounceMax,
+		backendDebounce:       cfg.BackendDebounce,
+		backendDebounceMax:    cfg.BackendDebounceMax,
 		shutdownTimeout:       cfg.ShutdownTimeout,
 		broadcastDrainTimeout: cfg.BroadcastDrainTimeout,
 
@@ -362,31 +393,90 @@ func main() {
 // runLoop runs the main event loop, returning 0 for clean shutdown and 1 for error.
 func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 	var (
-		debounceTimer    *time.Timer
-		debounceDeadline time.Time
-		pendingReload    bool
-		templateChanged  bool
+		frontend        debounceState
+		backend         debounceState
+		pendingReload   bool
+		templateChanged bool
 	)
 
-	// resetDebounce stops the current timer and starts a new one,
-	// capping the duration at debounceDeadline when debounce-max is active.
-	resetDebounce := func() {
-		if debounceDeadline.IsZero() && lc.debounceMax > 0 {
-			debounceDeadline = time.Now().Add(lc.debounceMax)
+	// handleReload executes the VCL reload logic, clearing both groups'
+	// timers and deadlines. Returns true if a reload was attempted.
+	handleReload := func() {
+		// Clear both groups.
+		if frontend.timer != nil {
+			frontend.timer.Stop()
 		}
-		d := lc.debounce
-		if !debounceDeadline.IsZero() {
-			if remaining := time.Until(debounceDeadline); remaining < d {
-				d = remaining
+		frontend.timer = nil
+		frontend.deadline = time.Time{}
+		if backend.timer != nil {
+			backend.timer.Stop()
+		}
+		backend.timer = nil
+		backend.deadline = time.Time{}
+
+		if !pendingReload {
+			return
+		}
+		pendingReload = false
+
+		// If the template file changed, try to parse the new version.
+		reloadedTemplate := false
+		if templateChanged {
+			if err := lc.rend.Reload(); err != nil {
+				telemetry.VCLTemplateParseErrorsTotal.Inc()
+				slog.Error("template parse error, keeping old template", "error", err)
+			} else {
+				reloadedTemplate = true
 			}
 		}
-		if d <= 0 {
-			d = 1 // fire immediately on next iteration
+
+		templateChanged = false
+
+		vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
+		if err != nil {
+			telemetry.VCLRenderErrorsTotal.Inc()
+			slog.Error("render error", "error", err)
+			if reloadedTemplate {
+				telemetry.VCLRollbacksTotal.Inc()
+				lc.rend.Rollback()
+			}
+			return
 		}
-		if debounceTimer != nil {
-			debounceTimer.Stop()
+
+		if err := lc.mgr.Reload(vclPath); err != nil {
+			telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
+			slog.Error("reload error", "error", err)
+			_ = os.Remove(vclPath)
+
+			if !reloadedTemplate {
+				return
+			}
+
+			// New template produced VCL that Varnish rejected; revert and
+			// retry so that any concurrent frontend/backend changes still
+			// take effect with the old (known-good) template.
+			telemetry.VCLRollbacksTotal.Inc()
+			lc.rend.Rollback()
+			slog.Warn("rolled back to previous template")
+
+			vclPath, err = lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
+			if err != nil {
+				telemetry.VCLRenderErrorsTotal.Inc()
+				slog.Error("render error after rollback", "error", err)
+				return
+			}
+			if err := lc.mgr.Reload(vclPath); err != nil {
+				telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
+				slog.Error("reload error after rollback", "error", err)
+			} else {
+				telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
+			}
+			_ = os.Remove(vclPath)
+			return
 		}
-		debounceTimer = time.NewTimer(d)
+
+		telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
+		_ = os.Remove(vclPath)
 	}
 
 	for {
@@ -396,7 +486,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Info("VCL template changed on disk, scheduling reload")
 			pendingReload = true
 			templateChanged = true
-			resetDebounce()
+			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case frontends := <-lc.frontendCh:
 			lc.latestFrontends = frontends
@@ -406,88 +496,27 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				lc.bcast.SetFrontends(lc.latestFrontends)
 			}
 			pendingReload = true
-			resetDebounce()
+			resetDebounce(&frontend, lc.frontendDebounce, lc.frontendDebounceMax)
 
 		case bc := <-backendChan(lc.backendCh):
 			lc.latestBackends[bc.name] = bc.endpoints
 			telemetry.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
 			telemetry.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			pendingReload = true
-			resetDebounce()
+			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case vc := <-valuesChan(lc.valuesCh):
 			lc.latestValues[vc.name] = vc.data
 			telemetry.ValuesUpdatesTotal.WithLabelValues(vc.name).Inc()
 			slog.Info("values ConfigMap updated", "name", vc.name)
 			pendingReload = true
-			resetDebounce()
+			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
-		case <-timerChan(debounceTimer):
-			debounceTimer = nil
-			debounceDeadline = time.Time{}
-			if !pendingReload {
-				continue
-			}
-			pendingReload = false
+		case <-timerChan(frontend.timer):
+			handleReload()
 
-			// If the template file changed, try to parse the new version.
-			reloadedTemplate := false
-			if templateChanged {
-				if err := lc.rend.Reload(); err != nil {
-					telemetry.VCLTemplateParseErrorsTotal.Inc()
-					slog.Error("template parse error, keeping old template", "error", err)
-				} else {
-					reloadedTemplate = true
-				}
-			}
-
-			templateChanged = false
-
-			vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
-			if err != nil {
-				telemetry.VCLRenderErrorsTotal.Inc()
-				slog.Error("render error", "error", err)
-				if reloadedTemplate {
-					telemetry.VCLRollbacksTotal.Inc()
-					lc.rend.Rollback()
-				}
-				continue
-			}
-
-			if err := lc.mgr.Reload(vclPath); err != nil {
-				telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
-				slog.Error("reload error", "error", err)
-				_ = os.Remove(vclPath)
-
-				if !reloadedTemplate {
-					continue
-				}
-
-				// New template produced VCL that Varnish rejected; revert and
-				// retry so that any concurrent frontend/backend changes still
-				// take effect with the old (known-good) template.
-				telemetry.VCLRollbacksTotal.Inc()
-				lc.rend.Rollback()
-				slog.Warn("rolled back to previous template")
-
-				vclPath, err = lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
-				if err != nil {
-					telemetry.VCLRenderErrorsTotal.Inc()
-					slog.Error("render error after rollback", "error", err)
-					continue
-				}
-				if err := lc.mgr.Reload(vclPath); err != nil {
-					telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
-					slog.Error("reload error after rollback", "error", err)
-				} else {
-					telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
-				}
-				_ = os.Remove(vclPath)
-				continue
-			}
-
-			telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
-			_ = os.Remove(vclPath)
+		case <-timerChan(backend.timer):
+			handleReload()
 
 		case sig := <-lc.sigCh:
 			slog.Info("received signal, shutting down", "signal", sig)

@@ -162,6 +162,10 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 |------|---------|-------------|
 | `--debounce` | `2s` | Debounce duration for endpoint changes |
 | `--debounce-max` | `0` | Maximum debounce duration before a reload is forced (`0` disables; only effective when events arrive within the `--debounce` window) |
+| `--frontend-debounce` | *(uses `--debounce`)* | Debounce duration for frontend (`--service-name`) changes; overrides `--debounce` for the frontend group |
+| `--frontend-debounce-max` | *(uses `--debounce-max`)* | Maximum debounce duration for frontend changes; overrides `--debounce-max` for the frontend group |
+| `--backend-debounce` | *(uses `--debounce`)* | Debounce duration for backend (`--backend`, `--values`, `--values-dir`, template) changes; overrides `--debounce` for the backend group |
+| `--backend-debounce-max` | *(uses `--debounce-max`)* | Maximum debounce duration for backend changes; overrides `--debounce-max` for the backend group |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
 | `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes (only effective when `--file-watch` is enabled) |
 | `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
@@ -195,6 +199,15 @@ In a typical Kubernetes deployment, endpoint changes arrive in bursts — for ex
 | Near-instant convergence required | `--debounce=500ms --debounce-max=2s`, at the cost of more frequent reloads                     |
 
 **Caution:** Setting either value too high can cause Varnish to keep routing requests to pods that have already been terminated or are no longer accepting traffic. During a rolling update, Kubernetes removes old pods while adding new ones — if the VCL reload is delayed too long, Varnish's backend list becomes stale and requests to removed pods will fail with backend connection errors. Ideally, keep `--debounce-max` shorter than any `preStop` sleep or graceful shutdown timeout configured on your backend pods — this ensures Varnish updates its backend list before the old pods actually stop accepting connections.
+
+**Per-source overrides:** By default, all event sources share the same debounce settings. If your frontend and backend update patterns differ — e.g. frontends are stable while backends scale frequently — or the preStop / graceful shutdown timeouts are different between the frontend pods (k8s-httpcache/Varnish) and the backends, you can set independent timers with `--frontend-debounce` / `--frontend-debounce-max` and `--backend-debounce` / `--backend-debounce-max`. The frontend group covers `--service-name` endpoint changes; the backend group covers `--backend`, `--values`, `--values-dir`, and VCL template changes. When either timer fires, VCL reloads atomically with all latest state, clearing both timers. When not set, these flags inherit from `--debounce` / `--debounce-max`.
+
+```
+--debounce=2s --debounce-max=10s \
+--backend-debounce=500ms --backend-debounce-max=2s
+```
+
+This gives the backend group a faster 500ms debounce while the frontend group keeps the global 2s/10s settings. The frontend debounce settings must then be synchronized with the preStop / graceful shutdown durations of the k8s-httpcache/Varnish pods, and the backend debounce settings need to fit the backends' preStop / graceful timeouts.
 
 ### Passing arguments to varnishd
 

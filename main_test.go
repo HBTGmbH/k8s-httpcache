@@ -353,7 +353,10 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 		sigCh:      h.sigCh,
 
 		serviceName:           "test-svc",
-		debounce:              1 * time.Millisecond,
+		frontendDebounce:      1 * time.Millisecond,
+		frontendDebounceMax:   0,
+		backendDebounce:       1 * time.Millisecond,
+		backendDebounceMax:    0,
 		shutdownTimeout:       1 * time.Second,
 		broadcastDrainTimeout: 1 * time.Second,
 
@@ -866,7 +869,8 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 50 * time.Millisecond
+	lc.frontendDebounce = 50 * time.Millisecond
+	lc.backendDebounce = 50 * time.Millisecond
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1634,8 +1638,10 @@ func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 150 * time.Millisecond
-	lc.debounceMax = 5 * time.Second // much larger — should not matter
+	lc.frontendDebounce = 150 * time.Millisecond
+	lc.backendDebounce = 150 * time.Millisecond
+	lc.frontendDebounceMax = 5 * time.Second // much larger — should not matter
+	lc.backendDebounceMax = 5 * time.Second
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1665,8 +1671,10 @@ func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 200 * time.Millisecond
-	lc.debounceMax = 5 * time.Second
+	lc.frontendDebounce = 200 * time.Millisecond
+	lc.backendDebounce = 200 * time.Millisecond
+	lc.frontendDebounceMax = 5 * time.Second
+	lc.backendDebounceMax = 5 * time.Second
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1701,8 +1709,10 @@ func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 150 * time.Millisecond
-	lc.debounceMax = 2 * time.Second
+	lc.frontendDebounce = 150 * time.Millisecond
+	lc.backendDebounce = 150 * time.Millisecond
+	lc.frontendDebounceMax = 2 * time.Second
+	lc.backendDebounceMax = 2 * time.Second
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1741,8 +1751,10 @@ func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 250 * time.Millisecond // continuously reset by events every 20ms
-	lc.debounceMax = 250 * time.Millisecond
+	lc.frontendDebounce = 250 * time.Millisecond // continuously reset by events every 20ms
+	lc.backendDebounce = 250 * time.Millisecond
+	lc.frontendDebounceMax = 250 * time.Millisecond
+	lc.backendDebounceMax = 250 * time.Millisecond
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1788,8 +1800,10 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 250 * time.Millisecond // continuously reset by events every 20ms
-	lc.debounceMax = 250 * time.Millisecond
+	lc.frontendDebounce = 250 * time.Millisecond // continuously reset by events every 20ms
+	lc.backendDebounce = 250 * time.Millisecond
+	lc.frontendDebounceMax = 250 * time.Millisecond
+	lc.backendDebounceMax = 250 * time.Millisecond
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1838,8 +1852,10 @@ func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 800 * time.Millisecond
-	lc.debounceMax = 0 // disabled
+	lc.frontendDebounce = 800 * time.Millisecond
+	lc.backendDebounce = 800 * time.Millisecond
+	lc.frontendDebounceMax = 0 // disabled
+	lc.backendDebounceMax = 0
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1920,8 +1936,10 @@ func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
 			code.Store(-1)
 			done := make(chan struct{})
 			lc := h.loopConfig(h.bcast)
-			lc.debounce = 250 * time.Millisecond // continuously reset by events every 20ms
-			lc.debounceMax = 250 * time.Millisecond
+			lc.frontendDebounce = 250 * time.Millisecond // continuously reset by events every 20ms
+			lc.backendDebounce = 250 * time.Millisecond
+			lc.frontendDebounceMax = 250 * time.Millisecond
+			lc.backendDebounceMax = 250 * time.Millisecond
 
 			go func() {
 				code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1966,8 +1984,10 @@ func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.debounce = 250 * time.Millisecond // continuously reset by events every 20ms
-	lc.debounceMax = 250 * time.Millisecond
+	lc.frontendDebounce = 250 * time.Millisecond // continuously reset by events every 20ms
+	lc.backendDebounce = 250 * time.Millisecond
+	lc.frontendDebounceMax = 250 * time.Millisecond
+	lc.backendDebounceMax = 250 * time.Millisecond
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -2008,4 +2028,384 @@ func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	close(h.mgr.done)
 	<-done
+}
+
+// --- Per-source debounce tests ---
+
+func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 50 * time.Millisecond
+	lc.backendDebounce = 500 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send frontend event → should reload at ~50ms.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(200 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 1 {
+		t.Fatalf("expected 1 reload after frontend event, got %d", h.mgr.getReloadCount())
+	}
+
+	// Send backend event → should NOT reload at ~200ms (only at ~500ms).
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 1 {
+		t.Fatalf("expected still 1 reload (backend timer not yet fired), got %d", h.mgr.getReloadCount())
+	}
+
+	// Wait for backend timer to fire.
+	time.Sleep(400 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 2 {
+		t.Fatalf("expected 2 reloads after backend timer fires, got %d", h.mgr.getReloadCount())
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_CrossGroupClearOnReload(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 50 * time.Millisecond
+	lc.backendDebounce = 300 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send both events nearly simultaneously.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+	}
+
+	// Frontend timer fires first (50ms), which clears the backend timer too.
+	// Wait long enough for both timers to have fired if they were independent.
+	time.Sleep(600 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 1 {
+		t.Fatalf("expected exactly 1 reload (cross-group clear), got %d", h.mgr.getReloadCount())
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_IndependentDebounceMaxGroups(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 250 * time.Millisecond
+	lc.frontendDebounceMax = 250 * time.Millisecond
+	lc.backendDebounce = 250 * time.Millisecond
+	lc.backendDebounceMax = 500 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send only frontend events rapidly for 1.2s.
+	// frontendDebounceMax=250ms → forced reloads at ~250ms, ~500ms, etc.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(1200 * time.Millisecond)
+	close(stop)
+
+	// Frontend debounceMax=250ms → expect at least 3 reloads in 1.2s.
+	reloads := h.mgr.getReloadCount()
+	if reloads < 3 {
+		t.Fatalf("expected at least 3 forced reloads from frontend events, got %d", reloads)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 800 * time.Millisecond
+	lc.frontendDebounceMax = 0 // disabled
+	lc.backendDebounce = 250 * time.Millisecond
+	lc.backendDebounceMax = 300 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Rapid frontend events for 600ms — no forced reload (debounceMax=0).
+	stopFE := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopFE:
+				return
+			default:
+			}
+			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(600 * time.Millisecond)
+	close(stopFE)
+
+	// The frontend timer (800ms) keeps resetting every 20ms with no debounceMax,
+	// so no reload should have happened yet.
+	feReloads := h.mgr.getReloadCount()
+	if feReloads != 0 {
+		t.Fatalf("expected 0 reloads during frontend-only events (debounceMax disabled), got %d", feReloads)
+	}
+
+	// Wait for the final frontend timer to fire.
+	time.Sleep(1000 * time.Millisecond)
+	afterFE := h.mgr.getReloadCount()
+	if afterFE != 1 {
+		t.Fatalf("expected 1 reload after frontend events stop, got %d", afterFE)
+	}
+
+	// Now send rapid backend events — backendDebounceMax=300ms → forced reload.
+	stopBE := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopBE:
+				return
+			default:
+			}
+			h.backendCh <- backendChange{
+				name:      "api",
+				endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(700 * time.Millisecond)
+	close(stopBE)
+
+	beReloads := h.mgr.getReloadCount()
+	if beReloads <= afterFE {
+		t.Fatalf("expected forced reloads from backend events with debounceMax=300ms, got %d total (was %d after frontend)", beReloads, afterFE)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 500 * time.Millisecond
+	lc.backendDebounce = 50 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send backend event → should reload at ~50ms.
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 1 {
+		t.Fatalf("expected 1 reload after backend event, got %d", h.mgr.getReloadCount())
+	}
+
+	// Send frontend event → should NOT reload at ~200ms (only at ~500ms).
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(200 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 1 {
+		t.Fatalf("expected still 1 reload (frontend timer not yet fired), got %d", h.mgr.getReloadCount())
+	}
+
+	// Wait for frontend timer to fire.
+	time.Sleep(400 * time.Millisecond)
+
+	if h.mgr.getReloadCount() != 2 {
+		t.Fatalf("expected 2 reloads after frontend timer fires, got %d", h.mgr.getReloadCount())
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.frontendDebounce = 250 * time.Millisecond
+	lc.frontendDebounceMax = 300 * time.Millisecond
+	lc.backendDebounce = 800 * time.Millisecond
+	lc.backendDebounceMax = 0 // disabled
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Rapid backend events for 600ms — no forced reload (debounceMax=0).
+	stopBE := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopBE:
+				return
+			default:
+			}
+			h.backendCh <- backendChange{
+				name:      "api",
+				endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(600 * time.Millisecond)
+	close(stopBE)
+
+	beReloads := h.mgr.getReloadCount()
+	if beReloads != 0 {
+		t.Fatalf("expected 0 reloads during backend-only events (debounceMax disabled), got %d", beReloads)
+	}
+
+	// Wait for the final backend timer to fire.
+	time.Sleep(1000 * time.Millisecond)
+	afterBE := h.mgr.getReloadCount()
+	if afterBE != 1 {
+		t.Fatalf("expected 1 reload after backend events stop, got %d", afterBE)
+	}
+
+	// Now send rapid frontend events — frontendDebounceMax=300ms → forced reload.
+	stopFE := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopFE:
+				return
+			default:
+			}
+			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(700 * time.Millisecond)
+	close(stopFE)
+
+	feReloads := h.mgr.getReloadCount()
+	if feReloads <= afterBE {
+		t.Fatalf("expected forced reloads from frontend events with debounceMax=300ms, got %d total (was %d after backend)", feReloads, afterBE)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+}
+
+// --- resetDebounce unit tests ---
+
+func TestResetDebounce_SetsDeadlineOnFirstCall(t *testing.T) {
+	var s debounceState
+	resetDebounce(&s, 100*time.Millisecond, 500*time.Millisecond)
+	defer s.timer.Stop()
+
+	if s.deadline.IsZero() {
+		t.Fatal("expected deadline to be set when debounceMax > 0")
+	}
+	// Deadline should be ~500ms from now.
+	remaining := time.Until(s.deadline)
+	if remaining < 400*time.Millisecond || remaining > 600*time.Millisecond {
+		t.Errorf("deadline remaining = %v, want ~500ms", remaining)
+	}
+}
+
+func TestResetDebounce_CapsAtDeadline(t *testing.T) {
+	var s debounceState
+	// Set a deadline 50ms from now.
+	s.deadline = time.Now().Add(50 * time.Millisecond)
+
+	// Request a 500ms debounce — should be capped to ~50ms.
+	resetDebounce(&s, 500*time.Millisecond, 100*time.Millisecond)
+	defer s.timer.Stop()
+
+	// The timer should fire within ~100ms (50ms deadline + margin).
+	select {
+	case <-s.timer.C:
+		// OK — fired at the deadline
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timer did not fire at deadline")
+	}
+}
+
+func TestResetDebounce_NoDeadlineWhenMaxIsZero(t *testing.T) {
+	var s debounceState
+	resetDebounce(&s, 100*time.Millisecond, 0)
+	defer s.timer.Stop()
+
+	if !s.deadline.IsZero() {
+		t.Fatal("expected deadline to remain zero when debounceMax is 0")
+	}
 }

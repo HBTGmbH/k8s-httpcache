@@ -182,6 +182,10 @@ type Config struct {
 	BroadcastClientTimeout     time.Duration
 	Debounce                   time.Duration
 	DebounceMax                time.Duration
+	FrontendDebounce           time.Duration
+	FrontendDebounceMax        time.Duration
+	BackendDebounce            time.Duration
+	BackendDebounceMax         time.Duration
 	ShutdownTimeout            time.Duration
 	Backends                   []BackendSpec
 	Values                     []ValuesSpec
@@ -278,14 +282,18 @@ func Parse(args []string) (*Config, error) {
 	c := &Config{}
 
 	var (
-		rawBackends    []string
-		rawListenAddrs []string
-		rawValues      []string
-		rawValuesDirs  []string
-		templateDelims string
-		logLevel       string
-		parsed         bool
-		actionErr      error
+		rawBackends            []string
+		rawListenAddrs         []string
+		rawValues              []string
+		rawValuesDirs          []string
+		templateDelims         string
+		logLevel               string
+		rawFrontendDebounce    = time.Duration(-1)
+		rawFrontendDebounceMax = time.Duration(-1)
+		rawBackendDebounce     = time.Duration(-1)
+		rawBackendDebounceMax  = time.Duration(-1)
+		parsed                 bool
+		actionErr              error
 	)
 
 	cmd := &cli.Command{
@@ -505,6 +513,38 @@ func Parse(args []string) (*Config, error) {
 				Destination: &c.DebounceMax,
 			},
 			&cli.DurationFlag{
+				Name:        "frontend-debounce",
+				Category:    "Timing and logging:",
+				Usage:       "Debounce duration for frontend (--service-name) changes; overrides --debounce for the frontend group",
+				Value:       time.Duration(-1),
+				DefaultText: "uses --debounce",
+				Destination: &rawFrontendDebounce,
+			},
+			&cli.DurationFlag{
+				Name:        "frontend-debounce-max",
+				Category:    "Timing and logging:",
+				Usage:       "Maximum debounce duration for frontend changes; overrides --debounce-max for the frontend group",
+				Value:       time.Duration(-1),
+				DefaultText: "uses --debounce-max",
+				Destination: &rawFrontendDebounceMax,
+			},
+			&cli.DurationFlag{
+				Name:        "backend-debounce",
+				Category:    "Timing and logging:",
+				Usage:       "Debounce duration for backend (--backend, --values, --values-dir, template) changes; overrides --debounce for the backend group",
+				Value:       time.Duration(-1),
+				DefaultText: "uses --debounce",
+				Destination: &rawBackendDebounce,
+			},
+			&cli.DurationFlag{
+				Name:        "backend-debounce-max",
+				Category:    "Timing and logging:",
+				Usage:       "Maximum debounce duration for backend changes; overrides --debounce-max for the backend group",
+				Value:       time.Duration(-1),
+				DefaultText: "uses --debounce-max",
+				Destination: &rawBackendDebounceMax,
+			},
+			&cli.DurationFlag{
 				Name:        "shutdown-timeout",
 				Category:    "Timing and logging:",
 				Usage:       "Time to wait for varnishd to exit before sending SIGKILL",
@@ -608,6 +648,38 @@ func Parse(args []string) (*Config, error) {
 			}
 			if c.DebounceMax > 0 && c.DebounceMax < c.Debounce {
 				actionErr = validationError(cmd, "--debounce-max (%v) must be >= --debounce (%v)", c.DebounceMax, c.Debounce)
+				return nil
+			}
+
+			// Resolve per-source debounce flags (sentinel -1 → global).
+			if rawFrontendDebounce < 0 {
+				c.FrontendDebounce = c.Debounce
+			} else {
+				c.FrontendDebounce = rawFrontendDebounce
+			}
+			if rawFrontendDebounceMax < 0 {
+				c.FrontendDebounceMax = c.DebounceMax
+			} else {
+				c.FrontendDebounceMax = rawFrontendDebounceMax
+			}
+			if rawBackendDebounce < 0 {
+				c.BackendDebounce = c.Debounce
+			} else {
+				c.BackendDebounce = rawBackendDebounce
+			}
+			if rawBackendDebounceMax < 0 {
+				c.BackendDebounceMax = c.DebounceMax
+			} else {
+				c.BackendDebounceMax = rawBackendDebounceMax
+			}
+
+			// Validate per-source debounce-max.
+			if c.FrontendDebounceMax > 0 && c.FrontendDebounceMax < c.FrontendDebounce {
+				actionErr = validationError(cmd, "--frontend-debounce-max (%v) must be >= --frontend-debounce (%v)", c.FrontendDebounceMax, c.FrontendDebounce)
+				return nil
+			}
+			if c.BackendDebounceMax > 0 && c.BackendDebounceMax < c.BackendDebounce {
+				actionErr = validationError(cmd, "--backend-debounce-max (%v) must be >= --backend-debounce (%v)", c.BackendDebounceMax, c.BackendDebounce)
 				return nil
 			}
 
