@@ -348,6 +348,8 @@ jobs:
       run: .github/test/values-dir-update-test.sh
     - name: VCL update test
       run: .github/test/vcl-update-test.sh
+    - name: File-watch disable test
+      run: .github/test/file-watch-disable-test.sh
     - name: Drain sessions test
       run: .github/test/drain-sessions-test.sh
     - name: Graceful drain test

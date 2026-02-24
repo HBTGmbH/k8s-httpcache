@@ -239,6 +239,7 @@ spec:
         - --vcl-template-watch-interval=2s
         - --vcl-reload-retry-interval=1s
         - --values-dir-poll-interval=2s
+        - --file-watch
         - --log-level=DEBUG
         - --
         - -n  # <-- here only necessary for Varnish 6.x

@@ -110,6 +110,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    .github/test/values-update-test.sh       # ConfigMap values live update
    .github/test/values-dir-update-test.sh   # values-dir (mounted volume) live update
    .github/test/vcl-update-test.sh          # VCL template live reload, retry & rollback
+   .github/test/file-watch-disable-test.sh  # file-watch disable verification
    .github/test/drain-sessions-test.sh      # drain timing verification
    .github/test/drain-test.sh               # connection draining
    .github/test/rollout-test.sh             # zero-downtime rollout (requires oha)
