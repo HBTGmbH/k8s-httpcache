@@ -194,10 +194,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        varnish-image:
-          - varnish:6.0.16
-          - varnish:7.7.3-alpine
-          - varnish:8.0.0-alpine
+        dockerfile:
+          - Dockerfile.varnish6
+          - Dockerfile.varnish7
+          - Dockerfile.varnish8
     steps:
     - name: Checkout
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -232,8 +232,7 @@ jobs:
       run: |
         mkdir .docker-context
         cp k8s-httpcache-linux-amd64 .docker-context/
-        docker build -f .github/test/Dockerfile \
-          --build-arg VARNISH_IMAGE=${{ matrix.varnish-image }} \
+        docker build -f .github/test/${{ matrix.dockerfile }} \
           --build-arg BINARY=k8s-httpcache-linux-amd64 \
           -t k8s-httpcache:test .docker-context
     - name: Create kind cluster
