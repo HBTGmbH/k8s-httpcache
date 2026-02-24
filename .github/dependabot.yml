@@ -1,9 +1,13 @@
 version: 2
 updates:
 - package-ecosystem: docker
-  directory: /
+  directory: /.github/test
   schedule:
     interval: weekly
+  ignore:
+  - dependency-name: varnish
+    update-types:
+    - "version-update:semver-major"
 
 - package-ecosystem: gomod
   directory: /
