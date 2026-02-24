@@ -179,7 +179,7 @@ metadata:
   name: k8s-httpcache-values-test
   namespace: default
 data:
-  greeting: hello-from-values
+  greeting: "hello-from-values"
   server: |
     host: example.com
     port: 8080
@@ -190,7 +190,7 @@ metadata:
   name: k8s-httpcache-values-dir-test
   namespace: default
 data:
-  greeting.yaml: hello-from-dir
+  greeting.yaml: "hello-from-dir"
   server.yaml: |
     host: dir.example.com
     port: 9090
