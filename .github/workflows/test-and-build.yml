@@ -220,7 +220,7 @@ jobs:
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
           echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
         else
-          echo "value=dev" >> "$GITHUB_OUTPUT"
+          echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
         fi
     - name: Cache binaries
       id: cache
