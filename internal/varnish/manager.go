@@ -210,10 +210,18 @@ func (m *Manager) Start(initialVCL string) error {
 	return nil
 }
 
-// Reload loads a new VCL file and activates it.
+// Reload loads a new VCL file and activates it, recording the elapsed time
+// in the VCLReloadDurationSeconds histogram.
 // It retries vcl.load failures up to ReloadRetries times (vcl.use failures
 // are not retried). Each attempt uses a fresh VCL name.
 func (m *Manager) Reload(vclPath string) error {
+	start := time.Now()
+	err := m.reload(vclPath)
+	telemetry.VCLReloadDurationSeconds.Observe(time.Since(start).Seconds())
+	return err
+}
+
+func (m *Manager) reload(vclPath string) error {
 	maxAttempts := 1 + m.ReloadRetries
 
 	var lastErr error

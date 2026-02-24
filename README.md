@@ -36,6 +36,7 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
   - https://github.com/mittwald/kube-httpcache/issues/53
 - Automatic Varnish version detection with support for Varnish 6, 7, 8, and trunk builds
 - Structured logging with configurable format (text/json) and log level
+- Kubernetes Events for VCL reloads, template changes, rollbacks, drain lifecycle, and varnishd crashes — visible via `kubectl describe pod` and `kubectl get events`
 - Endpoint change debouncing to avoid rapid VCL reload cycles
   - https://github.com/mittwald/kube-httpcache/issues/66
 
@@ -144,8 +145,40 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `debounce_fires_total` | Counter | `group` | Debounce timer fires per group |
 | `debounce_max_enforcements_total` | Counter | `group` | Reloads forced by the debounce-max deadline |
 | `debounce_latency_seconds` | Histogram | `group` | Wall-clock time from first event in a debounce burst to the reload |
+| `vcl_render_duration_seconds` | Histogram | | Time to render the VCL template to a temporary file |
+| `vcl_reload_duration_seconds` | Histogram | | Time for varnishd VCL reload (`vcl.load` + `vcl.use`), including retries |
+| `broadcast_duration_seconds` | Histogram | | Total wall-clock time for broadcast fan-out to all frontend pods |
 
 The `group` label is either `frontend` (`--service-name` endpoint changes) or `backend` (`--backend`, `--values`, `--values-dir`, and VCL template changes).
+
+### Kubernetes Events
+
+When the `POD_NAME` environment variable is set, k8s-httpcache emits Kubernetes Events visible via `kubectl describe pod` and `kubectl get events`. Set `POD_NAME` using the Downward API:
+
+```yaml
+env:
+- name: POD_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
+```
+
+The following events are emitted:
+
+| Reason | Type | Description |
+|--------|------|-------------|
+| `VCLReloaded` | Normal | VCL was loaded/reloaded successfully |
+| `VCLTemplateChanged` | Normal | VCL template file change detected on disk |
+| `VCLTemplateParseFailed` | Warning | VCL template failed to parse |
+| `VCLRenderFailed` | Warning | VCL template render failed |
+| `VCLReloadFailed` | Warning | varnishd rejected the new VCL |
+| `VCLRolledBack` | Warning | Template rolled back to previous known-good version |
+| `VarnishdExited` | Warning | varnishd process exited unexpectedly |
+| `DrainStarted` | Normal | Graceful drain started after receiving a termination signal |
+| `DrainCompleted` | Normal | All active connections have drained |
+| `DrainTimeout` | Warning | Drain timeout reached, proceeding with forced shutdown |
+
+Events require RBAC permission to `create` and `patch` the `events` resource (see [RBAC](#rbac)). If the permission is missing, a single warning is logged and the service continues without event recording.
 
 ### Drain flags
 
@@ -621,6 +654,19 @@ rules:
   resources: ["configmaps"]
   verbs: ["list", "watch"]
 ```
+
+To enable [Kubernetes Events](#kubernetes-events), add:
+
+```yaml
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+```
+
+The `pods` `get` permission allows the event recorder to look up the pod UID so that events appear in `kubectl describe pod`. The `events` permissions are needed to actually create the events. Both are optional — if omitted, a single warning is logged and the service continues without event recording.
 
 ### Cross-namespace
 

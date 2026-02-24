@@ -126,6 +126,33 @@ var (
 		Help:      "Total number of reloads forced by the debounce-max deadline.",
 	}, []string{"group"})
 
+	// VCLRenderDurationSeconds observes the time to execute the VCL template
+	// and write the rendered output to a temporary file.
+	VCLRenderDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "vcl_render_duration_seconds",
+		Help:      "Time to render the VCL template to a temporary file.",
+		Buckets:   prometheus.DefBuckets,
+	})
+
+	// VCLReloadDurationSeconds observes the time for varnishd vcl.load + vcl.use,
+	// including any retries.
+	VCLReloadDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "vcl_reload_duration_seconds",
+		Help:      "Time for varnishd VCL reload (vcl.load + vcl.use), including retries.",
+		Buckets:   prometheus.DefBuckets,
+	})
+
+	// BroadcastDurationSeconds observes the total wall-clock time for
+	// broadcast fan-out to all frontend pods.
+	BroadcastDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "broadcast_duration_seconds",
+		Help:      "Total wall-clock time for broadcast fan-out to all frontend pods.",
+		Buckets:   prometheus.DefBuckets,
+	})
+
 	// DebounceLatencySeconds observes wall-clock time from the first event
 	// in a debounce burst to the reload, per group. It is registered via
 	// RegisterDebounceLatency after CLI parsing so bucket boundaries can
@@ -151,6 +178,9 @@ func init() {
 		DebounceEventsTotal,
 		DebounceFiresTotal,
 		DebounceMaxEnforcementsTotal,
+		VCLRenderDurationSeconds,
+		VCLReloadDurationSeconds,
+		BroadcastDurationSeconds,
 	)
 }
 

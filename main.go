@@ -5,19 +5,29 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/record"
 
 	"k8s-httpcache/internal/broadcast"
 	"k8s-httpcache/internal/config"
@@ -112,6 +122,9 @@ type loopConfig struct {
 	shutdownTimeout       time.Duration
 	broadcastDrainTimeout time.Duration
 
+	recorder record.EventRecorder
+	podRef   *v1.ObjectReference
+
 	drainBackend      string
 	drainDelay        time.Duration
 	drainPollInterval time.Duration
@@ -163,6 +176,35 @@ func main() {
 	clientset, err := buildClientset()
 	if err != nil {
 		log.Fatalf("kubernetes client: %v", err)
+	}
+
+	// Set up Kubernetes event recorder if POD_NAME is available.
+	var (
+		eventRecorder record.EventRecorder
+		podRef        *v1.ObjectReference
+	)
+	if podName := os.Getenv("POD_NAME"); podName != "" {
+		eventBroadcaster := record.NewBroadcaster()
+		eventBroadcaster.StartRecordingToSink(&warnOnceEventSink{
+			inner: &typedcorev1.EventSinkImpl{
+				Interface: clientset.CoreV1().Events(cfg.ServiceNamespace),
+			},
+		})
+		eventRecorder = eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "k8s-httpcache"})
+		podRef = &v1.ObjectReference{
+			Kind:       "Pod",
+			APIVersion: "v1",
+			Name:       podName,
+			Namespace:  cfg.ServiceNamespace,
+		}
+		if pod, err := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(context.Background(), podName, metav1.GetOptions{}); err != nil {
+			slog.Warn("could not look up pod UID for event recording; events may not appear in kubectl describe pod", "error", err)
+		} else {
+			podRef.UID = pod.UID
+		}
+		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace)
+	} else {
+		slog.Info("POD_NAME not set, kubernetes event recording disabled")
 	}
 
 	// Create varnish manager and detect version before rendering VCL,
@@ -301,7 +343,9 @@ func main() {
 	}
 
 	// Render VCL with real endpoint data and start varnishd.
+	renderStart := time.Now()
 	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends, latestValues)
+	telemetry.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
 		log.Fatalf("initial render: %v", err) //nolint:gocritic // fatal before Start is intentional; deferred cancel is harmless to skip
 	}
@@ -311,6 +355,9 @@ func main() {
 		log.Fatalf("varnish start: %v", err)
 	}
 	telemetry.VarnishdUp.Set(1)
+	if eventRecorder != nil && podRef != nil {
+		eventRecorder.Event(podRef, v1.EventTypeNormal, "VCLReloaded", "Initial VCL loaded and varnishd started")
+	}
 
 	// Watch VCL template file for changes.
 	var templateCh <-chan struct{}
@@ -389,6 +436,9 @@ func main() {
 		shutdownTimeout:       cfg.ShutdownTimeout,
 		broadcastDrainTimeout: cfg.BroadcastDrainTimeout,
 
+		recorder: eventRecorder,
+		podRef:   podRef,
+
 		drainBackend:      drainBackendForLoop(cfg.Drain),
 		drainDelay:        cfg.DrainDelay,
 		drainPollInterval: cfg.DrainPollInterval,
@@ -407,6 +457,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		backend         debounceState
 		pendingReload   bool
 		templateChanged bool
+		pendingReasons  []string
 	)
 
 	// handleReload executes the VCL reload logic, clearing both groups'
@@ -432,6 +483,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			return
 		}
 		pendingReload = false
+		reasons := strings.Join(pendingReasons, ", ")
+		pendingReasons = pendingReasons[:0]
 
 		// If the template file changed, try to parse the new version.
 		reloadedTemplate := false
@@ -439,6 +492,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			if err := lc.rend.Reload(); err != nil {
 				telemetry.VCLTemplateParseErrorsTotal.Inc()
 				slog.Error("template parse error, keeping old template", "error", err)
+				emitEvent(&lc, v1.EventTypeWarning, "VCLTemplateParseFailed", fmt.Sprintf("Template parse error: %v", err))
 			} else {
 				reloadedTemplate = true
 			}
@@ -446,13 +500,17 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		templateChanged = false
 
+		renderStart := time.Now()
 		vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
+		telemetry.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 		if err != nil {
 			telemetry.VCLRenderErrorsTotal.Inc()
 			slog.Error("render error", "error", err)
+			emitEvent(&lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error: %v", err))
 			if reloadedTemplate {
 				telemetry.VCLRollbacksTotal.Inc()
 				lc.rend.Rollback()
+				emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
 			}
 			return
 		}
@@ -460,6 +518,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		if err := lc.mgr.Reload(vclPath); err != nil {
 			telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
 			slog.Error("reload error", "error", err)
+			emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
 			_ = os.Remove(vclPath)
 
 			if !reloadedTemplate {
@@ -472,24 +531,31 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			telemetry.VCLRollbacksTotal.Inc()
 			lc.rend.Rollback()
 			slog.Warn("rolled back to previous template")
+			emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Rolled back to previous template after reload failure")
 
+			renderStart = time.Now()
 			vclPath, err = lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
+			telemetry.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 			if err != nil {
 				telemetry.VCLRenderErrorsTotal.Inc()
 				slog.Error("render error after rollback", "error", err)
+				emitEvent(&lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error after rollback: %v", err))
 				return
 			}
 			if err := lc.mgr.Reload(vclPath); err != nil {
 				telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
 				slog.Error("reload error after rollback", "error", err)
+				emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed after rollback: %v", err))
 			} else {
 				telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
+				emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully after rollback (%s)", reasons))
 			}
 			_ = os.Remove(vclPath)
 			return
 		}
 
 		telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
+		emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully (%s)", reasons))
 		_ = os.Remove(vclPath)
 	}
 
@@ -499,8 +565,10 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			telemetry.VCLTemplateChangesTotal.Inc()
 			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("VCL template changed on disk, scheduling reload")
+			emitEvent(&lc, v1.EventTypeNormal, "VCLTemplateChanged", "VCL template file change detected on disk")
 			pendingReload = true
 			templateChanged = true
+			pendingReasons = appendUnique(pendingReasons, "template changed")
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case frontends := <-lc.frontendCh:
@@ -512,6 +580,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				lc.bcast.SetFrontends(lc.latestFrontends)
 			}
 			pendingReload = true
+			pendingReasons = appendUnique(pendingReasons, "frontend endpoints changed")
 			resetDebounce(&frontend, lc.frontendDebounce, lc.frontendDebounceMax)
 
 		case bc := <-backendChan(lc.backendCh):
@@ -520,6 +589,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			telemetry.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			pendingReload = true
+			pendingReasons = appendUnique(pendingReasons, "backend endpoints changed")
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case vc := <-valuesChan(lc.valuesCh):
@@ -528,6 +598,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("values ConfigMap updated", "name", vc.name)
 			pendingReload = true
+			pendingReasons = appendUnique(pendingReasons, "values updated")
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case <-timerChan(frontend.timer):
@@ -560,6 +631,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Info("received signal, shutting down", "signal", sig)
 
 			if lc.drainBackend != "" {
+				emitEvent(&lc, v1.EventTypeNormal, "DrainStarted", fmt.Sprintf("Received %v, starting graceful drain", sig))
 				// Mark the VCL backend sick so Varnish starts responding
 				// with Connection: close, causing clients to disconnect.
 				if err := lc.mgr.MarkBackendSick(lc.drainBackend); err != nil {
@@ -598,10 +670,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 							slog.Info("active sessions", "count", sessions)
 							if sessions == 0 {
 								slog.Info("all connections drained")
+								emitEvent(&lc, v1.EventTypeNormal, "DrainCompleted", "All connections drained")
 								break drainLoop
 							}
 						case <-deadline:
 							slog.Warn("drain timeout reached, proceeding with shutdown")
+							emitEvent(&lc, v1.EventTypeWarning, "DrainTimeout", "Drain timeout reached, proceeding with forced shutdown")
 							break drainLoop
 						case <-lc.sigCh:
 							slog.Info("second signal received, aborting drain")
@@ -635,10 +709,53 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		case <-lc.mgr.Done():
 			telemetry.VarnishdUp.Set(0)
 			slog.Error("varnishd exited unexpectedly", "error", lc.mgr.Err())
+			emitEvent(&lc, v1.EventTypeWarning, "VarnishdExited", fmt.Sprintf("varnishd exited unexpectedly: %v", lc.mgr.Err()))
 			cancel()
 			return 1
 		}
 	}
+}
+
+// emitEvent records a Kubernetes Event for the pod, if the recorder is configured.
+func emitEvent(lc *loopConfig, eventType, reason, message string) {
+	if lc.recorder != nil && lc.podRef != nil {
+		lc.recorder.Event(lc.podRef, eventType, reason, message)
+	}
+}
+
+// warnOnceEventSink wraps a record.EventSink and logs a single slog.Warn
+// on the first Forbidden (RBAC) error, then stays quiet for subsequent errors.
+type warnOnceEventSink struct {
+	inner  record.EventSink
+	warned sync.Once
+}
+
+func (s *warnOnceEventSink) checkErr(err error) {
+	if err != nil && apierrors.IsForbidden(err) {
+		s.warned.Do(func() {
+			slog.Warn("cannot create Kubernetes Events (RBAC permission denied); "+
+				"grant 'create' and 'patch' on 'events' to silence this warning",
+				"error", err)
+		})
+	}
+}
+
+func (s *warnOnceEventSink) Create(event *v1.Event) (*v1.Event, error) {
+	ev, err := s.inner.Create(event)
+	s.checkErr(err)
+	return ev, err
+}
+
+func (s *warnOnceEventSink) Update(event *v1.Event) (*v1.Event, error) {
+	ev, err := s.inner.Update(event)
+	s.checkErr(err)
+	return ev, err
+}
+
+func (s *warnOnceEventSink) Patch(oldEvent *v1.Event, data []byte) (*v1.Event, error) {
+	ev, err := s.inner.Patch(oldEvent, data)
+	s.checkErr(err)
+	return ev, err
 }
 
 func buildClientset() (kubernetes.Interface, error) {
@@ -699,6 +816,14 @@ func timerChan(t *time.Timer) <-chan time.Time {
 		return nil
 	}
 	return t.C
+}
+
+// appendUnique appends s to the slice only if it is not already present.
+func appendUnique(slice []string, s string) []string {
+	if slices.Contains(slice, s) {
+		return slice
+	}
+	return append(slice, s)
 }
 
 // watchFile polls a file for content changes and sends on the returned channel

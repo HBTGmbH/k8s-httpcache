@@ -105,6 +105,45 @@ func TestDebounceMaxEnforcementsTotal(t *testing.T) {
 	assertCounterValue(t, DebounceMaxEnforcementsTotal.WithLabelValues("backend"), 1)
 }
 
+func TestVCLRenderDurationSeconds(t *testing.T) {
+	VCLRenderDurationSeconds.Observe(0.05)
+	VCLRenderDurationSeconds.Observe(0.15)
+
+	var m dto.Metric
+	if err := VCLRenderDurationSeconds.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.GetHistogram().GetSampleCount(); got < 2 {
+		t.Errorf("histogram sample count = %d, want >= 2", got)
+	}
+}
+
+func TestVCLReloadDurationSeconds(t *testing.T) {
+	VCLReloadDurationSeconds.Observe(0.1)
+	VCLReloadDurationSeconds.Observe(0.2)
+
+	var m dto.Metric
+	if err := VCLReloadDurationSeconds.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.GetHistogram().GetSampleCount(); got < 2 {
+		t.Errorf("histogram sample count = %d, want >= 2", got)
+	}
+}
+
+func TestBroadcastDurationSeconds(t *testing.T) {
+	BroadcastDurationSeconds.Observe(0.01)
+	BroadcastDurationSeconds.Observe(0.02)
+
+	var m dto.Metric
+	if err := BroadcastDurationSeconds.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.GetHistogram().GetSampleCount(); got < 2 {
+		t.Errorf("histogram sample count = %d, want >= 2", got)
+	}
+}
+
 func TestDebounceLatencySeconds(t *testing.T) {
 	DebounceLatencySeconds.WithLabelValues("frontend").Observe(0.05)
 	DebounceLatencySeconds.WithLabelValues("frontend").Observe(0.15)
@@ -146,6 +185,9 @@ func TestMetricsRegistered(t *testing.T) {
 		"k8s_httpcache_debounce_fires_total":            false,
 		"k8s_httpcache_debounce_max_enforcements_total": false,
 		"k8s_httpcache_debounce_latency_seconds":        false,
+		"k8s_httpcache_vcl_render_duration_seconds":     false,
+		"k8s_httpcache_vcl_reload_duration_seconds":     false,
+		"k8s_httpcache_broadcast_duration_seconds":      false,
 	}
 
 	for _, f := range families {

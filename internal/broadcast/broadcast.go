@@ -138,6 +138,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fanoutStart := time.Now()
+
 	type namedResult struct {
 		name   string
 		result PodResult
@@ -165,6 +167,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for nr := range results {
 		out[nr.name] = nr.result
 	}
+
+	telemetry.BroadcastDurationSeconds.Observe(time.Since(fanoutStart).Seconds())
 
 	telemetry.BroadcastRequestsTotal.WithLabelValues(r.Method, "200").Inc()
 	w.Header().Set("Content-Type", "application/json")

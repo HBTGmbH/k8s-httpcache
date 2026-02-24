@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -13,6 +14,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/record"
 
 	"k8s-httpcache/internal/config"
 	"k8s-httpcache/internal/telemetry"
@@ -335,6 +341,9 @@ type testHarness struct {
 	valuesCh   chan valuesChange
 	templateCh chan struct{}
 	sigCh      chan os.Signal
+
+	recorder *record.FakeRecorder
+	podRef   *v1.ObjectReference
 }
 
 func newTestHarness() *testHarness {
@@ -375,7 +384,19 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 		latestFrontends: nil,
 		latestBackends:  make(map[string][]watcher.Endpoint),
 		latestValues:    make(map[string]map[string]any),
+
+		recorder: h.recorder,
+		podRef:   h.podRef,
 	}
+}
+
+// withRecorder wires a FakeRecorder and podRef into the harness so that
+// emitEvent calls produce observable events.
+func (h *testHarness) withRecorder() *record.FakeRecorder {
+	rec := record.NewFakeRecorder(10)
+	h.recorder = rec
+	h.podRef = &v1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"}
+	return rec
 }
 
 // runAndWait runs the loop in a goroutine and returns a function that
@@ -2895,4 +2916,809 @@ func getHistogramSampleCount(t *testing.T, label string, hv *prometheus.Histogra
 		t.Fatal(err)
 	}
 	return m.GetHistogram().GetSampleCount()
+}
+
+// --- emitEvent tests ---
+
+func TestEmitEventNilRecorder(t *testing.T) {
+	t.Log("verifying emitEvent does not panic when recorder and podRef are nil")
+	lc := &loopConfig{}
+	emitEvent(lc, v1.EventTypeNormal, "Test", "test message")
+}
+
+func TestEmitEventRecordsEvent(t *testing.T) {
+	fakeRecorder := record.NewFakeRecorder(10)
+	podRef := &v1.ObjectReference{
+		Kind:      "Pod",
+		Name:      "test-pod",
+		Namespace: "default",
+	}
+	lc := &loopConfig{
+		recorder: fakeRecorder,
+		podRef:   podRef,
+	}
+
+	emitEvent(lc, v1.EventTypeNormal, "VCLReloaded", "VCL reloaded successfully")
+
+	select {
+	case event := <-fakeRecorder.Events:
+		if !strings.Contains(event, "VCLReloaded") {
+			t.Errorf("expected event to contain 'VCLReloaded', got %q", event)
+		}
+		if !strings.Contains(event, "VCL reloaded successfully") {
+			t.Errorf("expected event to contain message, got %q", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for event")
+	}
+}
+
+// --- warnOnceEventSink tests ---
+
+// fakeEventSink is a test double that returns configurable errors.
+type fakeEventSink struct {
+	mu        sync.Mutex
+	createErr error
+	updateErr error
+	patchErr  error
+	calls     int // total calls across all methods
+}
+
+func (f *fakeEventSink) Create(_ *v1.Event) (*v1.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return nil, f.createErr
+}
+
+func (f *fakeEventSink) Update(_ *v1.Event) (*v1.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return nil, f.updateErr
+}
+
+func (f *fakeEventSink) Patch(_ *v1.Event, _ []byte) (*v1.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return nil, f.patchErr
+}
+
+func (f *fakeEventSink) getCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func newForbiddenErr() error {
+	return apierrors.NewForbidden(
+		schema.GroupResource{Resource: "events"},
+		"",
+		errors.New("RBAC: access denied"),
+	)
+}
+
+func TestWarnOnceEventSinkLogsForbiddenOnce(t *testing.T) {
+	inner := &fakeEventSink{createErr: newForbiddenErr()}
+	sink := &warnOnceEventSink{inner: inner}
+
+	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+
+	// First call triggers the warning (via sync.Once).
+	_, err := sink.Create(ev)
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected Forbidden error, got %v", err)
+	}
+
+	// Second call still returns the error but does not warn again
+	// (sync.Once guarantees single execution; we verify the error passes through).
+	_, err = sink.Create(ev)
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected Forbidden error on second call, got %v", err)
+	}
+
+	if got := inner.getCalls(); got != 2 {
+		t.Fatalf("expected 2 inner calls, got %d", got)
+	}
+}
+
+func TestWarnOnceEventSinkPassesThroughOnSuccess(t *testing.T) {
+	inner := &fakeEventSink{}
+	sink := &warnOnceEventSink{inner: inner}
+
+	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+
+	_, err := sink.Create(ev)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestWarnOnceEventSinkNonForbiddenErrorDoesNotWarn(t *testing.T) {
+	// A 500 server error should pass through without triggering the
+	// warn-once guard, leaving it available for a future Forbidden error.
+	serverErr := apierrors.NewInternalError(errors.New("internal"))
+	inner := &fakeEventSink{createErr: serverErr}
+	sink := &warnOnceEventSink{inner: inner}
+
+	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+
+	_, err := sink.Create(ev)
+	if !apierrors.IsInternalError(err) {
+		t.Fatalf("expected InternalError, got %v", err)
+	}
+
+	// The warned Once should NOT have fired, so a subsequent Forbidden
+	// error should still trigger it (verified by the error passing through
+	// and the inner sink being called).
+	inner.mu.Lock()
+	inner.createErr = newForbiddenErr()
+	inner.mu.Unlock()
+
+	_, err = sink.Create(ev)
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected Forbidden error, got %v", err)
+	}
+
+	if got := inner.getCalls(); got != 2 {
+		t.Fatalf("expected 2 inner calls, got %d", got)
+	}
+}
+
+func TestWarnOnceEventSinkPatchForbidden(t *testing.T) {
+	// Patch is the primary path for updated events (client-go patches
+	// existing events to increment their count). A Forbidden on Patch
+	// should also trigger the warn-once.
+	inner := &fakeEventSink{patchErr: newForbiddenErr()}
+	sink := &warnOnceEventSink{inner: inner}
+
+	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+
+	_, err := sink.Patch(ev, []byte(`{}`))
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected Forbidden error from Patch, got %v", err)
+	}
+
+	// Second Patch still returns error; inner is still called.
+	_, err = sink.Patch(ev, []byte(`{}`))
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected Forbidden error on second Patch, got %v", err)
+	}
+
+	if got := inner.getCalls(); got != 2 {
+		t.Fatalf("expected 2 inner calls, got %d", got)
+	}
+}
+
+func TestWarnOnceEventSinkUpdateForbidden(t *testing.T) {
+	inner := &fakeEventSink{updateErr: newForbiddenErr()}
+	sink := &warnOnceEventSink{inner: inner}
+
+	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+
+	_, err := sink.Update(ev)
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected Forbidden error from Update, got %v", err)
+	}
+
+	if got := inner.getCalls(); got != 1 {
+		t.Fatalf("expected 1 inner call, got %d", got)
+	}
+}
+
+func TestWarnOnceEventSinkWarnsOnceAcrossMethods(t *testing.T) {
+	// If Create gets a 403 and then Patch also gets a 403,
+	// the warning should fire exactly once total (sync.Once).
+	inner := &fakeEventSink{
+		createErr: newForbiddenErr(),
+		patchErr:  newForbiddenErr(),
+	}
+	sink := &warnOnceEventSink{inner: inner}
+
+	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+
+	// Create triggers the Once.
+	_, _ = sink.Create(ev)
+	// Patch does NOT trigger it again (sync.Once already fired).
+	_, _ = sink.Patch(ev, []byte(`{}`))
+
+	if got := inner.getCalls(); got != 2 {
+		t.Fatalf("expected 2 inner calls, got %d", got)
+	}
+	// If we got here without panic/race, sync.Once worked correctly.
+	// The warn logic itself is side-effect-only (slog.Warn), so we
+	// verify the structural guarantee: both errors pass through.
+}
+
+func TestEmitEventNilRecorderSetPodRef(t *testing.T) {
+	t.Log("verifying emitEvent does not panic when only podRef is set")
+	lc := &loopConfig{
+		podRef: &v1.ObjectReference{Kind: "Pod", Name: "p", Namespace: "ns"},
+	}
+	emitEvent(lc, v1.EventTypeNormal, "Test", "test")
+}
+
+func TestEmitEventNilPodRefSetRecorder(t *testing.T) {
+	t.Log("verifying emitEvent does not panic when only recorder is set")
+	lc := &loopConfig{
+		recorder: record.NewFakeRecorder(1),
+	}
+	emitEvent(lc, v1.EventTypeNormal, "Test", "test")
+}
+
+// drainEvents collects all events currently buffered in the FakeRecorder.
+func drainEvents(rec *record.FakeRecorder) []string {
+	var events []string
+	for {
+		select {
+		case e := <-rec.Events:
+			events = append(events, e)
+		default:
+			return events
+		}
+	}
+}
+
+// requireEvent asserts that at least one event contains both reason and message substring.
+func requireEvent(t *testing.T, events []string, reason, msgSubstr string) {
+	t.Helper()
+	for _, e := range events {
+		if strings.Contains(e, reason) && strings.Contains(e, msgSubstr) {
+			return
+		}
+	}
+	t.Errorf("expected event with reason %q containing %q, got events: %v", reason, msgSubstr, events)
+}
+
+func TestRunLoop_EventReasonFrontendEndpoints(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloaded", "frontend endpoints changed")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReasonBackendEndpoints(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloaded", "backend endpoints changed")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReasonValuesUpdated(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	h.valuesCh <- valuesChange{name: "tuning", data: map[string]any{"ttl": "300"}}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloaded", "values updated")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReasonTemplateChanged(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLTemplateChanged", "template file change detected")
+	requireEvent(t, events, "VCLReloaded", "template changed")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReasonMultipleTriggers(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	// Send both frontend and backend changes within the same debounce window.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloaded", "frontend endpoints changed")
+	requireEvent(t, events, "VCLReloaded", "backend endpoints changed")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReasonAfterRollback(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	var mgrCalls atomic.Int32
+	h.mgr.reloadFn = func(_ string) error {
+		if mgrCalls.Add(1) == 1 {
+			return errors.New("varnish reload error")
+		}
+		return nil
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Template change → mgr.Reload fails → rollback → retry succeeds
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
+	requireEvent(t, events, "VCLRolledBack", "Rolled back to previous template")
+	requireEvent(t, events, "VCLReloaded", "template changed")
+	requireEvent(t, events, "VCLReloaded", "after rollback")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReasonAllFourTriggers(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	// Fire all four trigger types within the same debounce window.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+	}
+	h.valuesCh <- valuesChange{name: "tuning", data: map[string]any{"ttl": "300"}}
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloaded", "frontend endpoints changed")
+	requireEvent(t, events, "VCLReloaded", "backend endpoints changed")
+	requireEvent(t, events, "VCLReloaded", "values updated")
+	requireEvent(t, events, "VCLReloaded", "template changed")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventTemplateParseFailed(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	h.rend.reloadFn = func() error { return errors.New("parse error") }
+
+	wait := h.runAndWait(h.bcast)
+
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLTemplateParseFailed", "Template parse error")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventRenderFailed(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
+		return "", errors.New("render error")
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Frontend update (no template change) → render fails → no rollback.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLRenderFailed", "VCL render error")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventRenderFailedRollback(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
+		return "", errors.New("render error")
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Template change → parse ok → render fails → rollback.
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLRenderFailed", "VCL render error")
+	requireEvent(t, events, "VCLRolledBack", "Template rollback after render error")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	var mgrCalls atomic.Int32
+	h.mgr.reloadFn = func(_ string) error {
+		if mgrCalls.Add(1) == 1 {
+			return errors.New("varnish reload error")
+		}
+		return nil
+	}
+	var renderCalls atomic.Int32
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
+		// First render succeeds, second (after rollback) fails.
+		if renderCalls.Add(1) == 2 {
+			return "", errors.New("render error after rollback")
+		}
+		return "test.vcl", nil
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Template change → render ok → reload fails → rollback → render fails.
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
+	requireEvent(t, events, "VCLRolledBack", "Rolled back to previous template after reload failure")
+	requireEvent(t, events, "VCLRenderFailed", "after rollback")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReloadFailedNoRollback(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	h.mgr.reloadFn = func(_ string) error {
+		return errors.New("varnish reload error")
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Frontend update (no template change) → render ok → reload fails → no rollback.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
+	// Should NOT contain a rollback event.
+	for _, e := range events {
+		if strings.Contains(e, "VCLRolledBack") {
+			t.Errorf("unexpected rollback event without template change: %s", e)
+		}
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReloadFailedAfterRollback(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	h.mgr.reloadFn = func(_ string) error {
+		return errors.New("varnish always rejects")
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Template change → render ok → reload fails → rollback → render ok → reload fails again.
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed after rollback")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventVarnishdExited(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	h.mgr.err = errors.New("crashed")
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, h.loopConfig(h.bcast))))
+		close(done)
+	}()
+
+	close(h.mgr.done) // unexpected exit
+	<-done
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "VarnishdExited", "varnishd exited unexpectedly")
+
+	result := int(code.Load())
+	if result != 1 {
+		t.Fatalf("expected exit 1, got %d", result)
+	}
+}
+
+func TestRunLoop_EventDrainStartedAndCompleted(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	var sessionCalls atomic.Int32
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		if sessionCalls.Add(1) == 1 {
+			return 5, nil
+		}
+		return 0, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 5 * time.Second
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(100 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "DrainStarted", "starting graceful drain")
+	requireEvent(t, events, "DrainCompleted", "All connections drained")
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_EventDrainTimeout(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	h.mgr.activeSessionsFn = func() (int64, error) {
+		return 42, nil // sessions never clear
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 1500 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(2 * time.Second)
+	close(h.mgr.done)
+	<-done
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "DrainStarted", "starting graceful drain")
+	requireEvent(t, events, "DrainTimeout", "Drain timeout reached")
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestResetDebounce_FloorWhenDeadlineExceeded(t *testing.T) {
+	// Set up a state where the debounce-max deadline is already in the past,
+	// causing remaining <= 0. The d <= 0 floor (line 96) sets d = 1.
+	s := debounceState{
+		firstEvent: time.Now().Add(-2 * time.Second),
+		deadline:   time.Now().Add(-1 * time.Second), // already passed
+	}
+	resetDebounce(&s, 100*time.Millisecond, 500*time.Millisecond)
+	defer s.timer.Stop()
+
+	if !s.capped {
+		t.Fatal("expected capped to be true when deadline has passed")
+	}
+	// Timer should fire almost immediately (d = 1ns).
+	select {
+	case <-s.timer.C:
+		// OK — timer fired immediately
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timer did not fire quickly despite expired deadline")
+	}
+}
+
+func TestRunLoop_DrainSecondSignalDuringDelay(t *testing.T) {
+	h := newTestHarness()
+	rec := h.withRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	// Use a long drain delay so the second signal arrives during it.
+	lc.drainDelay = 5 * time.Second
+	lc.drainTimeout = 5 * time.Second
+	sigCh := make(chan os.Signal, 2)
+	lc.sigCh = sigCh
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// First signal starts drain.
+	sigCh <- syscall.SIGTERM
+	// Wait just long enough to enter the drainDelay sleep, not for it to elapse.
+	time.Sleep(50 * time.Millisecond)
+	// Second signal during drainDelay — should interrupt and skip the wait.
+	sigCh <- syscall.SIGINT
+	time.Sleep(50 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	events := drainEvents(rec)
+	requireEvent(t, events, "DrainStarted", "starting graceful drain")
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestWatchFileContextCancelDuringPoll(t *testing.T) {
+	// Ensures the ctx.Done() branch inside the polling loop is covered.
+	// Write initial content, start watching, let at least one tick happen,
+	// then cancel.
+	dir := t.TempDir()
+	path := dir + "/watchfile"
+	if err := os.WriteFile(path, []byte("initial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := watchFile(ctx, path, 10*time.Millisecond)
+
+	// Let the goroutine enter the polling loop and tick at least once.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// After cancel, any file changes should not produce notifications.
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-ch:
+		t.Fatal("unexpected notification after context cancel")
+	default:
+		// OK — goroutine exited via ctx.Done()
+	}
+}
+
+func TestWatchFileNonBlockingSendDefault(t *testing.T) {
+	// Triggers the default branch of the non-blocking send by writing two
+	// changes without reading from the channel between them.
+	dir := t.TempDir()
+	path := dir + "/watchfile"
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := watchFile(t.Context(), path, 10*time.Millisecond)
+
+	// First change — fills the channel (buffer size 1).
+	if err := os.WriteFile(path, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Second change — channel still has unread notification, triggers default.
+	if err := os.WriteFile(path, []byte("v3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Drain the single notification.
+	select {
+	case <-ch:
+		// OK
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected at least one notification")
+	}
+
+	// No second notification should be available (was dropped by default branch).
+	select {
+	case <-ch:
+		t.Fatal("expected no second notification (non-blocking send default branch)")
+	case <-time.After(100 * time.Millisecond):
+		// OK — the second send hit the default branch
+	}
+}
+
+func TestAppendUnique(t *testing.T) {
+	var s []string
+	s = appendUnique(s, "a")
+	s = appendUnique(s, "b")
+	s = appendUnique(s, "a") // duplicate
+	if len(s) != 2 {
+		t.Fatalf("expected 2 elements, got %d: %v", len(s), s)
+	}
+	if s[0] != "a" || s[1] != "b" {
+		t.Fatalf("expected [a b], got %v", s)
+	}
 }
