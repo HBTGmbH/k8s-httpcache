@@ -107,12 +107,10 @@ fi
 echo "PASS: events ($events_delta) > fires ($fires_delta) — coalescing confirmed"
 
 # --- Part 2: Debounce-max enforcement test ----------------------------------
-# To trigger debounce-max we need endpoint events that keep arriving for longer
-# than the 5s max deadline.  We scale one replica at a time with 0.5s pauses
-# (under the 2s debounce window).  Each new pod becoming Ready generates an
-# EndpointSlice event that resets the 2s debounce timer.  Because pod starts
-# are staggered across >5s total, the max deadline fires before the normal
-# debounce window expires.
+# To trigger debounce-max we need events that keep arriving for longer than
+# the 5s max deadline without a 2s quiet gap.  ConfigMap patches produce
+# instant watcher events (no pod startup latency), so timing is predictable.
+# We patch the values ConfigMap every 0.5s for 8s — well past the 5s max.
 
 echo ""
 echo "--- Part 2: debounce-max enforcement ---"
@@ -120,15 +118,14 @@ echo "--- Part 2: debounce-max enforcement ---"
 before_max=$(metric_value 'k8s_httpcache_debounce_max_enforcements_total{group="backend"}')
 echo "Before: max_enforcements=$before_max"
 
-# Incremental scales: each adds 1 pod, spaced 0.5s apart (< 2s debounce).
-# 12 operations × 0.5s = 6s of sustained activity, exceeding the 5s max.
-for replicas in $(seq 4 15); do
-  kubectl scale deployment/backend --replicas="$replicas"
-  sleep 1
+# Rapid ConfigMap patches: 16 × 0.5s = 8s of sustained activity (> 5s max).
+for i in $(seq 1 16); do
+  kubectl patch configmap k8s-httpcache-values-test \
+    --type merge -p "{\"data\":{\"debounce-test\":\"$i\"}}" > /dev/null
+  sleep 0.5
 done
 
-# Wait for all pods to settle and debounce-max to force the reload.
-kubectl rollout status deployment/backend --timeout=60s
+# Wait for debounce-max to force the reload.
 sleep 4
 
 after_max=$(metric_value 'k8s_httpcache_debounce_max_enforcements_total{group="backend"}')
@@ -141,10 +138,12 @@ if [ "$max_delta" -le 0 ]; then
 fi
 echo "PASS: debounce_max_enforcements_total increased (delta=$max_delta)"
 
-# --- Cleanup: scale backend back to 1 ---------------------------------------
+# --- Cleanup: remove test key and scale backend back to 1 -------------------
 
 echo ""
 echo "--- Cleanup ---"
+kubectl patch configmap k8s-httpcache-values-test \
+  --type json -p '[{"op":"remove","path":"/data/debounce-test"}]' > /dev/null
 kubectl scale deployment/backend --replicas=1
 kubectl rollout status deployment/backend --timeout=60s
-echo "PASS: backend scaled back to 1 replica"
+echo "PASS: cleanup complete"
