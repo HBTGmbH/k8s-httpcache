@@ -122,7 +122,7 @@ echo "Before: max_enforcements=$before_max"
 
 # Incremental scales: each adds 1 pod, spaced 0.5s apart (< 2s debounce).
 # 12 operations × 0.5s = 6s of sustained activity, exceeding the 5s max.
-for replicas in 4 5 6 7 8 9 10 11 12 13 14 15; do
+for replicas in $(seq 4 15); do
   kubectl scale deployment/backend --replicas="$replicas"
   sleep 1
 done
