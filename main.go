@@ -257,7 +257,7 @@ type loopConfig struct {
 }
 
 func main() {
-	cfg, err := config.Parse(os.Args)
+	cfg, err := config.Parse(version, os.Args)
 	if errors.Is(err, config.ErrHelp) {
 		os.Exit(0)
 	}

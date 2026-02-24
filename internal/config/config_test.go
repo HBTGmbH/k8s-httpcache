@@ -593,7 +593,7 @@ func makeTempVCL(t *testing.T) string {
 
 func TestParseMissingServiceName(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
 	})
@@ -607,7 +607,7 @@ func TestParseMissingServiceName(t *testing.T) {
 
 func TestParseMissingNamespace(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--vcl-template=" + vcl,
 	})
@@ -620,7 +620,7 @@ func TestParseMissingNamespace(t *testing.T) {
 }
 
 func TestParseMissingVCLTemplate(t *testing.T) {
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 	})
@@ -633,7 +633,7 @@ func TestParseMissingVCLTemplate(t *testing.T) {
 }
 
 func TestParseVCLTemplateNotExist(t *testing.T) {
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=/nonexistent/path/to/file.vcl",
@@ -648,7 +648,7 @@ func TestParseVCLTemplateNotExist(t *testing.T) {
 
 func TestParseMinimalValid(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -680,7 +680,7 @@ func TestParseMinimalValid(t *testing.T) {
 
 func TestParseServiceNameWithNamespace(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=staging/my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -698,7 +698,7 @@ func TestParseServiceNameWithNamespace(t *testing.T) {
 
 func TestParseInvalidServiceNamePrefix(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=/my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -713,7 +713,7 @@ func TestParseInvalidServiceNamePrefix(t *testing.T) {
 
 func TestParseDuplicateListenAddrNames(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -730,7 +730,7 @@ func TestParseDuplicateListenAddrNames(t *testing.T) {
 
 func TestParseUnnamedListenAddrsNoDuplicateError(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -747,7 +747,7 @@ func TestParseUnnamedListenAddrsNoDuplicateError(t *testing.T) {
 
 func TestParseBroadcastTargetListenAddr(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -765,7 +765,7 @@ func TestParseBroadcastTargetListenAddr(t *testing.T) {
 
 func TestParseBroadcastTargetListenAddrNotFound(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -782,7 +782,7 @@ func TestParseBroadcastTargetListenAddrNotFound(t *testing.T) {
 
 func TestParseBroadcastDisabled(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -802,7 +802,7 @@ func TestParseBroadcastDisabled(t *testing.T) {
 
 func TestParseBroadcastAddrEmptyValueIsError(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -815,7 +815,7 @@ func TestParseBroadcastAddrEmptyValueIsError(t *testing.T) {
 
 func TestParseDrainEnabled(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -831,7 +831,7 @@ func TestParseDrainEnabled(t *testing.T) {
 
 func TestParseMetricsAddrNone(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -847,7 +847,7 @@ func TestParseMetricsAddrNone(t *testing.T) {
 
 func TestParseDuplicateBackendNames(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -864,7 +864,7 @@ func TestParseDuplicateBackendNames(t *testing.T) {
 
 func TestParseBackendNamespaceResolution(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -898,7 +898,7 @@ func TestParseBackendNamespaceResolution(t *testing.T) {
 
 func TestParseBackendInvalidServiceRef(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -914,7 +914,7 @@ func TestParseBackendInvalidServiceRef(t *testing.T) {
 
 func TestParseDefaults(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -975,7 +975,7 @@ func TestParseDefaults(t *testing.T) {
 
 func TestParseDebounceLatencyBucketsCustom(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -992,7 +992,7 @@ func TestParseDebounceLatencyBucketsCustom(t *testing.T) {
 
 func TestParseDebounceLatencyBucketsInvalidValue(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1008,7 +1008,7 @@ func TestParseDebounceLatencyBucketsInvalidValue(t *testing.T) {
 
 func TestParseDebounceLatencyBucketsNegativeValue(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1024,7 +1024,7 @@ func TestParseDebounceLatencyBucketsNegativeValue(t *testing.T) {
 
 func TestParseDebounceLatencyBucketsSorted(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1041,7 +1041,7 @@ func TestParseDebounceLatencyBucketsSorted(t *testing.T) {
 
 func TestParseExtraVarnishdArgs(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1063,7 +1063,7 @@ func TestParseExtraVarnishdArgs(t *testing.T) {
 
 func TestParseCustomListenAddrs(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1090,7 +1090,7 @@ func TestParseCustomListenAddrs(t *testing.T) {
 
 func TestParseVCLTemplateIsDirectory(t *testing.T) {
 	dir := t.TempDir()
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + dir,
@@ -1117,7 +1117,7 @@ func TestParseVCLTemplateRelativePath(t *testing.T) {
 	relPath := filepath.Base(f.Name())
 	t.Cleanup(func() { _ = os.Remove(relPath) })
 
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + relPath,
@@ -1132,7 +1132,7 @@ func TestParseVCLTemplateRelativePath(t *testing.T) {
 
 func TestParseOverrideStringFlags(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1164,7 +1164,7 @@ func TestParseOverrideStringFlags(t *testing.T) {
 
 func TestParseOverrideDurationFlags(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1241,7 +1241,7 @@ func TestParseLogLevel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			vcl := makeTempVCL(t)
-			cfg, err := Parse([]string{"test",
+			cfg, err := Parse("", []string{"test",
 				"--service-name=my-svc",
 				"--namespace=default",
 				"--vcl-template=" + vcl,
@@ -1259,7 +1259,7 @@ func TestParseLogLevel(t *testing.T) {
 
 func TestParseLogLevelDefault(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1283,7 +1283,7 @@ func TestParseLogFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			vcl := makeTempVCL(t)
-			cfg, err := Parse([]string{"test",
+			cfg, err := Parse("", []string{"test",
 				"--service-name=my-svc",
 				"--namespace=default",
 				"--vcl-template=" + vcl,
@@ -1301,7 +1301,7 @@ func TestParseLogFormat(t *testing.T) {
 
 func TestParseLogFormatDefault(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1316,7 +1316,7 @@ func TestParseLogFormatDefault(t *testing.T) {
 
 func TestParseLogFormatInvalid(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1329,7 +1329,7 @@ func TestParseLogFormatInvalid(t *testing.T) {
 
 func TestParseNoBackends(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1344,7 +1344,7 @@ func TestParseNoBackends(t *testing.T) {
 
 func TestParseNoExtraVarnishdArgs(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1359,7 +1359,7 @@ func TestParseNoExtraVarnishdArgs(t *testing.T) {
 
 func TestParseBackendTrailingSlash(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1377,7 +1377,7 @@ func TestParseBroadcastTargetMatchesUnnamedListenAddr(t *testing.T) {
 	vcl := makeTempVCL(t)
 	// Unnamed listen addrs have Name="". Setting --broadcast-target-listen-addr
 	// to a value that doesn't match any named addr should fail.
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1394,7 +1394,7 @@ func TestParseBroadcastTargetMatchesUnnamedListenAddr(t *testing.T) {
 
 func TestParseBroadcastTargetDefaultsToFirstListenAddr(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1411,7 +1411,7 @@ func TestParseBroadcastTargetDefaultsToFirstListenAddr(t *testing.T) {
 
 func TestParseListenAddrIPv6AllInterfaces(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1437,7 +1437,7 @@ func TestParseListenAddrIPv6AllInterfaces(t *testing.T) {
 
 func TestParseListenAddrNameWithSpecialChars(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1453,7 +1453,7 @@ func TestParseListenAddrNameWithSpecialChars(t *testing.T) {
 
 func TestParseDefaultDurations(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1489,7 +1489,7 @@ func TestParseDefaultDurations(t *testing.T) {
 
 func TestParseBackendWithNumericPort(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1511,7 +1511,7 @@ func TestParseBackendWithNumericPort(t *testing.T) {
 
 func TestParseServiceNameEmptyServiceAfterSlash(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=ns/",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1528,7 +1528,7 @@ func TestParseBroadcastDisabledSkipsTargetResolution(t *testing.T) {
 	vcl := makeTempVCL(t)
 	// With broadcast disabled, --broadcast-target-listen-addr should be ignored
 	// even if it references a nonexistent name.
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1547,7 +1547,7 @@ func TestParseBroadcastTargetMatchesFirstNamedAddr(t *testing.T) {
 	// When --broadcast-target-listen-addr explicitly names the first listen addr,
 	// the code takes the loop path rather than the shortcut.
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1565,7 +1565,7 @@ func TestParseBroadcastTargetMatchesFirstNamedAddr(t *testing.T) {
 
 func TestParseDurationZero(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1585,7 +1585,7 @@ func TestParseDurationZero(t *testing.T) {
 
 func TestParseDurationSubSecond(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1605,7 +1605,7 @@ func TestParseDurationSubSecond(t *testing.T) {
 
 func TestParseMultipleBackendsWithPorts(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1719,7 +1719,7 @@ func TestValuesFlagsString(t *testing.T) {
 
 func TestParseDuplicateValuesNames(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1736,7 +1736,7 @@ func TestParseDuplicateValuesNames(t *testing.T) {
 
 func TestParseValuesNamespaceResolution(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1767,7 +1767,7 @@ func TestParseValuesNamespaceResolution(t *testing.T) {
 
 func TestParseValuesInvalidConfigMapRef(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1783,7 +1783,7 @@ func TestParseValuesInvalidConfigMapRef(t *testing.T) {
 
 func TestParseNoValues(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1876,7 +1876,7 @@ func TestValuesDirFlagsString(t *testing.T) {
 func TestParseDuplicateValuesDirNames(t *testing.T) {
 	vcl := makeTempVCL(t)
 	dir := t.TempDir()
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1894,7 +1894,7 @@ func TestParseDuplicateValuesDirNames(t *testing.T) {
 func TestParseDuplicateValuesAndValuesDirNames(t *testing.T) {
 	vcl := makeTempVCL(t)
 	dir := t.TempDir()
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1918,7 +1918,7 @@ func TestParseValuesDirNotADirectory(t *testing.T) {
 	}
 	_ = f.Close()
 
-	_, err = Parse([]string{"test",
+	_, err = Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1934,7 +1934,7 @@ func TestParseValuesDirNotADirectory(t *testing.T) {
 
 func TestParseValuesDirNotExist(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1951,7 +1951,7 @@ func TestParseValuesDirNotExist(t *testing.T) {
 func TestParseValuesDirValid(t *testing.T) {
 	vcl := makeTempVCL(t)
 	dir := t.TempDir()
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1975,7 +1975,7 @@ func TestParseValuesDirValid(t *testing.T) {
 
 func TestParseTemplateDelimsDefault(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -1993,7 +1993,7 @@ func TestParseTemplateDelimsDefault(t *testing.T) {
 
 func TestParseTemplateDelimsCustom(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2012,7 +2012,7 @@ func TestParseTemplateDelimsCustom(t *testing.T) {
 
 func TestParseTemplateDelimsSingleToken(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2028,7 +2028,7 @@ func TestParseTemplateDelimsSingleToken(t *testing.T) {
 
 func TestParseTemplateDelimsThreeTokens(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2044,7 +2044,7 @@ func TestParseTemplateDelimsThreeTokens(t *testing.T) {
 
 func TestParseVCLReloadRetriesDefaults(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2062,7 +2062,7 @@ func TestParseVCLReloadRetriesDefaults(t *testing.T) {
 
 func TestParseVCLReloadRetriesCustom(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2082,7 +2082,7 @@ func TestParseVCLReloadRetriesCustom(t *testing.T) {
 
 func TestParseVCLReloadRetriesZero(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2098,7 +2098,7 @@ func TestParseVCLReloadRetriesZero(t *testing.T) {
 
 func TestParseVCLReloadRetriesNegative(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2114,7 +2114,7 @@ func TestParseVCLReloadRetriesNegative(t *testing.T) {
 
 func TestParseVCLReloadRetryIntervalNegative(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2130,7 +2130,7 @@ func TestParseVCLReloadRetryIntervalNegative(t *testing.T) {
 
 func TestParseVCLReloadRetryIntervalZero(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2146,7 +2146,7 @@ func TestParseVCLReloadRetryIntervalZero(t *testing.T) {
 
 func TestParseVCLReloadRetryIntervalSubSecond(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2162,7 +2162,7 @@ func TestParseVCLReloadRetryIntervalSubSecond(t *testing.T) {
 
 func TestParseVCLReloadRetriesOnlyRetriesSet(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2182,7 +2182,7 @@ func TestParseVCLReloadRetriesOnlyRetriesSet(t *testing.T) {
 
 func TestParseVCLReloadRetriesOnlyIntervalSet(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2204,7 +2204,7 @@ func TestParseVCLReloadRetriesOnlyIntervalSet(t *testing.T) {
 
 func TestParseVCLKeptDefault(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2219,7 +2219,7 @@ func TestParseVCLKeptDefault(t *testing.T) {
 
 func TestParseVCLKeptCustom(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2235,7 +2235,7 @@ func TestParseVCLKeptCustom(t *testing.T) {
 
 func TestParseVCLKeptNegative(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2253,7 +2253,7 @@ func TestParseVCLKeptNegative(t *testing.T) {
 
 func TestParseFileWatchDefault(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2268,7 +2268,7 @@ func TestParseFileWatchDefault(t *testing.T) {
 
 func TestParseFileWatchDisabled(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2283,7 +2283,7 @@ func TestParseFileWatchDisabled(t *testing.T) {
 }
 
 func TestParseHelp(t *testing.T) {
-	cfg, err := Parse([]string{"test", "--help"})
+	cfg, err := Parse("", []string{"test", "--help"})
 	if !errors.Is(err, ErrHelp) {
 		t.Fatalf("expected ErrHelp, got: %v", err)
 	}
@@ -2292,9 +2292,19 @@ func TestParseHelp(t *testing.T) {
 	}
 }
 
+func TestParseVersion(t *testing.T) {
+	cfg, err := Parse("v1.2.3", []string{"test", "--version"})
+	if !errors.Is(err, ErrHelp) {
+		t.Fatalf("expected ErrHelp, got: %v", err)
+	}
+	if cfg != nil {
+		t.Error("expected nil cfg for --version")
+	}
+}
+
 func TestParseShortAliases(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"-s", "my-svc",
 		"-n", "default",
 		"-t", vcl,
@@ -2312,7 +2322,7 @@ func TestParseShortAliases(t *testing.T) {
 
 func TestParseInvalidLogLevel(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2328,7 +2338,7 @@ func TestParseInvalidLogLevel(t *testing.T) {
 
 func TestParseInvalidListenAddr(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2341,7 +2351,7 @@ func TestParseInvalidListenAddr(t *testing.T) {
 
 func TestParseInvalidBackendFormat(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2354,7 +2364,7 @@ func TestParseInvalidBackendFormat(t *testing.T) {
 
 func TestParseInvalidValuesFormat(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2367,7 +2377,7 @@ func TestParseInvalidValuesFormat(t *testing.T) {
 
 func TestParseInvalidValuesDirFormat(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2382,7 +2392,7 @@ func TestParseInvalidValuesDirFormat(t *testing.T) {
 
 func TestParseDebounceMaxDefault(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2397,7 +2407,7 @@ func TestParseDebounceMaxDefault(t *testing.T) {
 
 func TestParseDebounceMaxCustom(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2413,7 +2423,7 @@ func TestParseDebounceMaxCustom(t *testing.T) {
 
 func TestParseDebounceMaxNegative(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2429,7 +2439,7 @@ func TestParseDebounceMaxNegative(t *testing.T) {
 
 func TestParseDebounceMaxLessThanDebounce(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2446,7 +2456,7 @@ func TestParseDebounceMaxLessThanDebounce(t *testing.T) {
 
 func TestParseDebounceMaxEqualToDebounce(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2465,7 +2475,7 @@ func TestParseDebounceMaxEqualToDebounce(t *testing.T) {
 
 func TestParsePerSourceDebounceDefaultsToGlobal(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2491,7 +2501,7 @@ func TestParsePerSourceDebounceDefaultsToGlobal(t *testing.T) {
 
 func TestParsePerSourceDebounceExplicitOverride(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2521,7 +2531,7 @@ func TestParsePerSourceDebounceExplicitOverride(t *testing.T) {
 
 func TestParsePerSourceDebounceMaxExplicitZero(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2543,7 +2553,7 @@ func TestParsePerSourceDebounceMaxExplicitZero(t *testing.T) {
 
 func TestParsePerSourceFrontendDebounceMaxLessThanDebounceError(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2560,7 +2570,7 @@ func TestParsePerSourceFrontendDebounceMaxLessThanDebounceError(t *testing.T) {
 
 func TestParsePerSourceBackendDebounceMaxLessThanDebounceError(t *testing.T) {
 	vcl := makeTempVCL(t)
-	_, err := Parse([]string{"test",
+	_, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2577,7 +2587,7 @@ func TestParsePerSourceBackendDebounceMaxLessThanDebounceError(t *testing.T) {
 
 func TestParsePerSourceBackendOverrideFrontendInheritsGlobal(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,
@@ -2607,7 +2617,7 @@ func TestParsePerSourceBackendOverrideFrontendInheritsGlobal(t *testing.T) {
 
 func TestParsePerSourceDebounceExplicitZero(t *testing.T) {
 	vcl := makeTempVCL(t)
-	cfg, err := Parse([]string{"test",
+	cfg, err := Parse("", []string{"test",
 		"--service-name=my-svc",
 		"--namespace=default",
 		"--vcl-template=" + vcl,

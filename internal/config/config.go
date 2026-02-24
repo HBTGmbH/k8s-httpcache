@@ -283,8 +283,8 @@ func validationError(cmd *cli.Command, format string, args ...any) error {
 
 // Parse parses command-line flags from args and returns a validated Config.
 // The first element of args should be the program name (i.e. os.Args).
-// Returns (nil, nil) when --help is shown.
-func Parse(args []string) (*Config, error) {
+// Returns (nil, ErrHelp) when --help or --version is shown.
+func Parse(version string, args []string) (*Config, error) {
 	c := &Config{}
 
 	var (
@@ -307,6 +307,7 @@ func Parse(args []string) (*Config, error) {
 		Name:                      "k8s-httpcache",
 		Usage:                     "Kubernetes-native HTTP caching proxy built on Varnish",
 		UsageText:                 "k8s-httpcache [flags] [-- varnishd-args...]",
+		Version:                   version,
 		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			// Required
