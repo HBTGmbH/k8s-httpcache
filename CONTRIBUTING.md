@@ -46,11 +46,12 @@ The project uses [golangci-lint](https://golangci-lint.run/) with an extensive r
 golangci-lint run
 ```
 
-YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config in [`.yamllint.yml`](.yamllint.yml)), and shell scripts with [ShellCheck](https://www.shellcheck.net/):
+YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config in [`.yamllint.yml`](.yamllint.yml)), shell scripts with [ShellCheck](https://www.shellcheck.net/), and Markdown files with [markdownlint-cli2](https://github.com/DavidAnson/markdownlint-cli2) (config in [`.markdownlint-cli2.yaml`](.markdownlint-cli2.yaml)):
 
 ```bash
 yamllint --strict .
 shellcheck .github/test/*.sh
+npx --yes markdownlint-cli2 "**/*.md"
 ```
 
 The CI also runs [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) and [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode) detection:

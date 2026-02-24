@@ -133,6 +133,23 @@ jobs:
       run: shellcheck .github/test/*.sh
     - name: YAML lint
       run: yamllint --strict .
+    - name: Restore markdownlint-cli2
+      uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      id: markdownlint
+      with:
+        path: ~/markdownlint
+        key: markdownlint-cli2-0.21.0
+    - name: Install markdownlint-cli2
+      if: steps.markdownlint.outputs.cache-hit != 'true'
+      run: npm install --prefix ~/markdownlint markdownlint-cli2@0.21.0
+    - name: Save markdownlint-cli2
+      if: steps.markdownlint.outputs.cache-hit != 'true'
+      uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      with:
+        path: ~/markdownlint
+        key: markdownlint-cli2-0.21.0
+    - name: Markdown lint
+      run: ~/markdownlint/node_modules/.bin/markdownlint-cli2 "**/*.md"
 
 
   go-build:

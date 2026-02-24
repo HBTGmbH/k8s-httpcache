@@ -1,0 +1,19 @@
+config:
+  # Allow long lines — tables, CLI examples, and explanatory prose regularly
+  # exceed 80 characters and wrapping would hurt readability.
+  line-length: false
+
+  # Allow bare URLs — used extensively for GitHub issue references in README.
+  no-bare-urls: false
+
+  # Allow duplicate headings under different parents (e.g. multiple "Examples").
+  no-duplicate-heading:
+    siblings_only: true
+
+  # Allow fenced code blocks without a language — many CLI snippets are plain
+  # text flag lists that don't map to a specific language.
+  fenced-code-language: false
+
+  # Disable table column style — the existing tables use compact pipe-separated
+  # formatting that renders correctly; enforcing alignment would be noisy.
+  table-column-style: false

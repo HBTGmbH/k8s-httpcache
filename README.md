@@ -365,6 +365,7 @@ Format: `name:/path/to/dir`
 The `--values-dir` flag is an alternative to `--values` for cases where a ConfigMap is already mounted into the container's filesystem. Instead of watching the ConfigMap via the Kubernetes API, k8s-httpcache polls the mounted directory for `.yaml` and `.yml` files.
 
 **Behavior:**
+
 - Files must have a `.yaml` or `.yml` extension; other files are ignored
 - Dotfiles (names starting with `.`) are skipped — Kubernetes mounts ConfigMaps with `..data` and `..version` symlinks
 - The filename without extension becomes the key (e.g. `server.yaml` → key `"server"`)
