@@ -1,9 +1,39 @@
 version: 2
 updates:
+# Each Varnish major version is tested separately in the CI matrix.
+# We treat Varnish 6 differently because we only want its 6.0.x updates,
+# not the 6.6.x, which also exists in Docker Hub (but was uploaded more
+# than four years ago).
+# varnish6: patch-only (6.0.x is the final 6.x minor release)
+# varnish7: minor + patch
+# varnish8: minor + patch
 - package-ecosystem: docker
-  directory: /
+  directory: /.github/test/varnish6
   schedule:
     interval: weekly
+  ignore:
+  - dependency-name: varnish
+    update-types:
+    - "version-update:semver-major"
+    - "version-update:semver-minor"
+
+- package-ecosystem: docker
+  directory: /.github/test/varnish7
+  schedule:
+    interval: weekly
+  ignore:
+  - dependency-name: varnish
+    update-types:
+    - "version-update:semver-major"
+
+- package-ecosystem: docker
+  directory: /.github/test/varnish8
+  schedule:
+    interval: weekly
+  ignore:
+  - dependency-name: varnish
+    update-types:
+    - "version-update:semver-major"
 
 - package-ecosystem: gomod
   directory: /
