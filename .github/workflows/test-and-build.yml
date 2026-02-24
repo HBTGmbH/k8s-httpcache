@@ -270,6 +270,8 @@ jobs:
       run: .github/test/smoke-test.sh --report-junit smoke-report.xml
     - name: Metrics and broadcast smoke test
       run: .github/test/metrics-test.sh
+    - name: Debounce test
+      run: .github/test/debounce-test.sh
     - name: Shard Distribution test
       run: .github/test/shard-test.sh
     - name: Graceful drain test
