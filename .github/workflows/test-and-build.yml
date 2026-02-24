@@ -275,6 +275,8 @@ jobs:
       run: .github/test/shard-test.sh
     - name: Values update test
       run: .github/test/values-update-test.sh
+    - name: Values-dir update test
+      run: .github/test/values-dir-update-test.sh
     - name: VCL update test
       run: .github/test/vcl-update-test.sh
     - name: Drain sessions test
