@@ -303,6 +303,10 @@ func Parse(version string, args []string) (*Config, error) {
 		actionErr                 error
 	)
 
+	cli.VersionPrinter = func(cmd *cli.Command) {
+		_, _ = fmt.Fprintln(cmd.Root().Writer, cmd.Version)
+	}
+
 	cmd := &cli.Command{
 		Name:                      "k8s-httpcache",
 		Usage:                     "Kubernetes-native HTTP caching proxy built on Varnish",

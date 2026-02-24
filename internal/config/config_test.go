@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -2293,12 +2294,32 @@ func TestParseHelp(t *testing.T) {
 }
 
 func TestParseVersion(t *testing.T) {
-	cfg, err := Parse("v1.2.3", []string{"test", "--version"})
-	if !errors.Is(err, ErrHelp) {
-		t.Fatalf("expected ErrHelp, got: %v", err)
+	// Capture stdout to verify the version output format.
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	cfg, parseErr := Parse("v1.2.3", []string{"test", "--version"})
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !errors.Is(parseErr, ErrHelp) {
+		t.Fatalf("expected ErrHelp, got: %v", parseErr)
 	}
 	if cfg != nil {
 		t.Error("expected nil cfg for --version")
+	}
+	if got := strings.TrimSpace(string(out)); got != "v1.2.3" {
+		t.Errorf("--version output = %q, want %q", got, "v1.2.3")
 	}
 }
 
