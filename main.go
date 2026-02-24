@@ -4,10 +4,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
@@ -102,11 +104,130 @@ func resetDebounce(s *debounceState, debounce, debounceMax time.Duration) {
 	s.timer = time.NewTimer(d)
 }
 
+// statusStore holds runtime state for the /status endpoint.
+// The event loop writes via update methods; the HTTP handler reads via snapshot().
+type statusStore struct {
+	mu sync.RWMutex
+
+	// Static (set once during init).
+	version             string
+	goVersion           string
+	varnishMajorVersion int
+	serviceName         string
+	serviceNamespace    string
+	drainEnabled        bool
+	broadcastEnabled    bool
+	startedAt           time.Time
+
+	// Dynamic (updated by the event loop).
+	frontendCount int
+	backendCounts map[string]int
+	valuesCount   int
+	lastReloadAt  time.Time
+	reloadCount   int64
+	varnishdUp    bool
+}
+
+// statusResponse is the JSON structure returned by the /status endpoint.
+type statusResponse struct {
+	Version             string         `json:"version"`
+	GoVersion           string         `json:"goVersion"`
+	VarnishMajorVersion int            `json:"varnishMajorVersion"`
+	ServiceName         string         `json:"serviceName"`
+	ServiceNamespace    string         `json:"serviceNamespace"`
+	DrainEnabled        bool           `json:"drainEnabled"`
+	BroadcastEnabled    bool           `json:"broadcastEnabled"`
+	StartedAt           time.Time      `json:"startedAt"`
+	UptimeSeconds       float64        `json:"uptimeSeconds"`
+	FrontendCount       int            `json:"frontendCount"`
+	BackendCounts       map[string]int `json:"backendCounts"`
+	ValuesCount         int            `json:"valuesCount"`
+	LastReloadAt        *time.Time     `json:"lastReloadAt"`
+	ReloadCount         int64          `json:"reloadCount"`
+	VarnishdUp          bool           `json:"varnishdUp"`
+}
+
+// snapshot returns a JSON-ready copy of the current status.
+func (s *statusStore) snapshot() statusResponse {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var lastReload *time.Time
+	if !s.lastReloadAt.IsZero() {
+		t := s.lastReloadAt
+		lastReload = &t
+	}
+
+	return statusResponse{
+		Version:             s.version,
+		GoVersion:           s.goVersion,
+		VarnishMajorVersion: s.varnishMajorVersion,
+		ServiceName:         s.serviceName,
+		ServiceNamespace:    s.serviceNamespace,
+		DrainEnabled:        s.drainEnabled,
+		BroadcastEnabled:    s.broadcastEnabled,
+		StartedAt:           s.startedAt,
+		UptimeSeconds:       time.Since(s.startedAt).Seconds(),
+		FrontendCount:       s.frontendCount,
+		BackendCounts:       maps.Clone(s.backendCounts),
+		ValuesCount:         s.valuesCount,
+		LastReloadAt:        lastReload,
+		ReloadCount:         s.reloadCount,
+		VarnishdUp:          s.varnishdUp,
+	}
+}
+
+// setEndpointCounts updates the frontend and backend counts.
+func (s *statusStore) setEndpointCounts(frontendCount int, backendCounts map[string]int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frontendCount = frontendCount
+	s.backendCounts = backendCounts
+}
+
+// recordReload records that a successful VCL reload occurred.
+func (s *statusStore) recordReload() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastReloadAt = time.Now()
+	s.reloadCount++
+}
+
+// setVarnishdUp updates the varnishd liveness flag.
+func (s *statusStore) setVarnishdUp(up bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.varnishdUp = up
+}
+
+// statusHandler returns an HTTP handler that serves the /status JSON endpoint.
+func statusHandler(store *statusStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(store.snapshot())
+	}
+}
+
+// backendCountsMap converts a backend endpoint map to a count map.
+func backendCountsMap(backends map[string][]watcher.Endpoint) map[string]int {
+	m := make(map[string]int, len(backends))
+	for name, eps := range backends {
+		m[name] = len(eps)
+	}
+	return m
+}
+
 // loopConfig holds all inputs for the main event loop.
 type loopConfig struct {
-	rend  vclRenderer
-	mgr   varnishProcess
-	bcast broadcaster // nil when broadcast is disabled
+	rend   vclRenderer
+	mgr    varnishProcess
+	bcast  broadcaster  // nil when broadcast is disabled
+	status *statusStore // nil when status endpoint is disabled
 
 	frontendCh <-chan []watcher.Frontend
 	backendCh  chan backendChange
@@ -159,10 +280,18 @@ func main() {
 	// Set build info metric.
 	telemetry.BuildInfo.WithLabelValues(version, runtime.Version()).Set(1)
 
+	// Create status store for the /status endpoint.
+	status := &statusStore{
+		version:   version,
+		goVersion: runtime.Version(),
+		startedAt: time.Now(),
+	}
+
 	// Start Prometheus metrics server if configured.
 	if cfg.MetricsAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/status", statusHandler(status))
 		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout}
 		go func() {
 			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
@@ -222,6 +351,8 @@ func main() {
 	if err := mgr.DetectVersion(); err != nil {
 		log.Fatalf("varnish version: %v", err)
 	}
+	status.varnishMajorVersion = mgr.MajorVersion()
+
 	// Parse VCL template.
 	rend, err := renderer.New(cfg.VCLTemplate, cfg.TemplateDelimLeft, cfg.TemplateDelimRight)
 	if err != nil {
@@ -293,6 +424,12 @@ func main() {
 		fvwWatchers = append(fvwWatchers, fvw)
 	}
 
+	// Populate remaining static status fields now that config is known.
+	status.serviceName = cfg.ServiceName
+	status.serviceNamespace = cfg.ServiceNamespace
+	status.drainEnabled = cfg.Drain
+	status.broadcastEnabled = cfg.BroadcastAddr != ""
+
 	// Collect the initial endpoint snapshot from every watcher before
 	// starting varnishd, so it launches with a complete configuration.
 	// The watcher guarantees at least one send after cache sync (even if
@@ -315,6 +452,10 @@ func main() {
 		latestValues[fvwNames[i]] = <-fvw.Changes()
 	}
 	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues))
+
+	// Set initial status counts.
+	status.setEndpointCounts(len(latestFrontends), backendCountsMap(latestBackends))
+	status.valuesCount = len(latestValues)
 
 	// Set initial endpoint gauges.
 	telemetry.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
@@ -355,6 +496,7 @@ func main() {
 		log.Fatalf("varnish start: %v", err)
 	}
 	telemetry.VarnishdUp.Set(1)
+	status.setVarnishdUp(true)
 	if eventRecorder != nil && podRef != nil {
 		eventRecorder.Event(podRef, v1.EventTypeNormal, "VCLReloaded", "Initial VCL loaded and varnishd started")
 	}
@@ -418,9 +560,10 @@ func main() {
 
 	// Main event loop with debounce.
 	os.Exit(runLoop(ctx, cancel, loopConfig{
-		rend:  rend,
-		mgr:   mgr,
-		bcast: bcast,
+		rend:   rend,
+		mgr:    mgr,
+		bcast:  bcast,
+		status: status,
 
 		frontendCh: w.Changes(),
 		backendCh:  backendCh,
@@ -549,6 +692,10 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			} else {
 				telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
 				emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully after rollback (%s)", reasons))
+				if lc.status != nil {
+					lc.status.recordReload()
+					lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
+				}
 			}
 			_ = os.Remove(vclPath)
 			return
@@ -556,6 +703,10 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
 		emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully (%s)", reasons))
+		if lc.status != nil {
+			lc.status.recordReload()
+			lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
+		}
 		_ = os.Remove(vclPath)
 	}
 
@@ -708,6 +859,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		case <-lc.mgr.Done():
 			telemetry.VarnishdUp.Set(0)
+			if lc.status != nil {
+				lc.status.setVarnishdUp(false)
+			}
 			slog.Error("varnishd exited unexpectedly", "error", lc.mgr.Err())
 			emitEvent(&lc, v1.EventTypeWarning, "VarnishdExited", fmt.Sprintf("varnishd exited unexpectedly: %v", lc.mgr.Err()))
 			cancel()

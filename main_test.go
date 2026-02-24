@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -3707,6 +3710,514 @@ func TestWatchFileNonBlockingSendDefault(t *testing.T) {
 		t.Fatal("expected no second notification (non-blocking send default branch)")
 	case <-time.After(100 * time.Millisecond):
 		// OK — the second send hit the default branch
+	}
+}
+
+// --- Status endpoint tests ---
+
+func TestStatusSnapshot(t *testing.T) {
+	now := time.Now().Add(-time.Second) // started 1s ago
+	store := &statusStore{
+		version:             "v1.2.3",
+		goVersion:           "go1.26",
+		varnishMajorVersion: 7,
+		serviceName:         "my-svc",
+		serviceNamespace:    "default",
+		drainEnabled:        true,
+		broadcastEnabled:    true,
+		startedAt:           now,
+		frontendCount:       3,
+		backendCounts:       map[string]int{"api": 2, "nginx": 1},
+		valuesCount:         1,
+		varnishdUp:          true,
+	}
+
+	snap := store.snapshot()
+
+	if snap.Version != "v1.2.3" {
+		t.Errorf("Version = %q, want v1.2.3", snap.Version)
+	}
+	if snap.GoVersion != "go1.26" {
+		t.Errorf("GoVersion = %q, want go1.26", snap.GoVersion)
+	}
+	if snap.VarnishMajorVersion != 7 {
+		t.Errorf("VarnishMajorVersion = %d, want 7", snap.VarnishMajorVersion)
+	}
+	if snap.ServiceName != "my-svc" {
+		t.Errorf("ServiceName = %q, want my-svc", snap.ServiceName)
+	}
+	if snap.ServiceNamespace != "default" {
+		t.Errorf("ServiceNamespace = %q, want default", snap.ServiceNamespace)
+	}
+	if !snap.DrainEnabled {
+		t.Error("DrainEnabled = false, want true")
+	}
+	if !snap.BroadcastEnabled {
+		t.Error("BroadcastEnabled = false, want true")
+	}
+	if snap.FrontendCount != 3 {
+		t.Errorf("FrontendCount = %d, want 3", snap.FrontendCount)
+	}
+	if snap.BackendCounts["api"] != 2 || snap.BackendCounts["nginx"] != 1 {
+		t.Errorf("BackendCounts = %v, want map[api:2 nginx:1]", snap.BackendCounts)
+	}
+	if snap.ValuesCount != 1 {
+		t.Errorf("ValuesCount = %d, want 1", snap.ValuesCount)
+	}
+	if !snap.VarnishdUp {
+		t.Error("VarnishdUp = false, want true")
+	}
+	if snap.UptimeSeconds <= 0 {
+		t.Errorf("UptimeSeconds = %v, want > 0", snap.UptimeSeconds)
+	}
+	if snap.LastReloadAt != nil {
+		t.Errorf("LastReloadAt = %v before recordReload, want nil", snap.LastReloadAt)
+	}
+	if snap.ReloadCount != 0 {
+		t.Errorf("ReloadCount = %d before recordReload, want 0", snap.ReloadCount)
+	}
+
+	// BackendCounts should be a clone — mutating it should not affect the store.
+	snap.BackendCounts["api"] = 999
+	snap2 := store.snapshot()
+	if snap2.BackendCounts["api"] != 2 {
+		t.Error("BackendCounts is not a clone — mutation leaked into the store")
+	}
+
+	// Record a reload and verify.
+	store.recordReload()
+	snap3 := store.snapshot()
+	if snap3.LastReloadAt == nil {
+		t.Error("LastReloadAt = nil after recordReload, want non-nil")
+	}
+	if snap3.ReloadCount != 1 {
+		t.Errorf("ReloadCount = %d after recordReload, want 1", snap3.ReloadCount)
+	}
+}
+
+func TestStatusHandler(t *testing.T) {
+	startedAt := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+	store := &statusStore{
+		version:             "v0.1.0",
+		goVersion:           "go1.26",
+		varnishMajorVersion: 7,
+		serviceName:         "test-svc",
+		serviceNamespace:    "default",
+		drainEnabled:        true,
+		broadcastEnabled:    true,
+		startedAt:           startedAt,
+		frontendCount:       3,
+		backendCounts:       map[string]int{"api": 2, "nginx": 1},
+		valuesCount:         1,
+		varnishdUp:          true,
+	}
+	// Record a reload so LastReloadAt is non-nil.
+	store.recordReload()
+
+	handler := statusHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var resp statusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	// Verify every field round-trips through JSON correctly.
+	if resp.Version != "v0.1.0" {
+		t.Errorf("Version = %q, want v0.1.0", resp.Version)
+	}
+	if resp.GoVersion != "go1.26" {
+		t.Errorf("GoVersion = %q, want go1.26", resp.GoVersion)
+	}
+	if resp.VarnishMajorVersion != 7 {
+		t.Errorf("VarnishMajorVersion = %d, want 7", resp.VarnishMajorVersion)
+	}
+	if resp.ServiceName != "test-svc" {
+		t.Errorf("ServiceName = %q, want test-svc", resp.ServiceName)
+	}
+	if resp.ServiceNamespace != "default" {
+		t.Errorf("ServiceNamespace = %q, want default", resp.ServiceNamespace)
+	}
+	if !resp.DrainEnabled {
+		t.Error("DrainEnabled = false, want true")
+	}
+	if !resp.BroadcastEnabled {
+		t.Error("BroadcastEnabled = false, want true")
+	}
+	if !resp.StartedAt.Equal(startedAt) {
+		t.Errorf("StartedAt = %v, want %v", resp.StartedAt, startedAt)
+	}
+	if resp.UptimeSeconds <= 0 {
+		t.Errorf("UptimeSeconds = %v, want > 0", resp.UptimeSeconds)
+	}
+	if resp.FrontendCount != 3 {
+		t.Errorf("FrontendCount = %d, want 3", resp.FrontendCount)
+	}
+	if resp.BackendCounts["api"] != 2 || resp.BackendCounts["nginx"] != 1 {
+		t.Errorf("BackendCounts = %v, want map[api:2 nginx:1]", resp.BackendCounts)
+	}
+	if resp.ValuesCount != 1 {
+		t.Errorf("ValuesCount = %d, want 1", resp.ValuesCount)
+	}
+	if resp.LastReloadAt == nil {
+		t.Error("LastReloadAt = nil, want non-nil")
+	}
+	if resp.ReloadCount != 1 {
+		t.Errorf("ReloadCount = %d, want 1", resp.ReloadCount)
+	}
+	if !resp.VarnishdUp {
+		t.Error("VarnishdUp = false, want true")
+	}
+}
+
+func TestStatusHandlerLastReloadAtNull(t *testing.T) {
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+	}
+
+	handler := statusHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	// Decode into a raw map to verify lastReloadAt is JSON null.
+	var raw map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	v, exists := raw["lastReloadAt"]
+	if !exists {
+		t.Fatal("lastReloadAt key missing from JSON")
+	}
+	if v != nil {
+		t.Errorf("lastReloadAt = %v, want null", v)
+	}
+}
+
+func TestStatusHandlerMethodNotAllowed(t *testing.T) {
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+	}
+	handler := statusHandler(store)
+	req := httptest.NewRequest(http.MethodPost, "/status", nil)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+	if allow := rec.Header().Get("Allow"); allow != "GET" {
+		t.Errorf("Allow = %q, want GET", allow)
+	}
+}
+
+func TestRunLoop_StatusStoreUpdatedOnReload(t *testing.T) {
+	h := newTestHarness()
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+		varnishdUp:    true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.status = store
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send a frontend change to trigger a reload.
+	h.frontendCh <- []watcher.Frontend{
+		{IP: "10.0.0.1", Port: 80, Name: "pod-1"},
+		{IP: "10.0.0.2", Port: 80, Name: "pod-2"},
+	}
+	time.Sleep(20 * time.Millisecond) // debounce
+
+	snap := store.snapshot()
+	if snap.ReloadCount < 1 {
+		t.Errorf("ReloadCount = %d, want >= 1", snap.ReloadCount)
+	}
+	if snap.FrontendCount != 2 {
+		t.Errorf("FrontendCount = %d, want 2", snap.FrontendCount)
+	}
+	if snap.LastReloadAt == nil {
+		t.Error("LastReloadAt = nil, want non-nil after reload")
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_StatusStoreVarnishdDown(t *testing.T) {
+	h := newTestHarness()
+	h.mgr.err = errors.New("crashed")
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+		varnishdUp:    true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.status = store
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	close(h.mgr.done) // unexpected exit
+	<-done
+
+	snap := store.snapshot()
+	if snap.VarnishdUp {
+		t.Error("VarnishdUp = true after unexpected exit, want false")
+	}
+
+	if result := int(code.Load()); result != 1 {
+		t.Fatalf("expected exit 1, got %d", result)
+	}
+}
+
+func TestRunLoop_StatusStoreBackendCounts(t *testing.T) {
+	h := newTestHarness()
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+		varnishdUp:    true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.status = store
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send a backend change to trigger a reload.
+	h.backendCh <- backendChange{
+		name: "api",
+		endpoints: []watcher.Endpoint{
+			{IP: "10.0.1.1", Port: 8080, Name: "api-0"},
+			{IP: "10.0.1.2", Port: 8080, Name: "api-1"},
+			{IP: "10.0.1.3", Port: 8080, Name: "api-2"},
+		},
+	}
+	time.Sleep(20 * time.Millisecond) // debounce
+
+	snap := store.snapshot()
+	if snap.ReloadCount < 1 {
+		t.Errorf("ReloadCount = %d, want >= 1", snap.ReloadCount)
+	}
+	if snap.BackendCounts["api"] != 3 {
+		t.Errorf("BackendCounts[api] = %d, want 3", snap.BackendCounts["api"])
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
+	h := newTestHarness()
+	// First mgr.Reload fails (triggers rollback), second succeeds.
+	var mgrCalls atomic.Int32
+	h.mgr.reloadFn = func(_ string) error {
+		if mgrCalls.Add(1) == 1 {
+			return errors.New("varnish reload error")
+		}
+		return nil
+	}
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+		varnishdUp:    true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.status = store
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Template change → first reload fails → rollback → retry succeeds.
+	h.templateCh <- struct{}{}
+	time.Sleep(20 * time.Millisecond)
+
+	snap := store.snapshot()
+	if snap.ReloadCount < 1 {
+		t.Errorf("ReloadCount = %d after post-rollback success, want >= 1", snap.ReloadCount)
+	}
+	if snap.LastReloadAt == nil {
+		t.Error("LastReloadAt = nil after post-rollback success, want non-nil")
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
+	h := newTestHarness()
+	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
+		return "", errors.New("render error")
+	}
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+		varnishdUp:    true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.status = store
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Frontend update → RenderToFile fails → no status update.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(20 * time.Millisecond)
+
+	snap := store.snapshot()
+	if snap.ReloadCount != 0 {
+		t.Errorf("ReloadCount = %d after render error, want 0", snap.ReloadCount)
+	}
+	if snap.LastReloadAt != nil {
+		t.Errorf("LastReloadAt = %v after render error, want nil", snap.LastReloadAt)
+	}
+	if snap.FrontendCount != 0 {
+		t.Errorf("FrontendCount = %d after render error, want 0 (unchanged)", snap.FrontendCount)
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
+	h := newTestHarness()
+	h.mgr.reloadFn = func(_ string) error {
+		return errors.New("varnish reload error")
+	}
+	store := &statusStore{
+		startedAt:     time.Now(),
+		backendCounts: map[string]int{},
+		varnishdUp:    true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.status = store
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Frontend update → render ok → mgr.Reload fails → no status update.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	time.Sleep(20 * time.Millisecond)
+
+	snap := store.snapshot()
+	if snap.ReloadCount != 0 {
+		t.Errorf("ReloadCount = %d after varnish reload error, want 0", snap.ReloadCount)
+	}
+	if snap.LastReloadAt != nil {
+		t.Errorf("LastReloadAt = %v after varnish reload error, want nil", snap.LastReloadAt)
+	}
+	if snap.FrontendCount != 0 {
+		t.Errorf("FrontendCount = %d after varnish reload error, want 0 (unchanged)", snap.FrontendCount)
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	time.Sleep(20 * time.Millisecond)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestBackendCountsMap(t *testing.T) {
+	backends := map[string][]watcher.Endpoint{
+		"api":   {{IP: "10.0.0.1", Port: 80, Name: "a1"}, {IP: "10.0.0.2", Port: 80, Name: "a2"}},
+		"nginx": {{IP: "10.0.1.1", Port: 8080, Name: "n1"}},
+	}
+	got := backendCountsMap(backends)
+	if got["api"] != 2 {
+		t.Errorf("api count = %d, want 2", got["api"])
+	}
+	if got["nginx"] != 1 {
+		t.Errorf("nginx count = %d, want 1", got["nginx"])
+	}
+	if len(got) != 2 {
+		t.Errorf("len = %d, want 2", len(got))
+	}
+
+	// Empty input.
+	empty := backendCountsMap(map[string][]watcher.Endpoint{})
+	if len(empty) != 0 {
+		t.Errorf("expected empty map, got %v", empty)
 	}
 }
 

@@ -151,6 +151,39 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 
 The `group` label is either `frontend` (`--service-name` endpoint changes) or `backend` (`--backend`, `--values`, `--values-dir`, and VCL template changes).
 
+#### Status endpoint
+
+The metrics server also serves a `/status` JSON endpoint that returns a snapshot of the current runtime state. This is useful for quick operator inspection without querying Prometheus:
+
+```bash
+curl -s http://localhost:9101/status | jq .
+```
+
+```json
+{
+  "version": "v0.1.0",
+  "goVersion": "go1.26.0",
+  "varnishMajorVersion": 8,
+  "serviceName": "k8s-httpcache",
+  "serviceNamespace": "default",
+  "drainEnabled": true,
+  "broadcastEnabled": true,
+  "startedAt": "2025-01-15T10:30:00Z",
+  "uptimeSeconds": 3600.5,
+  "frontendCount": 3,
+  "backendCounts": {
+    "nginx": 2,
+    "api": 4
+  },
+  "valuesCount": 1,
+  "lastReloadAt": "2025-01-15T11:29:55Z",
+  "reloadCount": 42,
+  "varnishdUp": true
+}
+```
+
+`lastReloadAt` is `null` before the first VCL reload. The endpoint only accepts `GET` requests.
+
 ### Kubernetes Events
 
 When the `POD_NAME` environment variable is set, k8s-httpcache emits Kubernetes Events visible via `kubectl describe pod` and `kubectl get events`. Set `POD_NAME` using the Downward API:
