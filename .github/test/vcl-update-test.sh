@@ -20,7 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-pod=$(kubectl get pods -l app=k8s-httpcache --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
 kubectl port-forward "$pod" 9104:9101 8084:8080 2>/dev/null &
 pf_pids="$pf_pids $!"
 

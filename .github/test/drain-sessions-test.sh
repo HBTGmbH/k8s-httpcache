@@ -7,7 +7,7 @@ set -eu
 
 # --- Pick a pod --------------------------------------------------------------
 
-pod=$(kubectl get pods -l app=k8s-httpcache --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
 echo "Selected pod: $pod"
 
 # --- Delete pod and measure elapsed time -------------------------------------

@@ -39,7 +39,7 @@ kubectl rollout status deployment/k8s-httpcache --timeout=120s
 
 # --- Port-forward setup -----------------------------------------------------
 
-pod=$(kubectl get pods -l app=k8s-httpcache --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
 kubectl port-forward "$pod" 9106:9101 2>/dev/null &
 pf_pids="$pf_pids $!"
 
