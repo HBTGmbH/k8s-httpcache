@@ -71,27 +71,24 @@ kubectl get configmap k8s-httpcache-vcl -o json \
     )' \
   | kubectl apply -f -
 
-# Wait for kubelet to sync the ConfigMap volume and VCL to reload.
-echo "--- Waiting for X-Vcl-Updated: $marker (up to 120s) ---"
-found=false
+# Wait for kubelet to sync the ConfigMap volume, the file watcher to detect
+# the change, AND the debounced reload to complete — all on this specific pod
+# (polled via metrics, not the header — shard routing can forward requests to
+# a pod that reloaded earlier than ours).
+echo "--- Waiting for template change + reload (up to 120s) ---"
 for i in $(seq 1 120); do
-  header=$(curl -sf -D- -o /dev/null http://localhost:8084/backend/ 2>/dev/null \
-    | grep -i '^x-vcl-updated:' | tr -d '\r' | awk '{print $2}' || true)
-  if [ "$header" = "$marker" ]; then
-    echo "PASS: X-Vcl-Updated = $marker (after ${i}s)"
-    found=true
+  current_changes=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
+  current_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
+  if [ "$current_changes" -gt "$before_changes" ] \
+    && [ "$current_reloads" -gt "$before_reloads" ]; then
+    echo "Template changed and reloaded after ${i}s (changes=$current_changes reloads=$current_reloads)"
     break
   fi
   if [ $((i % 10)) -eq 0 ]; then
-    echo "Still waiting... (${i}s elapsed)"
+    echo "Still waiting... (${i}s elapsed, changes=$current_changes reloads=$current_reloads)"
   fi
   sleep 1
 done
-
-if [ "$found" != "true" ]; then
-  echo "FAIL: X-Vcl-Updated: $marker did not appear within 120s"
-  exit 1
-fi
 
 after_changes=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
 after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
@@ -111,6 +108,15 @@ if [ "$reloads_delta" -le 0 ]; then
   exit 1
 fi
 echo "PASS: vcl_reloads_total{result=success} increased (delta=$reloads_delta)"
+
+# Verify the marker header is present now that this pod has reloaded.
+header=$(curl -sf -D- -o /dev/null http://localhost:8084/backend/ 2>/dev/null \
+  | grep -i '^x-vcl-updated:' | tr -d '\r' | awk '{print $2}' || true)
+if [ "$header" != "$marker" ]; then
+  echo "FAIL: X-Vcl-Updated = '$header' (expected '$marker')"
+  exit 1
+fi
+echo "PASS: X-Vcl-Updated = $marker"
 
 # =============================================================================
 # Part 2: Broken template → retry & rollback
@@ -194,16 +200,16 @@ kubectl create configmap k8s-httpcache-vcl \
   --from-file='vcl.tmpl=/tmp/vcl-original.tmpl' \
   --dry-run=client -o json | kubectl apply -f -
 
-echo "--- Waiting for X-Vcl-Updated header to disappear (up to 120s) ---"
+before_restore=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
+echo "--- Waiting for restore to take effect (up to 120s) ---"
 for i in $(seq 1 120); do
-  header=$(curl -sf -D- -o /dev/null http://localhost:8084/backend/ 2>/dev/null \
-    | grep -i '^x-vcl-updated:' | tr -d '\r' | awk '{print $2}' || true)
-  if [ -z "$header" ]; then
-    echo "PASS: X-Vcl-Updated header removed (after ${i}s)"
+  current_changes=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
+  if [ "$current_changes" -gt "$before_restore" ]; then
+    echo "PASS: original VCL restored (after ${i}s)"
     break
   fi
   if [ $((i % 10)) -eq 0 ]; then
-    echo "Still waiting for restore... (${i}s elapsed)"
+    echo "Still waiting for restore... (${i}s elapsed, changes=$current_changes)"
   fi
   sleep 1
 done
