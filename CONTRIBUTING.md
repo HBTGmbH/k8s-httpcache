@@ -85,7 +85,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache .
    mkdir -p .docker-context
    cp k8s-httpcache .docker-context/
-   docker build -f .github/test/Dockerfile -t k8s-httpcache:test .docker-context
+   docker build -f .github/test/varnish8/Dockerfile -t k8s-httpcache:test .docker-context
    kind load docker-image k8s-httpcache:test --name test
    ```
 
@@ -102,11 +102,12 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 4. Run the E2E test scripts:
 
    ```bash
-   .github/test/smoke-test.sh   # HTTP proxying, shard consistency
-   .github/test/metrics-test.sh # Prometheus metrics, broadcast fan-out
-   .github/test/shard-test.sh   # shard distribution across pods
-   .github/test/drain-test.sh   # connection draining
-   .github/test/rollout-test.sh # zero-downtime rollout (requires oha)
+   .github/test/smoke-test.sh    # HTTP proxying, shard consistency
+   .github/test/metrics-test.sh  # Prometheus metrics, broadcast fan-out
+   .github/test/debounce-test.sh # debounce coalescing and debounce-max
+   .github/test/shard-test.sh    # shard distribution across pods
+   .github/test/drain-test.sh    # connection draining
+   .github/test/rollout-test.sh  # zero-downtime rollout (requires oha)
    ```
 
    `metrics-test.sh` automatically sets up `kubectl port-forward` for the
@@ -119,7 +120,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    mkdir -p .docker-context \
      && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache . \
      && cp k8s-httpcache .docker-context/ \
-     && docker build -t k8s-httpcache:test .docker-context -f .github/test/Dockerfile \
+     && docker build -t k8s-httpcache:test .docker-context -f .github/test/varnish8/Dockerfile \
      && kind load docker-image k8s-httpcache:test --name test \
      && kubectl rollout restart deployment/k8s-httpcache \
      && kubectl rollout status deployment/k8s-httpcache --timeout=120s
