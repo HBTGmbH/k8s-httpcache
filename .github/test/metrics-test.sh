@@ -16,7 +16,7 @@ trap cleanup EXIT
 # gauge is only set on the pod that handles the broadcast request).
 if ! curl -sf http://localhost:9101/metrics > /dev/null 2>&1 \
   || ! curl -sf http://localhost:8088/backend/ > /dev/null 2>&1; then
-  pod=$(kubectl get pods -l app=k8s-httpcache -o jsonpath='{.items[0].metadata.name}')
+  pod=$(kubectl get pods -l app=k8s-httpcache --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
   kubectl port-forward "$pod" 9101:9101 8088:8088 &
   pf_pids="$pf_pids $!"
 fi

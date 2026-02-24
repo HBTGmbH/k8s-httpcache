@@ -11,7 +11,7 @@ pf_pids=""
 cleanup() { kill "$pf_pids" 2>/dev/null || true; }
 trap cleanup EXIT
 
-pod=$(kubectl get pods -l app=k8s-httpcache -o jsonpath='{.items[0].metadata.name}')
+pod=$(kubectl get pods -l app=k8s-httpcache --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 kubectl port-forward "$pod" 8081:8080 &
 pf_pids="$pf_pids $!"
 
