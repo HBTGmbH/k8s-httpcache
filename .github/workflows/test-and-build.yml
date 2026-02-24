@@ -72,7 +72,7 @@ jobs:
         path: ~/go/bin/gotestsum
         key: gotestsum-1.13.0-linux-amd64
     - name: Run tests with coverage
-      run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -coverprofile=coverage.out -coverpkg=./... ./...
+      run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
     - name: Display coverage
       run: go tool cover -func=coverage.out
     - name: Generate coverage HTML
