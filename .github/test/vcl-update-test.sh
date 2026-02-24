@@ -63,59 +63,47 @@ before_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}
 echo "Before: template_changes=$before_changes reloads=$before_reloads"
 
 # Patch VCL to add a custom header in vcl_deliver.
+# Note: [{] is a PCRE character class for literal {; jq does not support \{.
 echo "--- Patching VCL ConfigMap (adding X-Vcl-Updated header) ---"
 kubectl get configmap k8s-httpcache-vcl -o json \
   | jq --arg marker "$marker" '.data["vcl.tmpl"] |= gsub(
-      "sub vcl_deliver \\{";
+      "sub vcl_deliver [{]";
       "sub vcl_deliver {\n      set resp.http.X-Vcl-Updated = \"\($marker)\";"
     )' \
   | kubectl apply -f -
 
 # Wait for kubelet to sync the ConfigMap volume, the file watcher to detect
-# the change, AND the debounced reload to complete — all on this specific pod
-# (polled via metrics, not the header — shard routing can forward requests to
-# a pod that reloaded earlier than ours).
-echo "--- Waiting for template change + reload (up to 120s) ---"
+# the change, the debounced reload to complete, AND the header to appear in
+# responses from this pod.
+echo "--- Waiting for template change + reload + header (up to 120s) ---"
+found=false
 for i in $(seq 1 120); do
   current_changes=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
   current_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
+  header=$(curl -s -D- -o /dev/null http://localhost:8084/backend/ 2>/dev/null \
+    | grep -i '^x-vcl-updated:' | tr -d '\r' | awk '{print $2}' || true)
   if [ "$current_changes" -gt "$before_changes" ] \
-    && [ "$current_reloads" -gt "$before_reloads" ]; then
-    echo "Template changed and reloaded after ${i}s (changes=$current_changes reloads=$current_reloads)"
+    && [ "$current_reloads" -gt "$before_reloads" ] \
+    && [ "$header" = "$marker" ]; then
+    echo "Template changed, reloaded, and header verified after ${i}s (changes=$current_changes reloads=$current_reloads)"
+    found=true
     break
   fi
   if [ $((i % 10)) -eq 0 ]; then
-    echo "Still waiting... (${i}s elapsed, changes=$current_changes reloads=$current_reloads)"
+    echo "Still waiting... (${i}s elapsed, changes=$current_changes reloads=$current_reloads header='$header')"
   fi
   sleep 1
 done
 
-after_changes=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
-after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
-echo "After: template_changes=$after_changes reloads=$after_reloads"
-
-changes_delta=$((after_changes - before_changes))
-reloads_delta=$((after_reloads - before_reloads))
-
-if [ "$changes_delta" -le 0 ]; then
-  echo "FAIL: vcl_template_changes_total did not increase (delta=$changes_delta)"
+if [ "$found" != "true" ]; then
+  after_changes=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
+  after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
+  status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8084/backend/ 2>/dev/null || true)
+  echo "FAIL: VCL update did not complete within 120s (changes=$after_changes reloads=$after_reloads header='$header' status=$status)"
   exit 1
 fi
-echo "PASS: vcl_template_changes_total increased (delta=$changes_delta)"
-
-if [ "$reloads_delta" -le 0 ]; then
-  echo "FAIL: vcl_reloads_total{result=success} did not increase (delta=$reloads_delta)"
-  exit 1
-fi
-echo "PASS: vcl_reloads_total{result=success} increased (delta=$reloads_delta)"
-
-# Verify the marker header is present now that this pod has reloaded.
-header=$(curl -sf -D- -o /dev/null http://localhost:8084/backend/ 2>/dev/null \
-  | grep -i '^x-vcl-updated:' | tr -d '\r' | awk '{print $2}' || true)
-if [ "$header" != "$marker" ]; then
-  echo "FAIL: X-Vcl-Updated = '$header' (expected '$marker')"
-  exit 1
-fi
+echo "PASS: vcl_template_changes_total increased"
+echo "PASS: vcl_reloads_total{result=success} increased"
 echo "PASS: X-Vcl-Updated = $marker"
 
 # =============================================================================
