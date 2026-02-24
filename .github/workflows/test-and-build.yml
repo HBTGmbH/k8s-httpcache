@@ -273,6 +273,12 @@ jobs:
       run: .github/test/debounce-test.sh
     - name: Shard Distribution test
       run: .github/test/shard-test.sh
+    - name: Values update test
+      run: .github/test/values-update-test.sh
+    - name: VCL update test
+      run: .github/test/vcl-update-test.sh
+    - name: Drain sessions test
+      run: .github/test/drain-sessions-test.sh
     - name: Graceful drain test
       run: .github/test/drain-test.sh
     - name: Zero-downtime rollout restart

@@ -236,6 +236,9 @@ spec:
         - --debounce=2s
         - --debounce-max=5s
         - --debounce-latency-buckets=0.5,1,2,3,4,5,6,7,8,10
+        - --vcl-template-watch-interval=2s
+        - --vcl-reload-retry-interval=1s
+        - --log-level=DEBUG
         - --
         - -n  # <-- here only necessary for Varnish 6.x
         - /var/lib/varnish  # <-- here only necessary for Varnish 6.x
