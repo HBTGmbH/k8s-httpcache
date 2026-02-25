@@ -66,7 +66,8 @@ func (w *ConfigMapWatcher) Run(ctx context.Context) error {
 		DeleteFunc: func(_ any) { w.sync(lister) },
 	}
 
-	if _, err := informer.AddEventHandler(handler); err != nil {
+	_, err := informer.AddEventHandler(handler)
+	if err != nil {
 		return fmt.Errorf("adding event handler: %w", err)
 	}
 
@@ -78,6 +79,7 @@ func (w *ConfigMapWatcher) Run(ctx context.Context) error {
 
 	slog.Info("watching ConfigMap for values", "namespace", w.namespace, "configmap", w.configMapName)
 	<-ctx.Done()
+
 	return nil
 }
 
@@ -86,13 +88,15 @@ func (w *ConfigMapWatcher) sync(lister corelisters.ConfigMapLister) {
 	if err != nil {
 		// ConfigMap not found — emit empty data.
 		w.send(nil)
+
 		return
 	}
 
 	parsed := make(map[string]any, len(cm.Data))
 	for k, v := range cm.Data {
 		var val any
-		if err := yaml.Unmarshal([]byte(v), &val); err != nil {
+		err := yaml.Unmarshal([]byte(v), &val)
+		if err != nil {
 			val = v // fallback to raw string on parse error
 		}
 		parsed[k] = val

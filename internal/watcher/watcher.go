@@ -45,7 +45,7 @@ type Watcher struct {
 // New creates a new EndpointSlice watcher. portOverride selects which port to
 // use: a numeric string uses that port number directly, a non-numeric string
 // matches the port by name in the EndpointSlice, and "" uses the first port.
-func New(clientset kubernetes.Interface, namespace, serviceName string, portOverride string) *Watcher {
+func New(clientset kubernetes.Interface, namespace, serviceName, portOverride string) *Watcher {
 	return &Watcher{
 		clientset:    clientset,
 		namespace:    namespace,
@@ -89,7 +89,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 		},
 	}
 
-	if _, err := informer.AddEventHandler(handler); err != nil {
+	_, err := informer.AddEventHandler(handler)
+	if err != nil {
 		return fmt.Errorf("adding event handler: %w", err)
 	}
 
@@ -102,6 +103,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 	w.log.Info("watching EndpointSlices", "namespace", w.namespace, "service", w.serviceName)
 	<-ctx.Done()
+
 	return nil
 }
 
@@ -109,6 +111,7 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	slices, err := lister.EndpointSlices(w.namespace).List(labels.Everything())
 	if err != nil {
 		w.log.Error("failed to list EndpointSlices", "error", err)
+
 		return
 	}
 
@@ -143,6 +146,7 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		if endpoints[i].IP != endpoints[j].IP {
 			return endpoints[i].IP < endpoints[j].IP
 		}
+
 		return endpoints[i].Port < endpoints[j].Port
 	})
 
@@ -182,7 +186,8 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 // empty, the first port in the list is used.
 func resolvePort(ports []discoveryv1.EndpointPort, override string) int32 {
 	if override != "" {
-		if p, err := strconv.ParseInt(override, 10, 32); err == nil {
+		p, parseErr := strconv.ParseInt(override, 10, 32)
+		if parseErr == nil {
 			return int32(p)
 		}
 		// Match by port name.
@@ -191,15 +196,17 @@ func resolvePort(ports []discoveryv1.EndpointPort, override string) int32 {
 				return *p.Port
 			}
 		}
+
 		return 0
 	}
 	if len(ports) > 0 && ports[0].Port != nil {
 		return *ports[0].Port
 	}
+
 	return 0
 }
 
-func diffEndpoints(old, cur []Endpoint) (added, removed []Endpoint) {
+func diffEndpoints(old, cur []Endpoint) ([]Endpoint, []Endpoint) {
 	oldSet := make(map[Endpoint]struct{}, len(old))
 	for _, e := range old {
 		oldSet[e] = struct{}{}
@@ -208,6 +215,7 @@ func diffEndpoints(old, cur []Endpoint) (added, removed []Endpoint) {
 	for _, e := range cur {
 		curSet[e] = struct{}{}
 	}
+	var added, removed []Endpoint
 	for _, e := range cur {
 		if _, ok := oldSet[e]; !ok {
 			added = append(added, e)
@@ -218,7 +226,8 @@ func diffEndpoints(old, cur []Endpoint) (added, removed []Endpoint) {
 			removed = append(removed, e)
 		}
 	}
-	return
+
+	return added, removed
 }
 
 func endpointsEqual(a, b []Endpoint) bool {
@@ -230,5 +239,6 @@ func endpointsEqual(a, b []Endpoint) bool {
 			return false
 		}
 	}
+
 	return true
 }

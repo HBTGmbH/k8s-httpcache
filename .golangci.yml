@@ -5,16 +5,22 @@ formatters:
     - gofmt
 
 linters:
+  default: standard  # govet, staticcheck, ineffassign, unused (made explicit)
   enable:
+    - asasalint
     - asciicheck
     - bidichk
     - bodyclose
     - canonicalheader
+    - containedctx
     - contextcheck
     - copyloopvar
+    - decorder
     - dogsled
+    - dupl
     - dupword
     - durationcheck
+    - embeddedstructfieldcheck
     - errcheck
     - errchkjson
     - errorlint
@@ -22,54 +28,84 @@ linters:
     - exhaustive
     - exptostd
     - fatcontext
+    - forbidigo
     - forcetypeassert
+    - funcorder
+    - gochecknoinits
     - gocheckcompilerdirectives
+    - gochecksumtype
     - goconst
     - gocritic
     - godoclint
+    - godot
+    - godox
+    - gomoddirectives
     - goprintffuncname
+    - gosmopolitan
+    - grouper
     - gosec
+    - iface
+    - importas
+    - inamedparam
+    - interfacebloat
     - intrange
     - iotamixing
     - loggercheck
     - makezero
     - mirror
     - misspell
+    - musttag
     - modernize
     - nakedret
+    - nestif
     - nilerr
+    - nlreturn
+    - noinlineerr
     - noctx
     - nilnesserr
     - nilnil
     - nolintlint
+    - nonamedreturns
     - nosprintfhostport
+    - paralleltest
     - perfsprint
+    - prealloc
     - predeclared
+    - promlinter
     - reassign
     - recvcheck
     - revive
     - sloglint
+    - tagalign
+    - tagliatelle
     - testableexamples
     - thelper
+    - tparallel
     - unconvert
     - unparam
     - usestdlibvars
     - usetesting
     - wastedassign
     - whitespace
+    - wrapcheck
   settings:
+    forbidigo:
+      forbid:
+        - pattern: 'fmt\.Print(ln|f)?'
+          msg: use slog for structured logging
+        - pattern: '^print(ln)?$'
+          msg: use slog for structured logging
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - unnamedResult  # conflicts with nonamedreturns linter
     exhaustive:
       default-signifies-exhaustive: true
     gosec:
       excludes:
         - G104  # redundant with errcheck
-        - G115  # controlled int conversions
         - G204  # subprocess launch is core functionality
-        - G302  # file permissions in test cleanup
         - G304  # file reading by variable path is core functionality
-        - G306  # WriteFile permissions in tests
-        - G703  # temp file cleanup paths
-        - G706  # normal error logging
     nolintlint:
       require-explanation: true
       require-specific: true
@@ -81,5 +117,10 @@ linters:
         text: context-as-argument
       - path: _test\.go
         linters:
+          - dupl
           - goconst
           - noctx
+      - path: _test\.go
+        linters:
+          - gosec
+        text: G115|G302|G306|G703

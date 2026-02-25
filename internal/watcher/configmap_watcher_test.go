@@ -19,6 +19,7 @@ func readConfigMapChanges(t *testing.T, w *ConfigMapWatcher) map[string]any {
 		return data
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for ConfigMap change")
+
 		return nil
 	}
 }

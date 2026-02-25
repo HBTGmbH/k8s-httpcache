@@ -66,6 +66,7 @@ func (w *FileValuesWatcher) scan() {
 	if err != nil {
 		slog.Error("reading values directory", "dir", w.dir, "error", err)
 		w.send(nil)
+
 		return
 	}
 
@@ -89,11 +90,13 @@ func (w *FileValuesWatcher) scan() {
 		data, err := os.ReadFile(filepath.Join(w.dir, name))
 		if err != nil {
 			slog.Error("reading values file", "file", name, "error", err)
+
 			continue
 		}
 
 		var val any
-		if err := yaml.Unmarshal(data, &val); err != nil {
+		unmarshalErr := yaml.Unmarshal(data, &val)
+		if unmarshalErr != nil {
 			val = string(data) // fallback to raw string on parse error
 		}
 

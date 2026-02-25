@@ -71,6 +71,7 @@ func (r *Renderer) Reload() error {
 
 	r.prev = r.tmpl
 	r.tmpl = tmpl
+
 	return nil
 }
 
@@ -89,13 +90,16 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]wa
 		values = make(map[string]map[string]any)
 	}
 	var buf bytes.Buffer
-	if err := r.tmpl.Execute(&buf, templateData{Frontends: frontends, Backends: backends, Values: values}); err != nil {
+
+	err := r.tmpl.Execute(&buf, templateData{Frontends: frontends, Backends: backends, Values: values})
+	if err != nil {
 		return "", fmt.Errorf("executing template: %w", err)
 	}
 	vcl := buf.String()
 	if r.drainBackend != "" {
 		vcl = injectDrainVCL(vcl, r.drainBackend)
 	}
+
 	return vcl, nil
 }
 
@@ -111,14 +115,18 @@ func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[strin
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 
-	if _, err := f.WriteString(vcl); err != nil {
+	_, err = f.WriteString(vcl)
+	if err != nil {
 		_ = f.Close()
-		_ = os.Remove(f.Name())
+		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
+
 		return "", fmt.Errorf("writing temp file: %w", err)
 	}
 
-	if err := f.Close(); err != nil {
-		_ = os.Remove(f.Name())
+	err = f.Close()
+	if err != nil {
+		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
+
 		return "", fmt.Errorf("closing temp file: %w", err)
 	}
 
@@ -136,6 +144,7 @@ func vclVersionEnd(vcl string) int {
 	if loc == nil {
 		return 0
 	}
+
 	return loc[1]
 }
 
@@ -162,6 +171,7 @@ func stripImportStd(vcl string) string {
 		prev = loc[1]
 	}
 	b.WriteString(vcl[prev:])
+
 	return b.String()
 }
 
@@ -201,6 +211,7 @@ func backendBlocksEnd(vcl string) int {
 				} else {
 					break // unclosed comment, stop scanning
 				}
+
 				continue
 			}
 			// Skip // and # line comments.
@@ -211,6 +222,7 @@ func backendBlocksEnd(vcl string) int {
 				} else {
 					break // no newline, rest is comment
 				}
+
 				continue
 			}
 			switch vcl[i] {
@@ -225,6 +237,7 @@ func backendBlocksEnd(vcl string) int {
 				if end < len(vcl) && vcl[end] == '\n' {
 					end++
 				}
+
 				break
 			}
 		}
@@ -232,6 +245,7 @@ func backendBlocksEnd(vcl string) int {
 			lastEnd = end
 		}
 	}
+
 	return lastEnd
 }
 

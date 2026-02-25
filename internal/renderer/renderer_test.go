@@ -14,10 +14,12 @@ func writeTempTemplate(t *testing.T, content string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.WriteString(content); err != nil {
+	_, err = f.WriteString(content)
+	if err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
+
 	return f.Name()
 }
 
@@ -224,10 +226,12 @@ func TestNew_ConfigurableDelimitersReload(t *testing.T) {
 	}
 
 	// Update template and reload — delimiters should be preserved.
-	if err := os.WriteFile(path, []byte(`AFTER {{ .Frontends }}`), 0644); err != nil {
+	err = os.WriteFile(path, []byte(`AFTER {{ .Frontends }}`), 0o644)
+	if err != nil {
 		t.Fatalf("writing updated template: %v", err)
 	}
-	if err := r.Reload(); err != nil {
+	err = r.Reload()
+	if err != nil {
 		t.Fatalf("reload error: %v", err)
 	}
 	out, _ = r.Render(nil, nil, nil)
@@ -245,10 +249,12 @@ func TestNew_ConfigurableDelimitersRollback(t *testing.T) {
 	}
 
 	// Update and reload.
-	if err := os.WriteFile(path, []byte(`NEW {{ len .Frontends }}`), 0644); err != nil {
+	err = os.WriteFile(path, []byte(`NEW {{ len .Frontends }}`), 0o644)
+	if err != nil {
 		t.Fatalf("writing updated template: %v", err)
 	}
-	if err := r.Reload(); err != nil {
+	err = r.Reload()
+	if err != nil {
 		t.Fatalf("reload error: %v", err)
 	}
 	out, _ := r.Render(nil, nil, nil)
@@ -538,11 +544,13 @@ func TestReload(t *testing.T) {
 	}
 
 	// Mutate the template file on disk.
-	if err := os.WriteFile(path, []byte(`AFTER`), 0644); err != nil {
+	err = os.WriteFile(path, []byte(`AFTER`), 0o644)
+	if err != nil {
 		t.Fatalf("writing updated template: %v", err)
 	}
 
-	if err := r.Reload(); err != nil {
+	err = r.Reload()
+	if err != nil {
 		t.Fatalf("reload error: %v", err)
 	}
 
@@ -561,10 +569,12 @@ func TestRollback(t *testing.T) {
 	}
 
 	// Update template on disk and reload.
-	if err := os.WriteFile(path, []byte(`NEW`), 0644); err != nil {
+	err = os.WriteFile(path, []byte(`NEW`), 0o644)
+	if err != nil {
 		t.Fatalf("writing updated template: %v", err)
 	}
-	if err := r.Reload(); err != nil {
+	err = r.Reload()
+	if err != nil {
 		t.Fatalf("reload error: %v", err)
 	}
 
@@ -591,11 +601,13 @@ func TestReload_InvalidTemplate(t *testing.T) {
 	}
 
 	// Write broken syntax to the file.
-	if err := os.WriteFile(path, []byte(`<< if >>`), 0644); err != nil {
+	err = os.WriteFile(path, []byte(`<< if >>`), 0o644)
+	if err != nil {
 		t.Fatalf("writing broken template: %v", err)
 	}
 
-	if err := r.Reload(); err == nil {
+	err = r.Reload()
+	if err == nil {
 		t.Fatal("expected error for invalid template syntax")
 	}
 
@@ -902,11 +914,13 @@ func TestReload_FileRemoved(t *testing.T) {
 	}
 
 	// Remove the template file.
-	if err := os.Remove(path); err != nil {
+	err = os.Remove(path)
+	if err != nil {
 		t.Fatalf("removing template: %v", err)
 	}
 
-	if err := r.Reload(); err == nil {
+	err = r.Reload()
+	if err == nil {
 		t.Fatal("expected error when template file is missing")
 	}
 

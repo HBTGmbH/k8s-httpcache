@@ -80,7 +80,8 @@ func (bw *BackendWatcher) Run(ctx context.Context) error {
 		},
 	}
 
-	if _, err := informer.AddEventHandler(handler); err != nil {
+	_, err := informer.AddEventHandler(handler)
+	if err != nil {
 		return fmt.Errorf("adding event handler: %w", err)
 	}
 
@@ -113,6 +114,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 		bw.stopEndpointSliceWatcherLocked()
 		bw.mu.Unlock()
 		bw.send(nil)
+
 		return
 	}
 
@@ -130,6 +132,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 			bw.log.Warn("ExternalName service has empty externalName, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName)
 			bw.send(nil)
+
 			return
 		}
 
@@ -138,6 +141,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 			bw.log.Error("cannot resolve port for ExternalName service, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
 			bw.send(nil)
+
 			return
 		}
 		endpoints := []Endpoint{{
@@ -146,6 +150,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 			Name: "external",
 		}}
 		bw.send(endpoints)
+
 		return
 	}
 
@@ -161,11 +166,14 @@ func (bw *BackendWatcher) resolveExternalPort() (int32, error) {
 	if bw.portOverride == "" {
 		bw.log.Warn("no port specified for ExternalName service, defaulting to 80",
 			"namespace", bw.namespace, "service", bw.serviceName)
+
 		return 80, nil
 	}
-	if p, err := strconv.ParseInt(bw.portOverride, 10, 32); err == nil {
+	p, parseErr := strconv.ParseInt(bw.portOverride, 10, 32)
+	if parseErr == nil {
 		return int32(p), nil
 	}
+
 	return 0, fmt.Errorf("named port %q is not supported for ExternalName service %s/%s: ExternalName services have no EndpointSlice to resolve named ports from",
 		bw.portOverride, bw.namespace, bw.serviceName)
 }
@@ -178,7 +186,8 @@ func (bw *BackendWatcher) startEndpointSliceWatcherLocked(ctx context.Context) {
 	bw.childCancel = cancel
 
 	go func() {
-		if err := child.Run(childCtx); err != nil {
+		err := child.Run(childCtx)
+		if err != nil {
 			bw.log.Error("EndpointSlice watcher error", "namespace", bw.namespace,
 				"service", bw.serviceName, "error", err)
 		}

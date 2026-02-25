@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cli "github.com/urfave/cli/v3"
@@ -83,6 +84,7 @@ func (l *listenAddrFlags) Set(val string) error {
 	spec.Port = int32(p)
 
 	*l = append(*l, spec)
+
 	return nil
 }
 
@@ -106,6 +108,7 @@ func (v *valuesFlags) Set(val string) error {
 		Name:          name,
 		ConfigMapName: ref, // namespace resolution happens in Parse()
 	})
+
 	return nil
 }
 
@@ -129,6 +132,7 @@ func (v *valuesDirFlags) Set(val string) error {
 		Name: name,
 		Path: path,
 	})
+
 	return nil
 }
 
@@ -157,7 +161,8 @@ func (b *backendFlags) Set(val string) error {
 			return fmt.Errorf("empty port in --backend %q", val)
 		}
 		// If it looks numeric, validate the range.
-		if p, err := strconv.ParseInt(parts[2], 10, 32); err == nil {
+		p, parseErr := strconv.ParseInt(parts[2], 10, 32)
+		if parseErr == nil {
 			if p <= 0 || p > 65535 {
 				return fmt.Errorf("port out of range in --backend %q", val)
 			}
@@ -165,6 +170,7 @@ func (b *backendFlags) Set(val string) error {
 		spec.Port = parts[2]
 	}
 	*b = append(*b, spec)
+
 	return nil
 }
 
@@ -223,7 +229,7 @@ type Config struct {
 // with an alphanumeric character. Kubernetes uses this for Service and
 // Namespace names.
 func isValidDNSLabel(s string) bool {
-	if len(s) == 0 || len(s) > 63 {
+	if s == "" || len(s) > 63 {
 		return false
 	}
 	for i, c := range s {
@@ -236,13 +242,14 @@ func isValidDNSLabel(s string) bool {
 			return false
 		}
 	}
+
 	return true
 }
 
 // parseNamespacedService splits an optional "namespace/service" string into its
 // components. When no "/" is present, defaultNS is used as the namespace.
 // Both namespace and service must be valid RFC 1123 DNS labels.
-func parseNamespacedService(s, defaultNS string) (namespace, service string, err error) {
+func parseNamespacedService(s, defaultNS string) (string, string, error) {
 	if s == "" {
 		return "", "", errors.New("empty service reference")
 	}
@@ -251,6 +258,7 @@ func parseNamespacedService(s, defaultNS string) (namespace, service string, err
 		if !isValidDNSLabel(s) {
 			return "", "", fmt.Errorf("invalid service name %q: must be a valid RFC 1123 DNS label", s)
 		}
+
 		return defaultNS, s, nil
 	}
 	if namespace == "" {
@@ -265,6 +273,7 @@ func parseNamespacedService(s, defaultNS string) (namespace, service string, err
 	if !isValidDNSLabel(service) {
 		return "", "", fmt.Errorf("invalid service name %q in %q: must be a valid RFC 1123 DNS label", service, s)
 	}
+
 	return namespace, service, nil
 }
 
@@ -279,13 +288,23 @@ func validationError(cmd *cli.Command, format string, args ...any) error {
 	err := fmt.Errorf(format, args...)
 	_, _ = fmt.Fprintf(cmd.Root().ErrWriter, "error: %v\n\n", err)
 	_ = cli.ShowRootCommandHelp(cmd)
+
 	return err
 }
 
-func init() {
-	cli.VersionPrinter = func(cmd *cli.Command) {
-		_, _ = fmt.Fprintln(cmd.Root().Writer, cmd.Version)
+// resolveBroadcastTargetPort returns the port of the listen address matching
+// targetName. When targetName is empty, the first listen address is used.
+func resolveBroadcastTargetPort(addrs []ListenAddrSpec, targetName string) (int32, error) {
+	if targetName == "" {
+		return addrs[0].Port, nil
 	}
+	for _, la := range addrs {
+		if la.Name == targetName {
+			return la.Port, nil
+		}
+	}
+
+	return 0, fmt.Errorf("--broadcast-target-listen-addr %q does not match any --listen-addr name", targetName)
 }
 
 // Parse parses command-line flags from args and returns a validated Config.
@@ -298,7 +317,15 @@ func Parse(version string, args []string) (*Config, error) {
 // parse is the internal implementation of Parse that accepts an io.Writer for
 // output (used by --version). This allows tests to capture output without
 // redirecting os.Stdout.
+var versionPrinterOnce sync.Once
+
 func parse(version string, args []string, w io.Writer) (*Config, error) {
+	versionPrinterOnce.Do(func() {
+		cli.VersionPrinter = func(cmd *cli.Command) {
+			_, _ = fmt.Fprintln(cmd.Root().Writer, cmd.Version)
+		}
+	})
+
 	c := &Config{}
 
 	var (
@@ -637,14 +664,17 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Check required flags.
 			if c.ServiceName == "" {
 				actionErr = validationError(cmd, "--service-name is required")
+
 				return nil
 			}
 			if c.Namespace == "" {
 				actionErr = validationError(cmd, "--namespace is required")
+
 				return nil
 			}
 			if c.VCLTemplate == "" {
 				actionErr = validationError(cmd, "--vcl-template is required")
+
 				return nil
 			}
 
@@ -652,14 +682,17 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			parts := strings.Fields(templateDelims)
 			if len(parts) != 2 {
 				actionErr = validationError(cmd, "--template-delims must be exactly two tokens, got %d in %q", len(parts), templateDelims)
+
 				return nil
 			}
 			c.TemplateDelimLeft = parts[0]
 			c.TemplateDelimRight = parts[1]
 
 			// Validate log level.
-			if err := c.LogLevel.UnmarshalText([]byte(logLevel)); err != nil {
+			err := c.LogLevel.UnmarshalText([]byte(logLevel))
+			if err != nil {
 				actionErr = validationError(cmd, "--log-level: %v", err)
+
 				return nil
 			}
 
@@ -668,16 +701,19 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			case "text", "json":
 			default:
 				actionErr = validationError(cmd, "--log-format must be \"text\" or \"json\", got %q", c.LogFormat)
+
 				return nil
 			}
 
 			// Validate debounce-max.
 			if c.DebounceMax < 0 {
 				actionErr = validationError(cmd, "--debounce-max must be >= 0, got %v", c.DebounceMax)
+
 				return nil
 			}
 			if c.DebounceMax > 0 && c.DebounceMax < c.Debounce {
 				actionErr = validationError(cmd, "--debounce-max (%v) must be >= --debounce (%v)", c.DebounceMax, c.Debounce)
+
 				return nil
 			}
 
@@ -706,26 +742,31 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Validate per-source debounce-max.
 			if c.FrontendDebounceMax > 0 && c.FrontendDebounceMax < c.FrontendDebounce {
 				actionErr = validationError(cmd, "--frontend-debounce-max (%v) must be >= --frontend-debounce (%v)", c.FrontendDebounceMax, c.FrontendDebounce)
+
 				return nil
 			}
 			if c.BackendDebounceMax > 0 && c.BackendDebounceMax < c.BackendDebounce {
 				actionErr = validationError(cmd, "--backend-debounce-max (%v) must be >= --backend-debounce (%v)", c.BackendDebounceMax, c.BackendDebounce)
+
 				return nil
 			}
 
 			// Validate VCL reload retries.
 			if c.VCLReloadRetries < 0 {
 				actionErr = validationError(cmd, "--vcl-reload-retries must be >= 0, got %d", c.VCLReloadRetries)
+
 				return nil
 			}
 			if c.VCLReloadRetryInterval < 0 {
 				actionErr = validationError(cmd, "--vcl-reload-retry-interval must be >= 0, got %v", c.VCLReloadRetryInterval)
+
 				return nil
 			}
 
 			// Validate VCL kept.
 			if c.VCLKept < 0 {
 				actionErr = validationError(cmd, "--vcl-kept must be >= 0, got %d", c.VCLKept)
+
 				return nil
 			}
 
@@ -734,10 +775,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
 				if err != nil {
 					actionErr = validationError(cmd, "--debounce-latency-buckets: invalid value %q: %v", p, err)
+
 					return nil
 				}
 				if v <= 0 {
 					actionErr = validationError(cmd, "--debounce-latency-buckets: bucket boundaries must be positive, got %v", v)
+
 					return nil
 				}
 				c.DebounceLatencyBuckets = append(c.DebounceLatencyBuckets, v)
@@ -745,24 +788,30 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			sort.Float64s(c.DebounceLatencyBuckets)
 
 			// Validate VCL template file exists.
-			if _, err := os.Stat(c.VCLTemplate); err != nil {
+			_, err = os.Stat(c.VCLTemplate)
+			if err != nil {
 				actionErr = validationError(cmd, "vcl-template file %q: %v", c.VCLTemplate, err)
+
 				return nil
 			}
 
 			// Parse listen addresses.
 			var listenAddrs listenAddrFlags
 			for _, raw := range rawListenAddrs {
-				if err := listenAddrs.Set(raw); err != nil {
+				err = listenAddrs.Set(raw)
+				if err != nil {
 					actionErr = validationError(cmd, "%v", err)
+
 					return nil
 				}
 			}
 
 			// Default listen address if none provided.
 			if len(listenAddrs) == 0 {
-				if err := listenAddrs.Set("http=:8080,HTTP"); err != nil {
+				err = listenAddrs.Set("http=:8080,HTTP")
+				if err != nil {
 					actionErr = fmt.Errorf("default --listen-addr: %w", err)
+
 					return nil
 				}
 			}
@@ -773,6 +822,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				if la.Name != "" {
 					if seenLA[la.Name] {
 						actionErr = validationError(cmd, "duplicate --listen-addr name %q", la.Name)
+
 						return nil
 					}
 					seenLA[la.Name] = true
@@ -790,28 +840,20 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 			// Resolve broadcast target port from the named listen address.
 			if c.BroadcastAddr != "" {
-				if c.BroadcastTargetListenAddr == "" {
-					c.BroadcastTargetPort = c.ListenAddrs[0].Port
-				} else {
-					found := false
-					for _, la := range c.ListenAddrs {
-						if la.Name == c.BroadcastTargetListenAddr {
-							c.BroadcastTargetPort = la.Port
-							found = true
-							break
-						}
-					}
-					if !found {
-						actionErr = validationError(cmd, "--broadcast-target-listen-addr %q does not match any --listen-addr name", c.BroadcastTargetListenAddr)
-						return nil
-					}
+				port, err := resolveBroadcastTargetPort(c.ListenAddrs, c.BroadcastTargetListenAddr)
+				if err != nil {
+					actionErr = validationError(cmd, "%v", err)
+
+					return nil
 				}
+				c.BroadcastTargetPort = port
 			}
 
 			// Resolve frontend service namespace.
 			ns, svc, err := parseNamespacedService(c.ServiceName, c.Namespace)
 			if err != nil {
 				actionErr = validationError(cmd, "--service-name: %v", err)
+
 				return nil
 			}
 			c.ServiceNamespace = ns
@@ -820,8 +862,10 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Parse and validate backends.
 			var backends backendFlags
 			for _, raw := range rawBackends {
-				if err := backends.Set(raw); err != nil {
+				err = backends.Set(raw)
+				if err != nil {
 					actionErr = validationError(cmd, "%v", err)
+
 					return nil
 				}
 			}
@@ -829,6 +873,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			for i, b := range backends {
 				if seen[b.Name] {
 					actionErr = validationError(cmd, "duplicate --backend name %q", b.Name)
+
 					return nil
 				}
 				seen[b.Name] = true
@@ -836,6 +881,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				ns, svc, err := parseNamespacedService(b.ServiceName, c.Namespace)
 				if err != nil {
 					actionErr = validationError(cmd, "--backend %q: %v", b.Name, err)
+
 					return nil
 				}
 				backends[i].Namespace = ns
@@ -846,8 +892,10 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Parse and validate values.
 			var values valuesFlags
 			for _, raw := range rawValues {
-				if err := values.Set(raw); err != nil {
+				err := values.Set(raw)
+				if err != nil {
 					actionErr = validationError(cmd, "%v", err)
+
 					return nil
 				}
 			}
@@ -855,6 +903,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			for i, v := range values {
 				if seenValues[v.Name] {
 					actionErr = validationError(cmd, "duplicate --values name %q", v.Name)
+
 					return nil
 				}
 				seenValues[v.Name] = true
@@ -862,6 +911,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				ns, cm, err := parseNamespacedService(v.ConfigMapName, c.Namespace)
 				if err != nil {
 					actionErr = validationError(cmd, "--values %q: %v", v.Name, err)
+
 					return nil
 				}
 				values[i].Namespace = ns
@@ -872,14 +922,17 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Parse and validate values-dir.
 			var valuesDirs valuesDirFlags
 			for _, raw := range rawValuesDirs {
-				if err := valuesDirs.Set(raw); err != nil {
+				err := valuesDirs.Set(raw)
+				if err != nil {
 					actionErr = validationError(cmd, "%v", err)
+
 					return nil
 				}
 			}
 			for _, vd := range valuesDirs {
 				if seenValues[vd.Name] {
 					actionErr = validationError(cmd, "duplicate values name %q (across --values and --values-dir)", vd.Name)
+
 					return nil
 				}
 				seenValues[vd.Name] = true
@@ -887,10 +940,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				info, err := os.Stat(vd.Path)
 				if err != nil {
 					actionErr = validationError(cmd, "--values-dir %q: %v", vd.Name, err)
+
 					return nil
 				}
 				if !info.IsDir() {
 					actionErr = validationError(cmd, "--values-dir %q: path %q is not a directory", vd.Name, vd.Path)
+
 					return nil
 				}
 			}
@@ -903,8 +958,9 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 		},
 	}
 
-	if err := cmd.Run(context.Background(), args); err != nil {
-		return nil, err
+	err := cmd.Run(context.Background(), args)
+	if err != nil {
+		return nil, fmt.Errorf("running CLI command: %w", err)
 	}
 	if actionErr != nil {
 		return nil, actionErr
@@ -912,5 +968,6 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 	if !parsed {
 		return nil, ErrHelp
 	}
+
 	return c, nil
 }

@@ -26,12 +26,14 @@ type syncBuffer struct {
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+
+	return b.buf.Write(p) //nolint:wrapcheck // test helper wraps bytes.Buffer
 }
 
 func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	return b.buf.String()
 }
 
@@ -61,6 +63,7 @@ func readBackendChanges(t *testing.T, bw *BackendWatcher) []Endpoint {
 		return eps
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for backend endpoint change")
+
 		return nil
 	}
 }
@@ -89,6 +92,7 @@ func makeService(serviceType corev1.ServiceType, externalName string) *corev1.Se
 	if externalName != "" {
 		svc.Spec.ExternalName = externalName
 	}
+
 	return svc
 }
 
@@ -100,6 +104,7 @@ func getService(t *testing.T, ctx context.Context, clientset *fake.Clientset) *c
 	if err != nil {
 		t.Fatalf("getting Service default/svc: %v", err)
 	}
+
 	return svc
 }
 
@@ -676,6 +681,7 @@ func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
 func captureLogs(_ *testing.T, level slog.Level) (*syncBuffer, *slog.Logger) {
 	buf := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level}))
+
 	return buf, logger
 }
 

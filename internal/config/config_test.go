@@ -138,6 +138,7 @@ func TestParseNamespacedService(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got ns=%q svc=%q", ns, svc)
 				}
+
 				return
 			}
 			if err != nil {
@@ -277,6 +278,7 @@ func TestListenAddrFlagsSet(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got %+v", lf)
 				}
+
 				return
 			}
 			if err != nil {
@@ -408,6 +410,7 @@ func TestBackendFlagsSet(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got %+v", bf)
 				}
+
 				return
 			}
 			if err != nil {
@@ -453,7 +456,8 @@ func TestBackendFlagsString(t *testing.T) {
 func TestListenAddrPortMinBoundary(t *testing.T) {
 	t.Parallel()
 	var lf listenAddrFlags
-	if err := lf.Set("http=:1"); err != nil {
+	err := lf.Set("http=:1")
+	if err != nil {
 		t.Fatalf("unexpected error for port 1: %v", err)
 	}
 	if lf[0].Port != 1 {
@@ -465,7 +469,8 @@ func TestListenAddrTrailingComma(t *testing.T) {
 	t.Parallel()
 	// Trailing comma (empty proto string after comma) should still parse the address.
 	var lf listenAddrFlags
-	if err := lf.Set("http=:8080,"); err != nil {
+	err := lf.Set("http=:8080,")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if lf[0].Port != 8080 {
@@ -481,7 +486,8 @@ func TestListenAddrMultipleEquals(t *testing.T) {
 	// Multiple '=' signs: only the first splits name from address.
 	// "a=b=:8080" → name="a", rest="b=:8080", SplitHostPort("b=:8080") → host="b=", port=8080
 	var lf listenAddrFlags
-	if err := lf.Set("a=b=:8080"); err != nil {
+	err := lf.Set("a=b=:8080")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if lf[0].Name != "a" {
@@ -498,7 +504,8 @@ func TestListenAddrMultipleEquals(t *testing.T) {
 func TestListenAddrNegativePort(t *testing.T) {
 	t.Parallel()
 	var lf listenAddrFlags
-	if err := lf.Set("http=:-1"); err == nil {
+	err := lf.Set("http=:-1")
+	if err == nil {
 		t.Fatal("expected error for negative port")
 	}
 }
@@ -506,7 +513,8 @@ func TestListenAddrNegativePort(t *testing.T) {
 func TestListenAddrPortBoundary(t *testing.T) {
 	t.Parallel()
 	var lf listenAddrFlags
-	if err := lf.Set("http=:65535"); err != nil {
+	err := lf.Set("http=:65535")
+	if err != nil {
 		t.Fatalf("unexpected error for port 65535: %v", err)
 	}
 	if lf[0].Port != 65535 {
@@ -517,7 +525,8 @@ func TestListenAddrPortBoundary(t *testing.T) {
 func TestListenAddrPortOverBoundary(t *testing.T) {
 	t.Parallel()
 	var lf listenAddrFlags
-	if err := lf.Set("http=:65536"); err == nil {
+	err := lf.Set("http=:65536")
+	if err == nil {
 		t.Fatal("expected error for port 65536")
 	}
 }
@@ -525,10 +534,12 @@ func TestListenAddrPortOverBoundary(t *testing.T) {
 func TestListenAddrMultipleAccumulate(t *testing.T) {
 	t.Parallel()
 	var lf listenAddrFlags
-	if err := lf.Set("http=:8080,HTTP"); err != nil {
+	err := lf.Set("http=:8080,HTTP")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lf.Set("purge=:8081"); err != nil {
+	err = lf.Set("purge=:8081")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(lf) != 2 {
@@ -542,7 +553,8 @@ func TestListenAddrMultipleAccumulate(t *testing.T) {
 func TestBackendPortMinBoundary(t *testing.T) {
 	t.Parallel()
 	var bf backendFlags
-	if err := bf.Set("api:my-svc:1"); err != nil {
+	err := bf.Set("api:my-svc:1")
+	if err != nil {
 		t.Fatalf("unexpected error for port 1: %v", err)
 	}
 	if bf[0].Port != "1" {
@@ -553,7 +565,8 @@ func TestBackendPortMinBoundary(t *testing.T) {
 func TestBackendNegativePort(t *testing.T) {
 	t.Parallel()
 	var bf backendFlags
-	if err := bf.Set("api:my-svc:-1"); err == nil {
+	err := bf.Set("api:my-svc:-1")
+	if err == nil {
 		t.Fatal("expected error for negative port")
 	}
 }
@@ -561,7 +574,8 @@ func TestBackendNegativePort(t *testing.T) {
 func TestBackendPortBoundary(t *testing.T) {
 	t.Parallel()
 	var bf backendFlags
-	if err := bf.Set("api:my-svc:65535"); err != nil {
+	err := bf.Set("api:my-svc:65535")
+	if err != nil {
 		t.Fatalf("unexpected error for port 65535: %v", err)
 	}
 	if bf[0].Port != "65535" {
@@ -572,7 +586,8 @@ func TestBackendPortBoundary(t *testing.T) {
 func TestBackendPortOverBoundary(t *testing.T) {
 	t.Parallel()
 	var bf backendFlags
-	if err := bf.Set("api:my-svc:65536"); err == nil {
+	err := bf.Set("api:my-svc:65536")
+	if err == nil {
 		t.Fatal("expected error for port 65536")
 	}
 }
@@ -580,10 +595,12 @@ func TestBackendPortOverBoundary(t *testing.T) {
 func TestBackendMultipleAccumulate(t *testing.T) {
 	t.Parallel()
 	var bf backendFlags
-	if err := bf.Set("api:api-svc:8080"); err != nil {
+	err := bf.Set("api:api-svc:8080")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bf.Set("web:web-svc:http"); err != nil {
+	err = bf.Set("web:web-svc:http")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(bf) != 2 {
@@ -603,11 +620,13 @@ func makeTempVCL(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.WriteString("vcl 4.0;"); err != nil {
+	_, err = f.WriteString("vcl 4.0;")
+	if err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
 	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+
 	return f.Name()
 }
 
@@ -1762,6 +1781,7 @@ func TestValuesFlagsSet(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got %+v", vf)
 				}
+
 				return
 			}
 			if err != nil {
@@ -1925,6 +1945,7 @@ func TestValuesDirFlagsSet(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got %+v", vdf)
 				}
+
 				return
 			}
 			if err != nil {

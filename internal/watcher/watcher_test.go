@@ -391,6 +391,7 @@ func readChanges(t *testing.T, w *Watcher) []Endpoint {
 		return eps
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for endpoint change")
+
 		return nil
 	}
 }

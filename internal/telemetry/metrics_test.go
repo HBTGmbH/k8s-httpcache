@@ -141,7 +141,9 @@ func TestVCLRenderDurationSeconds(t *testing.T) {
 	m.VCLRenderDurationSeconds.Observe(0.15)
 
 	var dm dto.Metric
-	if err := m.VCLRenderDurationSeconds.Write(&dm); err != nil {
+
+	err := m.VCLRenderDurationSeconds.Write(&dm)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
@@ -156,7 +158,9 @@ func TestVCLReloadDurationSeconds(t *testing.T) {
 	m.VCLReloadDurationSeconds.Observe(0.2)
 
 	var dm dto.Metric
-	if err := m.VCLReloadDurationSeconds.Write(&dm); err != nil {
+
+	err := m.VCLReloadDurationSeconds.Write(&dm)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
@@ -171,7 +175,9 @@ func TestBroadcastDurationSeconds(t *testing.T) {
 	m.BroadcastDurationSeconds.Observe(0.02)
 
 	var dm dto.Metric
-	if err := m.BroadcastDurationSeconds.Write(&dm); err != nil {
+
+	err := m.BroadcastDurationSeconds.Write(&dm)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
@@ -191,7 +197,8 @@ func TestDebounceLatencySeconds(t *testing.T) {
 	if !ok {
 		t.Fatal("histogram does not implement prometheus.Metric")
 	}
-	if err := pm.Write(&dm); err != nil {
+	err := pm.Write(&dm)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
@@ -247,6 +254,7 @@ func TestMetricsRegistered(t *testing.T) {
 		for desc := range found {
 			if strings.Contains(desc, "\""+name+"\"") {
 				seen = true
+
 				break
 			}
 		}
@@ -263,7 +271,8 @@ func assertCounterValue(t *testing.T, c prometheus.Counter, expected float64) {
 	if !ok {
 		t.Fatal("counter does not implement prometheus.Metric")
 	}
-	if err := pm.Write(&m); err != nil {
+	err := pm.Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := m.GetCounter().GetValue(); got != expected {
@@ -274,7 +283,8 @@ func assertCounterValue(t *testing.T, c prometheus.Counter, expected float64) {
 func assertGaugeValue(t *testing.T, g prometheus.Gauge, expected float64) {
 	t.Helper()
 	var m dto.Metric
-	if err := g.Write(&m); err != nil {
+	err := g.Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := m.GetGauge().GetValue(); got != expected {

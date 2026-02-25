@@ -87,7 +87,8 @@ func TestWatchFileDetectsChange(t *testing.T) {
 	path := f.Name()
 	defer func() { _ = os.Remove(path) }()
 
-	if _, err := f.WriteString("initial"); err != nil {
+	_, err = f.WriteString("initial")
+	if err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
@@ -100,7 +101,8 @@ func TestWatchFileDetectsChange(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Modify the file.
-	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+	err = os.WriteFile(path, []byte("changed"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,7 +123,8 @@ func TestWatchFileNoChangeNoNotification(t *testing.T) {
 	path := f.Name()
 	defer func() { _ = os.Remove(path) }()
 
-	if _, err := f.WriteString("stable"); err != nil {
+	_, err = f.WriteString("stable")
+	if err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
@@ -158,7 +161,8 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 	// The goroutine should exit. We verify by writing a change and
 	// confirming no notification arrives (goroutine has stopped polling).
 	time.Sleep(200 * time.Millisecond)
-	if err := os.WriteFile(path, []byte("changed-after-cancel"), 0o644); err != nil {
+	err = os.WriteFile(path, []byte("changed-after-cancel"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -190,6 +194,7 @@ func (m *mockRenderer) Reload() error {
 	if fn != nil {
 		return fn()
 	}
+
 	return nil
 }
 
@@ -201,6 +206,7 @@ func (m *mockRenderer) RenderToFile(fe []watcher.Frontend, be map[string][]watch
 	if fn != nil {
 		return fn(fe, be, vals)
 	}
+
 	return "test.vcl", nil
 }
 
@@ -214,9 +220,10 @@ func (m *mockRenderer) Rollback() {
 	}
 }
 
-func (m *mockRenderer) counts() (reload, render, rollback int) {
+func (m *mockRenderer) counts() (int, int, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return m.reloadCount, m.renderCount, m.rollbackCount
 }
 
@@ -224,7 +231,7 @@ type mockManager struct {
 	mu               sync.Mutex
 	reloadFn         func(string) error
 	markBackendFn    func(string) error
-	activeSessionsFn func() (int64, error)
+	activeSessionsFn func() (uint64, error)
 	done             chan struct{}
 	err              error
 	reloadCount      int
@@ -241,6 +248,7 @@ func (m *mockManager) Reload(vclPath string) error {
 	if fn != nil {
 		return fn(vclPath)
 	}
+
 	return nil
 }
 
@@ -249,6 +257,7 @@ func (m *mockManager) Done() <-chan struct{} { return m.done }
 func (m *mockManager) Err() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return m.err
 }
 
@@ -266,10 +275,11 @@ func (m *mockManager) MarkBackendSick(name string) error {
 	if fn != nil {
 		return fn(name)
 	}
+
 	return nil
 }
 
-func (m *mockManager) ActiveSessions() (int64, error) {
+func (m *mockManager) ActiveSessions() (uint64, error) {
 	m.mu.Lock()
 	m.sessionsCalls++
 	fn := m.activeSessionsFn
@@ -277,6 +287,7 @@ func (m *mockManager) ActiveSessions() (int64, error) {
 	if fn != nil {
 		return fn()
 	}
+
 	return 0, nil
 }
 
@@ -285,18 +296,21 @@ func (m *mockManager) getMarkSickCalls() []string {
 	defer m.mu.Unlock()
 	dst := make([]string, len(m.markSickCalls))
 	copy(dst, m.markSickCalls)
+
 	return dst
 }
 
 func (m *mockManager) getReloadCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return m.reloadCount
 }
 
 func (m *mockManager) getSessionsCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return m.sessionsCalls
 }
 
@@ -305,6 +319,7 @@ func (m *mockManager) getForwardedSigs() []os.Signal {
 	defer m.mu.Unlock()
 	dst := make([]os.Signal, len(m.forwardedSigs))
 	copy(dst, m.forwardedSigs)
+
 	return dst
 }
 
@@ -326,12 +341,14 @@ func (m *mockBroadcast) Drain(_ time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.drainCount++
+
 	return nil
 }
 
 func (m *mockBroadcast) drainCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return m.drainCount
 }
 
@@ -422,12 +439,13 @@ func (h *testHarness) withRecorder() *record.FakeRecorder {
 	rec := record.NewFakeRecorder(10)
 	h.recorder = rec
 	h.podRef = &v1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"}
+
 	return rec
 }
 
 // runAndWait runs the loop in a goroutine and returns a function that
 // sends SIGTERM and waits for the exit code.
-func (h *testHarness) runAndWait(bcast broadcaster) (wait func() int) {
+func (h *testHarness) runAndWait(bcast broadcaster) func() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
 	code.Store(-1)
@@ -436,6 +454,7 @@ func (h *testHarness) runAndWait(bcast broadcaster) (wait func() int) {
 		code.Store(int32(runLoop(ctx, cancel, h.loopConfig(bcast))))
 		close(done)
 	}()
+
 	return func() int {
 		h.sigCh <- syscall.SIGTERM
 		// Give the loop time to enter the signal handler before closing
@@ -444,6 +463,7 @@ func (h *testHarness) runAndWait(bcast broadcaster) (wait func() int) {
 		time.Sleep(20 * time.Millisecond)
 		close(h.mgr.done) // simulate varnishd exiting after signal
 		<-done
+
 		return int(code.Load())
 	}
 }
@@ -481,6 +501,7 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 		mu.Lock()
 		gotFrontends = fe
 		mu.Unlock()
+
 		return "test.vcl", nil
 	}
 
@@ -690,6 +711,7 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 		if renderCalls.Add(1) == 1 {
 			return "", errors.New("render error")
 		}
+
 		return "test.vcl", nil
 	}
 	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
@@ -728,6 +750,7 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 		if mgrCalls.Add(1) == 1 {
 			return errors.New("varnish reload error")
 		}
+
 		return nil
 	}
 	reloadErrBefore := getCounterValue(t, "error", h.metrics.VCLReloadsTotal)
@@ -975,6 +998,7 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 		if renderCalls.Add(1) == 2 {
 			return "", errors.New("render error after rollback")
 		}
+
 		return "test.vcl", nil
 	}
 	h.mgr.reloadFn = func(_ string) error {
@@ -1118,7 +1142,8 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644); err != nil {
+	err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1161,13 +1186,15 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 		renderMu.Lock()
 		renderedVals = append(renderedVals, copied)
 		renderMu.Unlock()
+
 		return "test.vcl", nil
 	}
 
 	wait := h.runAndWait(h.bcast)
 
 	// Modify the YAML file on disk.
-	if err := os.WriteFile(dir+"/ttl.yaml", []byte("600"), 0o644); err != nil {
+	err = os.WriteFile(dir+"/ttl.yaml", []byte("600"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1241,11 +1268,12 @@ func TestRunLoop_DrainOnShutdown(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	var sessionCalls atomic.Int32
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		// Return >0 for the first call, then 0.
 		if sessionCalls.Add(1) == 1 {
 			return 5, nil
 		}
+
 		return 0, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1339,7 +1367,7 @@ func TestRunLoop_DrainInterruptedBySecondSignal(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	// ActiveSessions always returns >0 to keep polling.
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 10, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1420,11 +1448,12 @@ func TestRunLoop_DrainMarkSickErrorContinuesDrain(t *testing.T) {
 		return errors.New("backend not found")
 	}
 	var sessionCalls atomic.Int32
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		// Return >0 first, then 0.
 		if sessionCalls.Add(1) == 1 {
 			return 5, nil
 		}
+
 		return 0, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1460,7 +1489,7 @@ func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	// ActiveSessions always returns >0 so sessions never clear.
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 42, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1505,7 +1534,7 @@ func TestRunLoop_DrainSecondSignalDuringPolling(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	// ActiveSessions always returns >0 to keep polling.
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 10, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1548,7 +1577,7 @@ func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	var calls atomic.Int32
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		n := calls.Add(1)
 		if n <= 2 {
 			// First two polls fail.
@@ -1590,8 +1619,9 @@ func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
 func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		t.Fatal("ActiveSessions should not be called when drainTimeout is 0")
+
 		return 0, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1639,7 +1669,8 @@ func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := f.Name()
-	if _, err := f.WriteString("initial"); err != nil {
+	_, err = f.WriteString("initial")
+	if err != nil {
 		t.Fatal(err)
 	}
 	_ = f.Close()
@@ -1655,7 +1686,8 @@ func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Modify the file on disk.
-	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+	err = os.WriteFile(path, []byte("changed"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1689,7 +1721,8 @@ func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
 func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644); err != nil {
+	err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1724,7 +1757,8 @@ func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 	}()
 
 	// Modify the YAML file on disk.
-	if err := os.WriteFile(dir+"/ttl.yaml", []byte("600"), 0o644); err != nil {
+	err = os.WriteFile(dir+"/ttl.yaml", []byte("600"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1761,7 +1795,8 @@ func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(dir+"/greeting.yaml", []byte("hello"), 0o644); err != nil {
+	err := os.WriteFile(dir+"/greeting.yaml", []byte("hello"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1795,6 +1830,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 		renderMu.Lock()
 		renderedVals = copied
 		renderMu.Unlock()
+
 		return "test.vcl", nil
 	}
 
@@ -1974,29 +2010,26 @@ func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 	<-done
 }
 
-// Scenario 4: Events arriving faster than debounce — the key case.
-// Without debounceMax the timer perpetually resets and never fires.
-// With debounceMax the reload is forced periodically.
-func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
-	t.Parallel()
+// testDebounceMaxForced is a helper that sends rapid frontend events for 1.2s
+// and asserts that debounceMax forces at least 3 reloads.
+func testDebounceMaxForced(t *testing.T, frontendDebounce, frontendDebounceMax, backendDebounce, backendDebounceMax time.Duration) {
+	t.Helper()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.frontendDebounce = 250 * time.Millisecond // continuously reset by events every 20ms
-	lc.backendDebounce = 250 * time.Millisecond
-	lc.frontendDebounceMax = 250 * time.Millisecond
-	lc.backendDebounceMax = 250 * time.Millisecond
+	lc.frontendDebounce = frontendDebounce
+	lc.frontendDebounceMax = frontendDebounceMax
+	lc.backendDebounce = backendDebounce
+	lc.backendDebounceMax = backendDebounceMax
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
 		close(done)
 	}()
 
-	// Send events every 20ms for 1.2s. debounce=250ms is perpetually reset.
-	// debounceMax=250ms → forced reloads at ~250ms, ~500ms, ~750ms, ~1000ms.
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -2013,7 +2046,6 @@ func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
 	time.Sleep(1200 * time.Millisecond)
 	close(stop)
 
-	// 1200ms / 250ms ≈ 4.8 windows; expect at least 3 reloads.
 	reloads := h.mgr.getReloadCount()
 	if reloads < 3 {
 		t.Fatalf("expected at least 3 forced reloads, got %d", reloads)
@@ -2023,6 +2055,17 @@ func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	close(h.mgr.done)
 	<-done
+}
+
+// Scenario 4: Events arriving faster than debounce — the key case.
+// Without debounceMax the timer perpetually resets and never fires.
+// With debounceMax the reload is forced periodically.
+func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
+	t.Parallel()
+	testDebounceMaxForced(t,
+		250*time.Millisecond, 250*time.Millisecond,
+		250*time.Millisecond, 250*time.Millisecond,
+	)
 }
 
 // Scenario 5: Long stream — deadline resets after each forced reload.
@@ -2358,50 +2401,10 @@ func TestRunLoop_CrossGroupClearOnReload(t *testing.T) {
 
 func TestRunLoop_IndependentDebounceMaxGroups(t *testing.T) {
 	t.Parallel()
-	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
-	var code atomic.Int32
-	code.Store(-1)
-	done := make(chan struct{})
-	lc := h.loopConfig(h.bcast)
-	lc.frontendDebounce = 250 * time.Millisecond
-	lc.frontendDebounceMax = 250 * time.Millisecond
-	lc.backendDebounce = 250 * time.Millisecond
-	lc.backendDebounceMax = 500 * time.Millisecond
-
-	go func() {
-		code.Store(int32(runLoop(ctx, cancel, lc)))
-		close(done)
-	}()
-
-	// Send only frontend events rapidly for 1.2s.
-	// frontendDebounceMax=250ms → forced reloads at ~250ms, ~500ms, etc.
-	stop := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}()
-
-	time.Sleep(1200 * time.Millisecond)
-	close(stop)
-
-	// Frontend debounceMax=250ms → expect at least 3 reloads in 1.2s.
-	reloads := h.mgr.getReloadCount()
-	if reloads < 3 {
-		t.Fatalf("expected at least 3 forced reloads from frontend events, got %d", reloads)
-	}
-
-	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
-	close(h.mgr.done)
-	<-done
+	testDebounceMaxForced(t,
+		250*time.Millisecond, 250*time.Millisecond,
+		250*time.Millisecond, 500*time.Millisecond,
+	)
 }
 
 func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
@@ -2938,9 +2941,11 @@ func getCounterValue(t *testing.T, label string, cv *prometheus.CounterVec) floa
 	if !ok {
 		t.Fatal("counter does not implement prometheus.Metric")
 	}
-	if err := pm.Write(&m); err != nil {
+	err := pm.Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	return m.GetCounter().GetValue()
 }
 
@@ -2953,9 +2958,11 @@ func getCounter2Value(t *testing.T, l1, l2 string, cv *prometheus.CounterVec) fl
 	if !ok {
 		t.Fatal("counter does not implement prometheus.Metric")
 	}
-	if err := pm.Write(&m); err != nil {
+	err := pm.Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	return m.GetCounter().GetValue()
 }
 
@@ -2967,9 +2974,11 @@ func getSingleCounterValue(t *testing.T, c prometheus.Counter) float64 {
 	if !ok {
 		t.Fatal("counter does not implement prometheus.Metric")
 	}
-	if err := pm.Write(&m); err != nil {
+	err := pm.Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	return m.GetCounter().GetValue()
 }
 
@@ -2977,9 +2986,11 @@ func getSingleCounterValue(t *testing.T, c prometheus.Counter) float64 {
 func getGauge2Value(t *testing.T, l1, l2 string, gv *prometheus.GaugeVec) float64 {
 	t.Helper()
 	var m dto.Metric
-	if err := gv.WithLabelValues(l1, l2).Write(&m); err != nil {
+	err := gv.WithLabelValues(l1, l2).Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	return m.GetGauge().GetValue()
 }
 
@@ -2987,9 +2998,11 @@ func getGauge2Value(t *testing.T, l1, l2 string, gv *prometheus.GaugeVec) float6
 func getGaugeValue(t *testing.T, g prometheus.Gauge) float64 {
 	t.Helper()
 	var m dto.Metric
-	if err := g.Write(&m); err != nil {
+	err := g.Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	return m.GetGauge().GetValue()
 }
 
@@ -3002,9 +3015,11 @@ func getHistogramSampleCount(t *testing.T, label string, hv *prometheus.Histogra
 	if !ok {
 		t.Fatal("histogram does not implement prometheus.Metric")
 	}
-	if err := pm.Write(&m); err != nil {
+	err := pm.Write(&m)
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	return m.GetHistogram().GetSampleCount()
 }
 
@@ -3060,6 +3075,7 @@ func (f *fakeEventSink) Create(_ *v1.Event) (*v1.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+
 	return nil, f.createErr
 }
 
@@ -3067,6 +3083,7 @@ func (f *fakeEventSink) Update(_ *v1.Event) (*v1.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+
 	return nil, f.updateErr
 }
 
@@ -3074,12 +3091,14 @@ func (f *fakeEventSink) Patch(_ *v1.Event, _ []byte) (*v1.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+
 	return nil, f.patchErr
 }
 
 func (f *fakeEventSink) getCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.calls
 }
 
@@ -3385,6 +3404,7 @@ func TestRunLoop_EventReasonAfterRollback(t *testing.T) {
 		if mgrCalls.Add(1) == 1 {
 			return errors.New("varnish reload error")
 		}
+
 		return nil
 	}
 
@@ -3511,6 +3531,7 @@ func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
 		if mgrCalls.Add(1) == 1 {
 			return errors.New("varnish reload error")
 		}
+
 		return nil
 	}
 	var renderCalls atomic.Int32
@@ -3519,6 +3540,7 @@ func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
 		if renderCalls.Add(1) == 2 {
 			return "", errors.New("render error after rollback")
 		}
+
 		return "test.vcl", nil
 	}
 
@@ -3622,10 +3644,11 @@ func TestRunLoop_EventDrainStartedAndCompleted(t *testing.T) {
 	h := newTestHarness()
 	rec := h.withRecorder()
 	var sessionCalls atomic.Int32
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		if sessionCalls.Add(1) == 1 {
 			return 5, nil
 		}
+
 		return 0, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3661,7 +3684,7 @@ func TestRunLoop_EventDrainTimeout(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
-	h.mgr.activeSessionsFn = func() (int64, error) {
+	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 42, nil // sessions never clear
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3763,7 +3786,8 @@ func TestWatchFileContextCancelDuringPoll(t *testing.T) {
 	// then cancel.
 	dir := t.TempDir()
 	path := dir + "/watchfile"
-	if err := os.WriteFile(path, []byte("initial"), 0o644); err != nil {
+	err := os.WriteFile(path, []byte("initial"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -3776,7 +3800,8 @@ func TestWatchFileContextCancelDuringPoll(t *testing.T) {
 
 	// After cancel, any file changes should not produce notifications.
 	time.Sleep(50 * time.Millisecond)
-	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+	err = os.WriteFile(path, []byte("changed"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -3795,20 +3820,23 @@ func TestWatchFileNonBlockingSendDefault(t *testing.T) {
 	// changes without reading from the channel between them.
 	dir := t.TempDir()
 	path := dir + "/watchfile"
-	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+	err := os.WriteFile(path, []byte("v1"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	ch := watchFile(t.Context(), path, 10*time.Millisecond)
 
 	// First change — fills the channel (buffer size 1).
-	if err := os.WriteFile(path, []byte("v2"), 0o644); err != nil {
+	err = os.WriteFile(path, []byte("v2"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
 
 	// Second change — channel still has unread notification, triggers default.
-	if err := os.WriteFile(path, []byte("v3"), 0o644); err != nil {
+	err = os.WriteFile(path, []byte("v3"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -3934,7 +3962,7 @@ func TestStatusHandler(t *testing.T) {
 	store.recordReload()
 
 	handler := statusHandler(store)
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/status", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
@@ -3946,7 +3974,8 @@ func TestStatusHandler(t *testing.T) {
 	}
 
 	var resp statusResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	if err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 
@@ -4006,13 +4035,14 @@ func TestStatusHandlerLastReloadAtNull(t *testing.T) {
 	}
 
 	handler := statusHandler(store)
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/status", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
 	// Decode into a raw map to verify lastReloadAt is JSON null.
 	var raw map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+	err := json.NewDecoder(rec.Body).Decode(&raw)
+	if err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 	v, exists := raw["lastReloadAt"]
@@ -4031,7 +4061,7 @@ func TestStatusHandlerMethodNotAllowed(t *testing.T) {
 		backendCounts: map[string]int{},
 	}
 	handler := statusHandler(store)
-	req := httptest.NewRequest(http.MethodPost, "/status", nil)
+	req := httptest.NewRequest(http.MethodPost, "/status", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
@@ -4179,6 +4209,7 @@ func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
 		if mgrCalls.Add(1) == 1 {
 			return errors.New("varnish reload error")
 		}
+
 		return nil
 	}
 	store := &statusStore{

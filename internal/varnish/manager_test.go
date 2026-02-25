@@ -34,6 +34,7 @@ func (r *mockRunner) Run(name string, args []string) (string, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string{name}, args...))
 	r.mu.Unlock()
+
 	return r.runFn(name, args)
 }
 
@@ -49,6 +50,7 @@ func (p *mockProc) Wait() error {
 	if p.waitCh != nil {
 		<-p.waitCh
 	}
+
 	return p.waitErr
 }
 
@@ -56,6 +58,7 @@ func (p *mockProc) Signal(sig os.Signal) error {
 	p.mu.Lock()
 	p.signalled = append(p.signalled, sig)
 	p.mu.Unlock()
+
 	return nil
 }
 
@@ -91,12 +94,14 @@ func TestStartArgs(t *testing.T) {
 		startFn: func(name string, args []string) (proc, error) {
 			gotName = name
 			gotArgs = args
+
 			return mp, nil
 		},
 		runFn: func(_ string, args []string) (string, error) {
 			if slices.Contains(args, "-V") {
 				return varnishdVersionOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -150,6 +155,7 @@ func TestStartAdminWait(t *testing.T) {
 					return "", errors.New("connection refused")
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -176,6 +182,7 @@ func TestStartAdminTimeout(t *testing.T) {
 			if slices.Contains(args, "ping") {
 				return "", errors.New("connection refused")
 			}
+
 			return "", nil
 		},
 	}
@@ -212,12 +219,14 @@ func TestReloadSequence(t *testing.T) {
 	m := newTestManager(r)
 
 	// First reload
-	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
+	err := m.Reload("/tmp/vcl1.vcl")
+	if err != nil {
 		t.Fatalf("Reload 1 error: %v", err)
 	}
 
 	// Second reload
-	if err := m.Reload("/tmp/vcl2.vcl"); err != nil {
+	err = m.Reload("/tmp/vcl2.vcl")
+	if err != nil {
 		t.Fatalf("Reload 2 error: %v", err)
 	}
 
@@ -233,6 +242,7 @@ func TestReloadSequence(t *testing.T) {
 		for i, arg := range c {
 			if arg == "vcl.load" || arg == "vcl.use" {
 				loadUseCalls = append(loadUseCalls, c[i:])
+
 				break
 			}
 		}
@@ -264,6 +274,7 @@ func TestReloadLoadError(t *testing.T) {
 			if slices.Contains(args, "vcl.load") {
 				return "VCL compilation failed", errors.New("exit status 1")
 			}
+
 			return "", nil
 		},
 	}
@@ -298,6 +309,7 @@ func TestReloadUseError(t *testing.T) {
 			if slices.Contains(args, "vcl.use") {
 				return "VCL in use", errors.New("exit status 1")
 			}
+
 			return "200", nil
 		},
 	}
@@ -332,9 +344,11 @@ func TestDiscardOldVCLs(t *testing.T) {
 				}
 				if a == "vcl.discard" && i+1 < len(args) {
 					discarded = append(discarded, args[i+1])
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -398,6 +412,7 @@ func TestDebugLogging(t *testing.T) {
 			if slices.Contains(args, "-V") {
 				return varnishdVersionOutput, nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -421,7 +436,8 @@ func TestDebugLogging(t *testing.T) {
 
 	// Test varnishadm logging via Reload.
 	buf.Reset()
-	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
+	err = m.Reload("/tmp/vcl1.vcl")
+	if err != nil {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
@@ -451,6 +467,7 @@ func TestDebugLoggingDisabled(t *testing.T) {
 			if slices.Contains(args, "-V") {
 				return varnishdVersionOutput, nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -458,10 +475,12 @@ func TestDebugLoggingDisabled(t *testing.T) {
 	m := newTestManager(r)
 	m.log = logger
 
-	if err := m.Start("/tmp/test.vcl"); err != nil {
+	err := m.Start("/tmp/test.vcl")
+	if err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
+	err = m.Reload("/tmp/vcl1.vcl")
+	if err != nil {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
@@ -536,6 +555,7 @@ func TestStartDetectVersionError(t *testing.T) {
 			if slices.Contains(args, "-V") {
 				return "", errors.New("exec failed")
 			}
+
 			return "", nil
 		},
 	}
@@ -566,6 +586,7 @@ func TestStartAdminTimeoutViaStart(t *testing.T) {
 			if slices.Contains(args, "ping") {
 				return "", errors.New("connection refused")
 			}
+
 			return "", nil
 		},
 	}
@@ -592,6 +613,7 @@ func TestStartRunnerError(t *testing.T) {
 			if slices.Contains(args, "-V") {
 				return varnishdVersionOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -617,6 +639,7 @@ func TestWaitForAdminProcessExited(t *testing.T) {
 			if slices.Contains(args, "ping") {
 				return "", errors.New("connection refused")
 			}
+
 			return "", nil
 		},
 	}
@@ -646,6 +669,7 @@ func TestDiscardOldVCLsListError(t *testing.T) {
 			if slices.Contains(args, "vcl.list") {
 				return "", errors.New("admin error")
 			}
+
 			return "", nil
 		},
 	}
@@ -678,9 +702,11 @@ func TestDiscardOldVCLsMalformedLines(t *testing.T) {
 				}
 				if a == "vcl.discard" && i+1 < len(args) {
 					discarded = append(discarded, args[i+1])
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -710,9 +736,11 @@ func TestDiscardOldVCLsEmptyOutput(t *testing.T) {
 				}
 				if a == "vcl.discard" {
 					discardCalls++
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -735,7 +763,8 @@ func TestMarkBackendSick(t *testing.T) {
 
 	m := newTestManager(r)
 
-	if err := m.MarkBackendSick("drain_flag"); err != nil {
+	err := m.MarkBackendSick("drain_flag")
+	if err != nil {
 		t.Fatalf("MarkBackendSick() error: %v", err)
 	}
 
@@ -748,6 +777,7 @@ func TestMarkBackendSick(t *testing.T) {
 		for i, arg := range c {
 			if arg == "backend.set_health" && i+2 < len(c) && c[i+1] == "drain_flag" && c[i+2] == "sick" {
 				found = true
+
 				break
 			}
 		}
@@ -765,6 +795,7 @@ func TestMarkBackendSickError(t *testing.T) {
 			if slices.Contains(args, "backend.set_health") {
 				return "", errors.New("backend not found")
 			}
+
 			return "", nil
 		},
 	}
@@ -795,6 +826,7 @@ func TestActiveSessions(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -828,6 +860,7 @@ func TestActiveSessionsZero(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -860,6 +893,7 @@ func TestActiveSessionsNoCounters(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -885,6 +919,7 @@ func TestActiveSessionsError(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return "", errors.New("command failed")
 			}
+
 			return "", nil
 		},
 	}
@@ -910,6 +945,7 @@ func TestActiveSessionsInvalidJSON(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return "not valid json", nil
 			}
+
 			return "", nil
 		},
 	}
@@ -943,6 +979,7 @@ func TestActiveSessionsMalformedValue(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -985,9 +1022,11 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 					if name == "old_1" {
 						return "", errors.New("discard failed")
 					}
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -1065,6 +1104,7 @@ func TestDetectVersion(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
+
 				return
 			}
 			if err != nil {
@@ -1093,6 +1133,7 @@ func TestActiveSessionsV6(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -1118,6 +1159,7 @@ func TestActiveSessionsV6InvalidJSON(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return "not valid json", nil
 			}
+
 			return "", nil
 		},
 	}
@@ -1149,6 +1191,7 @@ func TestActiveSessionsV6MalformedCounter(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -1179,6 +1222,7 @@ func TestActiveSessionsV6NoCounters(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -1228,6 +1272,7 @@ func TestActiveSessionsV6Zero(t *testing.T) {
 			if name == defaultVarnishstatPath {
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -1315,8 +1360,10 @@ func TestActiveSessionsWithWorkDir(t *testing.T) {
 		runFn: func(name string, args []string) (string, error) {
 			if name == defaultVarnishstatPath {
 				gotArgs = args
+
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -1352,8 +1399,10 @@ func TestActiveSessionsWithoutWorkDir(t *testing.T) {
 		runFn: func(name string, args []string) (string, error) {
 			if name == defaultVarnishstatPath {
 				gotArgs = args
+
 				return varnishstatOutput, nil
 			}
+
 			return "", nil
 		},
 	}
@@ -1382,6 +1431,7 @@ func TestAdmArgsWithWorkDir(t *testing.T) {
 			if slices.Contains(args, "vcl.load") {
 				gotArgs = args
 			}
+
 			return "", nil
 		},
 	}
@@ -1411,6 +1461,7 @@ func TestAdmArgsWithoutWorkDir(t *testing.T) {
 			if slices.Contains(args, "vcl.load") {
 				gotArgs = args
 			}
+
 			return "", nil
 		},
 	}
@@ -1443,8 +1494,10 @@ func TestReloadRetrySucceeds(t *testing.T) {
 				if n <= 2 {
 					return "VCL compilation failed", errors.New("exit status 1")
 				}
+
 				return "200", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -1471,8 +1524,10 @@ func TestReloadRetriesExhausted(t *testing.T) {
 		runFn: func(_ string, args []string) (string, error) {
 			if slices.Contains(args, "vcl.load") {
 				loadCount.Add(1)
+
 				return "VCL compilation failed", errors.New("exit status 1")
 			}
+
 			return "200", nil
 		},
 	}
@@ -1503,8 +1558,10 @@ func TestReloadRetriesDisabled(t *testing.T) {
 		runFn: func(_ string, args []string) (string, error) {
 			if slices.Contains(args, "vcl.load") {
 				loadCount.Add(1)
+
 				return "VCL compilation failed", errors.New("exit status 1")
 			}
+
 			return "200", nil
 		},
 	}
@@ -1531,12 +1588,15 @@ func TestReloadVCLUseNotRetried(t *testing.T) {
 		runFn: func(_ string, args []string) (string, error) {
 			if slices.Contains(args, "vcl.load") {
 				loadCount.Add(1)
+
 				return "200", nil
 			}
 			if slices.Contains(args, "vcl.use") {
 				useCount.Add(1)
+
 				return "VCL in use", errors.New("exit status 1")
 			}
+
 			return "200", nil
 		},
 	}
@@ -1573,8 +1633,10 @@ func TestReloadRetryCounterIncrements(t *testing.T) {
 				if n <= 2 {
 					return "VCL compilation failed", errors.New("exit status 1")
 				}
+
 				return "200", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -1608,8 +1670,10 @@ func TestReloadRetryVCLNamesAndCallSequence(t *testing.T) {
 				if n <= 2 {
 					return "VCL compilation failed", errors.New("exit status 1")
 				}
+
 				return "200", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -1618,7 +1682,8 @@ func TestReloadRetryVCLNamesAndCallSequence(t *testing.T) {
 	m.ReloadRetries = 3
 	m.ReloadRetryInterval = time.Millisecond
 
-	if err := m.Reload("/tmp/test.vcl"); err != nil {
+	err := m.Reload("/tmp/test.vcl")
+	if err != nil {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
@@ -1632,6 +1697,7 @@ func TestReloadRetryVCLNamesAndCallSequence(t *testing.T) {
 		for i, arg := range c {
 			if arg == "vcl.load" || arg == "vcl.use" {
 				loadUseCalls = append(loadUseCalls, c[i:])
+
 				break
 			}
 		}
@@ -1671,8 +1737,10 @@ func TestReloadRetryNoDiscardOnExhausted(t *testing.T) {
 			}
 			if slices.Contains(args, "vcl.list") {
 				discardCalls.Add(1)
+
 				return "", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -1703,6 +1771,7 @@ func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
 				if n <= 1 {
 					return "VCL compilation failed", errors.New("exit status 1")
 				}
+
 				return "200", nil
 			}
 			if slices.Contains(args, "vcl.list") {
@@ -1717,8 +1786,10 @@ func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
 						discardCurrentName = args[i+1]
 					}
 				}
+
 				return "", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -1727,7 +1798,8 @@ func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
 	m.ReloadRetries = 2
 	m.ReloadRetryInterval = time.Millisecond
 
-	if err := m.Reload("/tmp/test.vcl"); err != nil {
+	err := m.Reload("/tmp/test.vcl")
+	if err != nil {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
@@ -1751,6 +1823,7 @@ func TestReloadRetryVCLUseNotCalledOnFailedAttempts(t *testing.T) {
 				if n <= 2 {
 					return "VCL compilation failed", errors.New("exit status 1")
 				}
+
 				return "200", nil
 			}
 			if slices.Contains(args, "vcl.use") {
@@ -1759,8 +1832,10 @@ func TestReloadRetryVCLUseNotCalledOnFailedAttempts(t *testing.T) {
 						useNames = append(useNames, args[i+1])
 					}
 				}
+
 				return "200", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -1769,7 +1844,8 @@ func TestReloadRetryVCLUseNotCalledOnFailedAttempts(t *testing.T) {
 	m.ReloadRetries = 3
 	m.ReloadRetryInterval = time.Millisecond
 
-	if err := m.Reload("/tmp/test.vcl"); err != nil {
+	err := m.Reload("/tmp/test.vcl")
+	if err != nil {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
@@ -1798,8 +1874,10 @@ func TestReloadRetryLogMessages(t *testing.T) {
 				if n <= 1 {
 					return "VCL compilation failed", errors.New("exit status 1")
 				}
+
 				return "200", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -1809,7 +1887,8 @@ func TestReloadRetryLogMessages(t *testing.T) {
 	m.ReloadRetries = 2
 	m.ReloadRetryInterval = time.Millisecond
 
-	if err := m.Reload("/tmp/test.vcl"); err != nil {
+	err := m.Reload("/tmp/test.vcl")
+	if err != nil {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
@@ -1843,7 +1922,8 @@ func TestReloadFirstAttemptSuccessWithRetriesConfigured(t *testing.T) {
 	m.ReloadRetries = 5
 	m.ReloadRetryInterval = time.Millisecond
 
-	if err := m.Reload("/tmp/test.vcl"); err != nil {
+	err := m.Reload("/tmp/test.vcl")
+	if err != nil {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
@@ -1906,15 +1986,10 @@ func TestVCLSuffix(t *testing.T) {
 	}
 }
 
-func TestDiscardOldVCLsKeepTwo(t *testing.T) {
-	t.Parallel()
-	vclListOutput := strings.Join([]string{
-		"active      0 warm          0 kv_reload_5",
-		"available   0 warm          0 kv_reload_1",
-		"available   0 warm          0 kv_reload_2",
-		"available   0 warm          0 kv_reload_3",
-		"available   0 warm          0 kv_reload_4",
-	}, "\n")
+// testDiscardOldVCLs is a helper that creates a mock runner with the given
+// vcl.list output, calls discardOldVCLs, and asserts the expected discards.
+func testDiscardOldVCLs(t *testing.T, vclListOutput string, vclKept int, currentVCL string, wantDiscarded []string) {
+	t.Helper()
 
 	var discarded []string
 	r := &mockRunner{
@@ -1926,28 +2001,47 @@ func TestDiscardOldVCLsKeepTwo(t *testing.T) {
 				}
 				if a == "vcl.discard" && i+1 < len(args) {
 					discarded = append(discarded, args[i+1])
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
 
 	m := newTestManager(r)
-	m.VCLKept = 2
+	m.VCLKept = vclKept
 
-	m.discardOldVCLs("kv_reload_5")
+	m.discardOldVCLs(currentVCL)
 
-	// Should keep kv_reload_4 and kv_reload_3 (newest 2), discard kv_reload_1 and kv_reload_2.
-	if len(discarded) != 2 {
-		t.Fatalf("discarded %d VCLs, want 2: %v", len(discarded), discarded)
+	if len(discarded) != len(wantDiscarded) {
+		t.Fatalf("discarded %d VCLs, want %d: %v", len(discarded), len(wantDiscarded), discarded)
 	}
-	want := map[string]bool{"kv_reload_1": true, "kv_reload_2": true}
+	want := make(map[string]bool, len(wantDiscarded))
+	for _, name := range wantDiscarded {
+		want[name] = true
+	}
 	for _, name := range discarded {
 		if !want[name] {
 			t.Errorf("unexpectedly discarded %q", name)
 		}
 	}
+}
+
+func TestDiscardOldVCLsKeepTwo(t *testing.T) {
+	t.Parallel()
+	testDiscardOldVCLs(t,
+		strings.Join([]string{
+			"active      0 warm          0 kv_reload_5",
+			"available   0 warm          0 kv_reload_1",
+			"available   0 warm          0 kv_reload_2",
+			"available   0 warm          0 kv_reload_3",
+			"available   0 warm          0 kv_reload_4",
+		}, "\n"),
+		2, "kv_reload_5",
+		[]string{"kv_reload_1", "kv_reload_2"},
+	)
 }
 
 func TestDiscardOldVCLsKeepMoreThanAvailable(t *testing.T) {
@@ -1968,9 +2062,11 @@ func TestDiscardOldVCLsKeepMoreThanAvailable(t *testing.T) {
 				}
 				if a == "vcl.discard" {
 					discardCalls++
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -2003,9 +2099,11 @@ func TestDiscardOldVCLsKeepZeroDiscardsAll(t *testing.T) {
 				}
 				if a == "vcl.discard" && i+1 < len(args) {
 					discarded = append(discarded, args[i+1])
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -2028,47 +2126,19 @@ func TestDiscardOldVCLsKeepZeroDiscardsAll(t *testing.T) {
 
 func TestDiscardOldVCLsNonKVNames(t *testing.T) {
 	t.Parallel()
-	vclListOutput := strings.Join([]string{
-		"active      0 warm          0 kv_reload_4",
-		"available   0 warm          0 kv_reload_2",
-		"available   0 warm          0 kv_reload_3",
-		"available   0 warm          0 manual_vcl",
-		"available   0 warm          0 old_config",
-	}, "\n")
-
-	var discarded []string
-	r := &mockRunner{
-		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
-		runFn: func(_ string, args []string) (string, error) {
-			for i, a := range args {
-				if a == "vcl.list" {
-					return vclListOutput, nil
-				}
-				if a == "vcl.discard" && i+1 < len(args) {
-					discarded = append(discarded, args[i+1])
-					return "", nil
-				}
-			}
-			return "", nil
-		},
-	}
-
-	m := newTestManager(r)
-	m.VCLKept = 2
-
-	m.discardOldVCLs("kv_reload_4")
-
 	// 4 available. Keep 2 newest: kv_reload_3 (suffix 3), kv_reload_2 (suffix 2).
 	// Discard: manual_vcl (suffix -1), old_config (suffix -1) — these sort as oldest.
-	if len(discarded) != 2 {
-		t.Fatalf("discarded %d VCLs, want 2: %v", len(discarded), discarded)
-	}
-	want := map[string]bool{"manual_vcl": true, "old_config": true}
-	for _, name := range discarded {
-		if !want[name] {
-			t.Errorf("unexpectedly discarded %q", name)
-		}
-	}
+	testDiscardOldVCLs(t,
+		strings.Join([]string{
+			"active      0 warm          0 kv_reload_4",
+			"available   0 warm          0 kv_reload_2",
+			"available   0 warm          0 kv_reload_3",
+			"available   0 warm          0 manual_vcl",
+			"available   0 warm          0 old_config",
+		}, "\n"),
+		2, "kv_reload_4",
+		[]string{"manual_vcl", "old_config"},
+	)
 }
 
 func TestDiscardOldVCLsKeepExactCount(t *testing.T) {
@@ -2089,9 +2159,11 @@ func TestDiscardOldVCLsKeepExactCount(t *testing.T) {
 				}
 				if a == "vcl.discard" {
 					discardCalls++
+
 					return "", nil
 				}
 			}
+
 			return "", nil
 		},
 	}
@@ -2123,8 +2195,10 @@ func TestReloadRetryCounterContinuityAcrossCalls(t *testing.T) {
 				if n == 1 || n == 3 {
 					return "VCL compilation failed", errors.New("exit status 1")
 				}
+
 				return "200", nil
 			}
+
 			return "200", nil
 		},
 	}
@@ -2133,10 +2207,12 @@ func TestReloadRetryCounterContinuityAcrossCalls(t *testing.T) {
 	m.ReloadRetries = 2
 	m.ReloadRetryInterval = time.Millisecond
 
-	if err := m.Reload("/tmp/vcl1.vcl"); err != nil {
+	err := m.Reload("/tmp/vcl1.vcl")
+	if err != nil {
 		t.Fatalf("first Reload() error: %v", err)
 	}
-	if err := m.Reload("/tmp/vcl2.vcl"); err != nil {
+	err = m.Reload("/tmp/vcl2.vcl")
+	if err != nil {
 		t.Fatalf("second Reload() error: %v", err)
 	}
 

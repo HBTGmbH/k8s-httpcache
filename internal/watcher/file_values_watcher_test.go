@@ -17,6 +17,7 @@ func readFileValuesChanges(t *testing.T, w *FileValuesWatcher) map[string]any {
 		return data
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for file values change")
+
 		return nil
 	}
 }
@@ -34,7 +35,8 @@ func assertNoFileValuesChanges(t *testing.T, w *FileValuesWatcher, timeout time.
 
 func writeYAML(t *testing.T, dir, name, content string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+	err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -224,7 +226,8 @@ func TestFileValuesWatcherFileDeleted(t *testing.T) {
 	}
 
 	// Delete the file.
-	if err := os.Remove(filepath.Join(dir, "server.yaml")); err != nil {
+	err := os.Remove(filepath.Join(dir, "server.yaml"))
+	if err != nil {
 		t.Fatal(err)
 	}
 

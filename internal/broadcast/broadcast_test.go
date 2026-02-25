@@ -48,6 +48,7 @@ func frontendFromServer(name string, ts *httptest.Server) watcher.Frontend {
 	for _, c := range parts[1] {
 		port = port*10 + (c - '0')
 	}
+
 	return watcher.Frontend{
 		Name: name,
 		IP:   parts[0],
@@ -59,7 +60,7 @@ func TestNoFrontends(t *testing.T) {
 	t.Parallel()
 	s := newTestServer()
 
-	req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -68,7 +69,9 @@ func TestNoFrontends(t *testing.T) {
 	}
 
 	var body map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&body)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if body["error"] == "" {
@@ -87,7 +90,7 @@ func TestSingleFrontend(t *testing.T) {
 	s := newTestServer()
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
-	req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -96,7 +99,9 @@ func TestSingleFrontend(t *testing.T) {
 	}
 
 	var results map[string]PodResult
-	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
@@ -135,7 +140,7 @@ func TestMultipleFrontends(t *testing.T) {
 		frontendFromServer("pod-2", b2),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/purge/bar", nil)
+	req := httptest.NewRequest(http.MethodGet, "/purge/bar", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -144,7 +149,9 @@ func TestMultipleFrontends(t *testing.T) {
 	}
 
 	var results map[string]PodResult
-	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
@@ -181,7 +188,7 @@ func TestFrontendDown(t *testing.T) {
 		deadFe,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/purge/x", nil)
+	req := httptest.NewRequest(http.MethodGet, "/purge/x", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -190,7 +197,9 @@ func TestFrontendDown(t *testing.T) {
 	}
 
 	var results map[string]PodResult
-	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
@@ -223,7 +232,7 @@ func TestMethodAndHeadersPreserved(t *testing.T) {
 	s := newTestServer()
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
-	req := httptest.NewRequest("PURGE", "/cache/item", nil)
+	req := httptest.NewRequest("PURGE", "/cache/item", http.NoBody)
 	req.Header.Set("X-Custom", "test-value")
 	req.Header.Set("X-Another", "another-value")
 
@@ -317,7 +326,7 @@ func TestTargetPortOverride(t *testing.T) {
 	})
 	s.SetFrontends([]watcher.Frontend{fe})
 
-	req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -326,7 +335,9 @@ func TestTargetPortOverride(t *testing.T) {
 	}
 
 	var results map[string]PodResult
-	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
@@ -348,7 +359,7 @@ func TestDrainingConnectionClose(t *testing.T) {
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	// Before draining: no Connection: close header.
-	req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -360,7 +371,7 @@ func TestDrainingConnectionClose(t *testing.T) {
 	s.draining.Store(true)
 
 	// After draining: Connection: close header must be present.
-	req = httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+	req = httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -481,7 +492,7 @@ func TestNoFrontendsDraining(t *testing.T) {
 	s := newTestServer()
 	s.draining.Store(true)
 
-	req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -546,7 +557,8 @@ func TestShutdown(t *testing.T) {
 	// Shutdown the server.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.Shutdown(ctx); err != nil {
+	err = s.Shutdown(ctx)
+	if err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 
@@ -571,7 +583,7 @@ func TestMaxBodySizeTruncation(t *testing.T) {
 	s := newTestServer()
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
-	req := httptest.NewRequest(http.MethodGet, "/big", nil)
+	req := httptest.NewRequest(http.MethodGet, "/big", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -580,7 +592,9 @@ func TestMaxBodySizeTruncation(t *testing.T) {
 	}
 
 	var results map[string]PodResult
-	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
@@ -604,7 +618,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 	s := newTestServer()
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
-	req := httptest.NewRequest(http.MethodGet, "/redirect-me", nil)
+	req := httptest.NewRequest(http.MethodGet, "/redirect-me", http.NoBody)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
 
@@ -613,7 +627,9 @@ func TestRedirectNotFollowed(t *testing.T) {
 	}
 
 	var results map[string]PodResult
-	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
@@ -639,7 +655,9 @@ func TestRequestBodyReadError(t *testing.T) {
 	}
 
 	var body map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+
+	err := json.NewDecoder(rec.Body).Decode(&body)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if !strings.Contains(body["error"], "failed to read request body") {
@@ -690,11 +708,12 @@ func TestListenAndServe(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.Shutdown(ctx); err != nil {
+	err := s.Shutdown(ctx)
+	if err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 
-	err := <-errCh
+	err = <-errCh
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		t.Fatalf("ListenAndServe: %v", err)
 	}
@@ -734,7 +753,7 @@ func TestConcurrentSetFrontends(t *testing.T) {
 	// Concurrently make requests.
 	for range 20 {
 		wg.Go(func() {
-			req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
+			req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 			rec := httptest.NewRecorder()
 			s.ServeHTTP(rec, req)
 
@@ -747,7 +766,8 @@ func TestConcurrentSetFrontends(t *testing.T) {
 				t.Errorf("Content-Type = %q, want application/json", ct)
 			}
 			var raw json.RawMessage
-			if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+			err := json.NewDecoder(rec.Body).Decode(&raw)
+			if err != nil {
 				t.Errorf("response is not valid JSON: %v", err)
 			}
 		})

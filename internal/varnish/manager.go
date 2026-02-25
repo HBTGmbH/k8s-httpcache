@@ -30,7 +30,7 @@ type runner interface {
 // proc represents a running process.
 type proc interface {
 	Wait() error
-	Signal(os.Signal) error
+	Signal(sig os.Signal) error
 	Pid() int
 }
 
@@ -41,23 +41,27 @@ func (execRunner) Start(name string, args []string) (proc, error) {
 	cmd := exec.Command(name, args...) //nolint:noctx // varnishd runs for the container's lifetime; cancelled via SIGTERM, not context.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return nil, err
+
+	err := cmd.Start()
+	if err != nil {
+		return nil, err //nolint:wrapcheck // interface impl delegates to exec.Cmd
 	}
+
 	return &execProc{cmd: cmd}, nil
 }
 
 func (execRunner) Run(name string, args []string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:noctx // varnishadm commands are short-lived; timeout is handled by the admin socket.
 	out, err := cmd.CombinedOutput()
+
 	return strings.TrimSpace(string(out)), err
 }
 
 // execProc wraps an exec.Cmd as a proc.
 type execProc struct{ cmd *exec.Cmd }
 
-func (p *execProc) Wait() error                { return p.cmd.Wait() }
-func (p *execProc) Signal(sig os.Signal) error { return p.cmd.Process.Signal(sig) }
+func (p *execProc) Wait() error                { return p.cmd.Wait() }              //nolint:wrapcheck // interface impl delegates to exec.Cmd
+func (p *execProc) Signal(sig os.Signal) error { return p.cmd.Process.Signal(sig) } //nolint:wrapcheck // interface impl delegates to exec.Cmd
 func (p *execProc) Pid() int                   { return p.cmd.Process.Pid }
 
 // Manager manages the varnishd process and performs VCL reloads via varnishadm.
@@ -90,12 +94,14 @@ func extractWorkDir(args []string) string {
 			if i+1 < len(args) {
 				return args[i+1]
 			}
+
 			return ""
 		}
 		if strings.HasPrefix(a, "-n") && len(a) > 2 {
 			return a[2:]
 		}
 	}
+
 	return ""
 }
 
@@ -105,13 +111,14 @@ const defaultVarnishstatPath = "varnishstat"
 // New creates a new varnish Manager. listenAddrs are passed as individual -a
 // flags to varnishd. extraArgs are appended to the varnishd command line.
 // varnishstatPath is the path to the varnishstat binary (defaults to "varnishstat" if empty).
-func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []string, varnishstatPath string, metrics *telemetry.Metrics) *Manager {
+func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, varnishstatPath string, metrics *telemetry.Metrics) *Manager {
 	if metrics == nil {
 		panic("varnish: metrics must not be nil")
 	}
 	if varnishstatPath == "" {
 		varnishstatPath = defaultVarnishstatPath
 	}
+
 	return &Manager{
 		varnishdPath:    varnishdPath,
 		varnishadmPath:  varnishadmPath,
@@ -151,6 +158,7 @@ func (m *Manager) DetectVersion() error {
 	if trunkVersionRe.MatchString(out) {
 		m.majorVersion = trunkMajorVersion
 		m.log.Info("detected varnish version", "major", "trunk")
+
 		return nil
 	}
 	matches := versionRe.FindStringSubmatch(out)
@@ -163,6 +171,7 @@ func (m *Manager) DetectVersion() error {
 	}
 	m.majorVersion = v
 	m.log.Info("detected varnish version", "major", m.majorVersion)
+
 	return nil
 }
 
@@ -176,7 +185,8 @@ func (m *Manager) MajorVersion() int {
 // It blocks until the admin port is ready or a timeout is reached.
 func (m *Manager) Start(initialVCL string) error {
 	if m.majorVersion == 0 {
-		if err := m.DetectVersion(); err != nil {
+		err := m.DetectVersion()
+		if err != nil {
 			return fmt.Errorf("detecting varnish version: %w", err)
 		}
 	}
@@ -209,11 +219,13 @@ func (m *Manager) Start(initialVCL string) error {
 	}()
 
 	// Wait for admin port to become ready.
-	if err := m.waitForAdmin(m.AdminTimeout); err != nil {
+	err = m.waitForAdmin(m.AdminTimeout)
+	if err != nil {
 		return fmt.Errorf("waiting for varnish admin: %w", err)
 	}
 
 	m.log.Info("varnish admin ready")
+
 	return nil
 }
 
@@ -225,7 +237,51 @@ func (m *Manager) Reload(vclPath string) error {
 	start := time.Now()
 	err := m.reload(vclPath)
 	m.metrics.VCLReloadDurationSeconds.Observe(time.Since(start).Seconds())
+
 	return err
+}
+
+// ForwardSignal sends a signal to the varnishd process.
+func (m *Manager) ForwardSignal(sig os.Signal) {
+	if m.proc != nil {
+		_ = m.proc.Signal(sig)
+	}
+}
+
+// Done returns a channel that is closed when varnishd exits.
+func (m *Manager) Done() <-chan struct{} {
+	return m.done
+}
+
+// Err returns the error from varnishd exiting, if any.
+func (m *Manager) Err() error {
+	return m.err
+}
+
+// MarkBackendSick sets the named backend to "sick" via varnishadm.
+func (m *Manager) MarkBackendSick(name string) error {
+	_, err := m.adm("backend.set_health", name, "sick")
+
+	return err
+}
+
+// ActiveSessions returns the total number of live client sessions by summing
+// MEMPOOL.sess<N>.live counters from varnishstat -1 -j output.
+// It handles both the Varnish 7+ nested format and the Varnish 6.x flat format.
+func (m *Manager) ActiveSessions() (uint64, error) {
+	args := []string{"-1", "-j"}
+	if m.workDir != "" {
+		args = []string{"-n", m.workDir, "-1", "-j"}
+	}
+	out, err := m.run.Run(m.varnishstatPath, args)
+	if err != nil {
+		return 0, fmt.Errorf("varnishstat: %w", err)
+	}
+	if m.majorVersion < 7 {
+		return m.parseActiveSessionsV6(out)
+	}
+
+	return m.parseActiveSessionsV7(out)
 }
 
 func (m *Manager) reload(vclPath string) error {
@@ -249,8 +305,10 @@ func (m *Manager) reload(vclPath string) error {
 					"error", lastErr,
 				)
 				time.Sleep(m.ReloadRetryInterval)
+
 				continue
 			}
+
 			return lastErr
 		}
 
@@ -275,73 +333,37 @@ func (m *Manager) reload(vclPath string) error {
 	return lastErr
 }
 
-// ForwardSignal sends a signal to the varnishd process.
-func (m *Manager) ForwardSignal(sig os.Signal) {
-	if m.proc != nil {
-		_ = m.proc.Signal(sig)
-	}
-}
-
-// Done returns a channel that is closed when varnishd exits.
-func (m *Manager) Done() <-chan struct{} {
-	return m.done
-}
-
-// Err returns the error from varnishd exiting, if any.
-func (m *Manager) Err() error {
-	return m.err
-}
-
-// MarkBackendSick sets the named backend to "sick" via varnishadm.
-func (m *Manager) MarkBackendSick(name string) error {
-	_, err := m.adm("backend.set_health", name, "sick")
-	return err
-}
-
-// ActiveSessions returns the total number of live client sessions by summing
-// MEMPOOL.sess<N>.live counters from varnishstat -1 -j output.
-// It handles both the Varnish 7+ nested format and the Varnish 6.x flat format.
-func (m *Manager) ActiveSessions() (int64, error) {
-	args := []string{"-1", "-j"}
-	if m.workDir != "" {
-		args = []string{"-n", m.workDir, "-1", "-j"}
-	}
-	out, err := m.run.Run(m.varnishstatPath, args)
-	if err != nil {
-		return 0, fmt.Errorf("varnishstat: %w", err)
-	}
-	if m.majorVersion < 7 {
-		return m.parseActiveSessionsV6(out)
-	}
-	return m.parseActiveSessionsV7(out)
-}
-
-func (m *Manager) parseActiveSessionsV7(out string) (int64, error) {
+func (m *Manager) parseActiveSessionsV7(out string) (uint64, error) {
 	var data struct {
 		Counters map[string]struct {
 			Value uint64 `json:"value"`
 		} `json:"counters"`
 	}
-	if err := json.Unmarshal([]byte(out), &data); err != nil {
+
+	err := json.Unmarshal([]byte(out), &data)
+	if err != nil {
 		return 0, fmt.Errorf("parsing varnishstat JSON: %w", err)
 	}
 
-	var total int64
+	var total uint64
 	for key, counter := range data.Counters {
 		if strings.HasPrefix(key, "MEMPOOL.sess") && strings.HasSuffix(key, ".live") {
-			total += int64(counter.Value)
+			total += counter.Value
 		}
 	}
+
 	return total, nil
 }
 
-func (m *Manager) parseActiveSessionsV6(out string) (int64, error) {
+func (m *Manager) parseActiveSessionsV6(out string) (uint64, error) {
 	var data map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(out), &data); err != nil {
+
+	err := json.Unmarshal([]byte(out), &data)
+	if err != nil {
 		return 0, fmt.Errorf("parsing varnishstat JSON: %w", err)
 	}
 
-	var total int64
+	var total uint64
 	for key, raw := range data {
 		if !strings.HasPrefix(key, "MEMPOOL.sess") || !strings.HasSuffix(key, ".live") {
 			continue
@@ -349,11 +371,14 @@ func (m *Manager) parseActiveSessionsV6(out string) (int64, error) {
 		var counter struct {
 			Value uint64 `json:"value"`
 		}
-		if err := json.Unmarshal(raw, &counter); err != nil {
+
+		err := json.Unmarshal(raw, &counter)
+		if err != nil {
 			return 0, fmt.Errorf("parsing varnishstat counter %q: %w", key, err)
 		}
-		total += int64(counter.Value)
+		total += counter.Value
 	}
+
 	return total, nil
 }
 
@@ -367,24 +392,26 @@ func (m *Manager) waitForAdmin(timeout time.Duration) error {
 		default:
 		}
 
-		if _, err := m.adm("ping"); err == nil {
+		_, err := m.adm("ping")
+		if err == nil {
 			return nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+
 	return errors.New("timeout waiting for varnish admin")
 }
 
 func (m *Manager) adm(args ...string) (string, error) {
-	var cmdArgs []string
+	cmdArgs := make([]string, 0, len(args)+2)
 	if m.workDir != "" {
-		cmdArgs = []string{"-n", m.workDir}
+		cmdArgs = append(cmdArgs, "-n", m.workDir)
 	}
 	cmdArgs = append(cmdArgs, args...)
 
 	m.log.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
 
-	return m.run.Run(m.varnishadmPath, cmdArgs)
+	return m.run.Run(m.varnishadmPath, cmdArgs) //nolint:wrapcheck // internal helper; callers add context
 }
 
 // vclSuffix parses the numeric suffix from a VCL name matching the
@@ -398,6 +425,7 @@ func vclSuffix(name string) int64 {
 	if err != nil {
 		return -1
 	}
+
 	return n
 }
 
@@ -442,7 +470,8 @@ func (m *Manager) discardOldVCLs(currentName string) {
 	}
 
 	for _, name := range available {
-		if _, err := m.adm("vcl.discard", name); err != nil {
+		_, err := m.adm("vcl.discard", name)
+		if err != nil {
 			m.log.Warn("failed to discard VCL", "name", name, "error", err)
 		}
 	}

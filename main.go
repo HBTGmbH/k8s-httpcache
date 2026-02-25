@@ -51,7 +51,7 @@ const drainBackendName = "drain_flag"
 // vclRenderer abstracts VCL template operations (satisfied by *renderer.Renderer).
 type vclRenderer interface {
 	Reload() error
-	RenderToFile([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any) (string, error)
+	RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values map[string]map[string]any) (string, error)
 	Rollback()
 }
 
@@ -62,13 +62,13 @@ type varnishProcess interface {
 	Err() error
 	ForwardSignal(sig os.Signal)
 	MarkBackendSick(name string) error
-	ActiveSessions() (int64, error)
+	ActiveSessions() (uint64, error)
 }
 
 // broadcaster abstracts broadcast server operations (satisfied by *broadcast.Server).
 type broadcaster interface {
-	SetFrontends([]watcher.Frontend)
-	Drain(time.Duration) error
+	SetFrontends(frontends []watcher.Frontend)
+	Drain(timeout time.Duration) error
 }
 
 // debounceState tracks the timer and deadline for one debounce group.
@@ -207,6 +207,7 @@ func statusHandler(store *statusStore) http.HandlerFunc {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -220,6 +221,7 @@ func backendCountsMap(backends map[string][]watcher.Endpoint) map[string]int {
 	for name, eps := range backends {
 		m[name] = len(eps)
 	}
+
 	return m
 }
 
@@ -295,7 +297,9 @@ func main() {
 		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout}
 		go func() {
 			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
-			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+
+			err := metricsSrv.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Fatalf("metrics server: %v", err)
 			}
 		}()
@@ -326,12 +330,13 @@ func main() {
 			Name:       podName,
 			Namespace:  cfg.ServiceNamespace,
 		}
-		if pod, err := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(context.Background(), podName, metav1.GetOptions{}); err != nil {
+		pod, err := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(context.Background(), podName, metav1.GetOptions{})
+		if err != nil {
 			slog.Warn("could not look up pod UID for event recording; events may not appear in kubectl describe pod", "error", err)
 		} else {
 			podRef.UID = pod.UID
 		}
-		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace)
+		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace) //nolint:gosec // G706: values from pod spec env/flags, not runtime user input
 	} else {
 		slog.Info("POD_NAME not set, kubernetes event recording disabled")
 	}
@@ -348,7 +353,8 @@ func main() {
 	mgr.ReloadRetryInterval = cfg.VCLReloadRetryInterval
 	mgr.VCLKept = cfg.VCLKept
 
-	if err := mgr.DetectVersion(); err != nil {
+	err = mgr.DetectVersion()
+	if err != nil {
 		log.Fatalf("varnish version: %v", err)
 	}
 	status.varnishMajorVersion = mgr.MajorVersion()
@@ -368,21 +374,23 @@ func main() {
 	// Start frontend watcher.
 	w := watcher.New(clientset, cfg.ServiceNamespace, cfg.ServiceName, "")
 	go func() {
-		if err := w.Run(ctx); err != nil {
+		err := w.Run(ctx)
+		if err != nil {
 			slog.Error("watcher error", "error", err)
 		}
 	}()
 
 	// Start backend watchers.
 	var (
-		bwNames    []string
-		bwWatchers []*watcher.BackendWatcher
+		bwNames    = make([]string, 0, len(cfg.Backends))
+		bwWatchers = make([]*watcher.BackendWatcher, 0, len(cfg.Backends))
 	)
 	for _, b := range cfg.Backends {
 		bw := watcher.NewBackendWatcher(clientset, b.Namespace, b.ServiceName, b.Port)
 		name := b.Name
 		go func() {
-			if err := bw.Run(ctx); err != nil {
+			err := bw.Run(ctx)
+			if err != nil {
 				slog.Error("backend watcher error", "backend", name, "error", err)
 			}
 		}()
@@ -392,14 +400,15 @@ func main() {
 
 	// Start ConfigMap watchers for --values.
 	var (
-		vwNames    []string
-		vwWatchers []*watcher.ConfigMapWatcher
+		vwNames    = make([]string, 0, len(cfg.Values))
+		vwWatchers = make([]*watcher.ConfigMapWatcher, 0, len(cfg.Values))
 	)
 	for _, v := range cfg.Values {
 		vw := watcher.NewConfigMapWatcher(clientset, v.Namespace, v.ConfigMapName)
 		name := v.Name
 		go func() {
-			if err := vw.Run(ctx); err != nil {
+			err := vw.Run(ctx)
+			if err != nil {
 				slog.Error("values watcher error", "values", name, "error", err)
 			}
 		}()
@@ -409,14 +418,15 @@ func main() {
 
 	// Start directory watchers for --values-dir.
 	var (
-		fvwNames    []string
-		fvwWatchers []*watcher.FileValuesWatcher
+		fvwNames    = make([]string, 0, len(cfg.ValuesDirs))
+		fvwWatchers = make([]*watcher.FileValuesWatcher, 0, len(cfg.ValuesDirs))
 	)
 	for _, vd := range cfg.ValuesDirs {
 		fvw := watcher.NewFileValuesWatcher(vd.Path, cfg.ValuesDirPollInterval)
 		name := vd.Name
 		go func() {
-			if err := fvw.Run(ctx); err != nil {
+			err := fvw.Run(ctx)
+			if err != nil {
 				slog.Error("values-dir watcher error", "values-dir", name, "error", err)
 			}
 		}()
@@ -437,7 +447,7 @@ func main() {
 	slog.Info("waiting for initial endpoint data")
 	latestFrontends := <-w.Changes()
 	if len(latestFrontends) == 0 {
-		slog.Warn("frontend Service has no ready endpoints at startup",
+		slog.Warn("frontend Service has no ready endpoints at startup", //nolint:gosec // G706: values from CLI flags, not runtime user input
 			"namespace", cfg.ServiceNamespace, "service", cfg.ServiceName)
 	}
 	latestBackends := make(map[string][]watcher.Endpoint)
@@ -451,7 +461,7 @@ func main() {
 	for i, fvw := range fvwWatchers {
 		latestValues[fvwNames[i]] = <-fvw.Changes()
 	}
-	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues))
+	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues)) //nolint:gosec // G706: values are integer counts, not user strings
 
 	// Set initial status counts.
 	status.setEndpointCounts(len(latestFrontends), backendCountsMap(latestBackends))
@@ -478,7 +488,8 @@ func main() {
 		})
 		bcast.SetFrontends(latestFrontends)
 		go func() {
-			if err := bcast.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			err := bcast.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Fatalf("broadcast server: %v", err)
 			}
 		}()
@@ -493,7 +504,8 @@ func main() {
 	}
 	defer func() { _ = os.Remove(initialVCL) }()
 
-	if err := mgr.Start(initialVCL); err != nil {
+	err = mgr.Start(initialVCL)
+	if err != nil {
 		log.Fatalf("varnish start: %v", err)
 	}
 	metrics.VarnishdUp.Set(1)
@@ -596,6 +608,102 @@ func main() {
 }
 
 // runLoop runs the main event loop, returning 0 for clean shutdown and 1 for error.
+// rollbackReload re-renders VCL with the rolled-back template and reloads
+// Varnish. Called after the primary reload fails on a new template.
+func rollbackReload(lc *loopConfig, reasons string) {
+	renderStart := time.Now()
+	vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
+	lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
+	if err != nil {
+		lc.metrics.VCLRenderErrorsTotal.Inc()
+		slog.Error("render error after rollback", "error", err)
+		emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error after rollback: %v", err))
+
+		return
+	}
+	defer func() { _ = os.Remove(vclPath) }()
+
+	err = lc.mgr.Reload(vclPath)
+	if err != nil {
+		lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
+		slog.Error("reload error after rollback", "error", err)
+		emitEvent(lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed after rollback: %v", err))
+
+		return
+	}
+	lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
+	emitEvent(lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully after rollback (%s)", reasons))
+	if lc.status != nil {
+		lc.status.recordReload()
+		lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
+	}
+}
+
+// handleDrain runs the graceful drain sequence: mark backend sick, wait for
+// endpoint removal, then optionally poll active sessions until they reach 0.
+func handleDrain(lc *loopConfig, sig os.Signal) {
+	emitEvent(lc, v1.EventTypeNormal, "DrainStarted", fmt.Sprintf("Received %v, starting graceful drain", sig))
+
+	// Mark the VCL backend sick so Varnish starts responding
+	// with Connection: close, causing clients to disconnect.
+	err := lc.mgr.MarkBackendSick(lc.drainBackend)
+	if err != nil {
+		slog.Error("failed to mark backend sick", "backend", lc.drainBackend, "error", err)
+	} else {
+		slog.Info("marked backend sick", "backend", lc.drainBackend)
+	}
+
+	// Sleep drainDelay to let Kubernetes remove this pod from
+	// endpoints, interruptible by a second signal.
+	slog.Info("waiting for endpoint removal", "delay", lc.drainDelay)
+	interrupted := false
+	select {
+	case <-time.After(lc.drainDelay):
+	case <-lc.sigCh:
+		slog.Info("second signal received, skipping drain wait")
+		interrupted = true
+	}
+
+	// Poll ActiveSessions every 1s until 0 or drainTimeout,
+	// unless interrupted by a second signal. When drainTimeout
+	// is 0, skip polling entirely (useful when clients hold
+	// long-lived connections that may never close).
+	if interrupted || lc.drainTimeout <= 0 {
+		return
+	}
+	deadline := time.After(lc.drainTimeout)
+	ticker := time.NewTicker(lc.drainPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			sessions, err := lc.mgr.ActiveSessions()
+			if err != nil {
+				slog.Warn("failed to read active sessions", "error", err)
+
+				continue
+			}
+			slog.Info("active sessions", "count", sessions)
+			if sessions == 0 {
+				slog.Info("all connections drained")
+				emitEvent(lc, v1.EventTypeNormal, "DrainCompleted", "All connections drained")
+
+				return
+			}
+		case <-deadline:
+			slog.Warn("drain timeout reached, proceeding with shutdown")
+			emitEvent(lc, v1.EventTypeWarning, "DrainTimeout", "Drain timeout reached, proceeding with forced shutdown")
+
+			return
+		case <-lc.sigCh:
+			slog.Info("second signal received, aborting drain")
+
+			return
+		}
+	}
+}
+
+//nolint:gocritic // hugeParam: called once per process; helpers already take &lc
 func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 	var (
 		frontend        debounceState
@@ -634,7 +742,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		// If the template file changed, try to parse the new version.
 		reloadedTemplate := false
 		if templateChanged {
-			if err := lc.rend.Reload(); err != nil {
+			err := lc.rend.Reload()
+			if err != nil {
 				lc.metrics.VCLTemplateParseErrorsTotal.Inc()
 				slog.Error("template parse error, keeping old template", "error", err)
 				emitEvent(&lc, v1.EventTypeWarning, "VCLTemplateParseFailed", fmt.Sprintf("Template parse error: %v", err))
@@ -657,10 +766,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				lc.rend.Rollback()
 				emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
 			}
+
 			return
 		}
 
-		if err := lc.mgr.Reload(vclPath); err != nil {
+		err = lc.mgr.Reload(vclPath)
+		if err != nil {
 			lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
 			slog.Error("reload error", "error", err)
 			emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
@@ -678,28 +789,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Warn("rolled back to previous template")
 			emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Rolled back to previous template after reload failure")
 
-			renderStart = time.Now()
-			vclPath, err = lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
-			lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
-			if err != nil {
-				lc.metrics.VCLRenderErrorsTotal.Inc()
-				slog.Error("render error after rollback", "error", err)
-				emitEvent(&lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error after rollback: %v", err))
-				return
-			}
-			if err := lc.mgr.Reload(vclPath); err != nil {
-				lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
-				slog.Error("reload error after rollback", "error", err)
-				emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed after rollback: %v", err))
-			} else {
-				lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
-				emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully after rollback (%s)", reasons))
-				if lc.status != nil {
-					lc.status.recordReload()
-					lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
-				}
-			}
-			_ = os.Remove(vclPath)
+			rollbackReload(&lc, reasons)
+
 			return
 		}
 
@@ -784,59 +875,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Info("received signal, shutting down", "signal", sig)
 
 			if lc.drainBackend != "" {
-				emitEvent(&lc, v1.EventTypeNormal, "DrainStarted", fmt.Sprintf("Received %v, starting graceful drain", sig))
-				// Mark the VCL backend sick so Varnish starts responding
-				// with Connection: close, causing clients to disconnect.
-				if err := lc.mgr.MarkBackendSick(lc.drainBackend); err != nil {
-					slog.Error("failed to mark backend sick", "backend", lc.drainBackend, "error", err)
-				} else {
-					slog.Info("marked backend sick", "backend", lc.drainBackend)
-				}
-
-				// Sleep drainDelay to let Kubernetes remove this pod from
-				// endpoints, interruptible by a second signal.
-				slog.Info("waiting for endpoint removal", "delay", lc.drainDelay)
-				interrupted := false
-				select {
-				case <-time.After(lc.drainDelay):
-				case <-lc.sigCh:
-					slog.Info("second signal received, skipping drain wait")
-					interrupted = true
-				}
-
-				// Poll ActiveSessions every 1s until 0 or drainTimeout,
-				// unless interrupted by a second signal. When drainTimeout
-				// is 0, skip polling entirely (useful when clients hold
-				// long-lived connections that may never close).
-				if !interrupted && lc.drainTimeout > 0 {
-					deadline := time.After(lc.drainTimeout)
-					ticker := time.NewTicker(lc.drainPollInterval)
-				drainLoop:
-					for {
-						select {
-						case <-ticker.C:
-							sessions, err := lc.mgr.ActiveSessions()
-							if err != nil {
-								slog.Warn("failed to read active sessions", "error", err)
-								continue
-							}
-							slog.Info("active sessions", "count", sessions)
-							if sessions == 0 {
-								slog.Info("all connections drained")
-								emitEvent(&lc, v1.EventTypeNormal, "DrainCompleted", "All connections drained")
-								break drainLoop
-							}
-						case <-deadline:
-							slog.Warn("drain timeout reached, proceeding with shutdown")
-							emitEvent(&lc, v1.EventTypeWarning, "DrainTimeout", "Drain timeout reached, proceeding with forced shutdown")
-							break drainLoop
-						case <-lc.sigCh:
-							slog.Info("second signal received, aborting drain")
-							break drainLoop
-						}
-					}
-					ticker.Stop()
-				}
+				handleDrain(&lc, sig)
 			}
 
 			if lc.bcast != nil {
@@ -853,10 +892,13 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				lc.mgr.ForwardSignal(syscall.SIGKILL)
 			}
 
-			if err := lc.mgr.Err(); err != nil {
+			err := lc.mgr.Err()
+			if err != nil {
 				slog.Error("varnishd exited with error", "error", err)
+
 				return 1
 			}
+
 			return 0
 
 		case <-lc.mgr.Done():
@@ -867,6 +909,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Error("varnishd exited unexpectedly", "error", lc.mgr.Err())
 			emitEvent(&lc, v1.EventTypeWarning, "VarnishdExited", fmt.Sprintf("varnishd exited unexpectedly: %v", lc.mgr.Err()))
 			cancel()
+
 			return 1
 		}
 	}
@@ -886,6 +929,27 @@ type warnOnceEventSink struct {
 	warned sync.Once
 }
 
+func (s *warnOnceEventSink) Create(event *v1.Event) (*v1.Event, error) {
+	ev, err := s.inner.Create(event)
+	s.checkErr(err)
+
+	return ev, err //nolint:wrapcheck // interface impl delegates to inner sink
+}
+
+func (s *warnOnceEventSink) Update(event *v1.Event) (*v1.Event, error) {
+	ev, err := s.inner.Update(event)
+	s.checkErr(err)
+
+	return ev, err //nolint:wrapcheck // interface impl delegates to inner sink
+}
+
+func (s *warnOnceEventSink) Patch(oldEvent *v1.Event, data []byte) (*v1.Event, error) {
+	ev, err := s.inner.Patch(oldEvent, data)
+	s.checkErr(err)
+
+	return ev, err //nolint:wrapcheck // interface impl delegates to inner sink
+}
+
 func (s *warnOnceEventSink) checkErr(err error) {
 	if err != nil && apierrors.IsForbidden(err) {
 		s.warned.Do(func() {
@@ -894,24 +958,6 @@ func (s *warnOnceEventSink) checkErr(err error) {
 				"error", err)
 		})
 	}
-}
-
-func (s *warnOnceEventSink) Create(event *v1.Event) (*v1.Event, error) {
-	ev, err := s.inner.Create(event)
-	s.checkErr(err)
-	return ev, err
-}
-
-func (s *warnOnceEventSink) Update(event *v1.Event) (*v1.Event, error) {
-	ev, err := s.inner.Update(event)
-	s.checkErr(err)
-	return ev, err
-}
-
-func (s *warnOnceEventSink) Patch(oldEvent *v1.Event, data []byte) (*v1.Event, error) {
-	ev, err := s.inner.Patch(oldEvent, data)
-	s.checkErr(err)
-	return ev, err
 }
 
 func buildClientset() (kubernetes.Interface, error) {
@@ -925,10 +971,16 @@ func buildClientset() (kubernetes.Interface, error) {
 		}
 		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("building kubeconfig: %w", err)
 		}
 	}
-	return kubernetes.NewForConfig(cfg)
+
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating kubernetes client: %w", err)
+	}
+
+	return cs, nil
 }
 
 type backendChange struct {
@@ -946,6 +998,7 @@ func backendChan(ch chan backendChange) <-chan backendChange {
 	if ch == nil {
 		return nil
 	}
+
 	return ch
 }
 
@@ -954,6 +1007,7 @@ func valuesChan(ch chan valuesChange) <-chan valuesChange {
 	if ch == nil {
 		return nil
 	}
+
 	return ch
 }
 
@@ -963,6 +1017,7 @@ func drainBackendForLoop(drain bool) string {
 	if drain {
 		return drainBackendName
 	}
+
 	return ""
 }
 
@@ -971,6 +1026,7 @@ func timerChan(t *time.Timer) <-chan time.Time {
 	if t == nil {
 		return nil
 	}
+
 	return t.C
 }
 
@@ -979,6 +1035,7 @@ func appendUnique(slice []string, s string) []string {
 	if slices.Contains(slice, s) {
 		return slice
 	}
+
 	return append(slice, s)
 }
 

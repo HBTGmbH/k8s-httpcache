@@ -86,25 +86,8 @@ func New(opts Options) *Server {
 		IdleTimeout:       opts.ServerIdleTimeout,
 		ReadHeaderTimeout: opts.ReadHeaderTimeout,
 	}
+
 	return s
-}
-
-// connState tracks active client connections via the http.Server callback.
-func (s *Server) connState(_ net.Conn, state http.ConnState) {
-	switch state {
-	case http.StateNew:
-		s.conns.Add(1)
-	case http.StateClosed, http.StateHijacked:
-		if s.conns.Add(-1) <= 0 && s.draining.Load() {
-			s.signalDrained()
-		}
-	default:
-		// StateActive, StateIdle — no action needed.
-	}
-}
-
-func (s *Server) signalDrained() {
-	s.drainOnce.Do(func() { close(s.connsDrained) })
 }
 
 // SetFrontends updates the list of frontend pods to broadcast to.
@@ -129,6 +112,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		//nolint:errchkjson // best-effort error response; nothing to do if encoding fails
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "no frontends available"})
+
 		return
 	}
 
@@ -142,6 +126,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		//nolint:errchkjson // best-effort error response; nothing to do if encoding fails
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to read request body"})
+
 		return
 	}
 
@@ -187,6 +172,73 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
+// ListenAndServe starts the broadcast HTTP server.
+func (s *Server) ListenAndServe() error {
+	err := s.srv.ListenAndServe()
+	if err != nil {
+		return fmt.Errorf("broadcast listen: %w", err)
+	}
+
+	return nil
+}
+
+// Drain initiates a graceful drain of the broadcast server. It sets the
+// draining flag (causing responses to include Connection: close), then waits
+// up to timeout for all client connections to close before shutting down.
+func (s *Server) Drain(timeout time.Duration) error {
+	s.draining.Store(true)
+	slog.Info("draining broadcast connections", "timeout", timeout)
+
+	if s.conns.Load() <= 0 {
+		s.signalDrained()
+	}
+
+	select {
+	case <-s.connsDrained:
+		slog.Info("all broadcast connections drained")
+	case <-time.After(timeout):
+		slog.Warn("broadcast drain timeout reached", "remaining", s.conns.Load())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+	defer cancel()
+
+	err := s.srv.Shutdown(ctx)
+	if err != nil {
+		return fmt.Errorf("broadcast shutdown after drain: %w", err)
+	}
+
+	return nil
+}
+
+// Shutdown gracefully shuts down the broadcast server without draining.
+func (s *Server) Shutdown(ctx context.Context) error {
+	err := s.srv.Shutdown(ctx)
+	if err != nil {
+		return fmt.Errorf("broadcast shutdown: %w", err)
+	}
+
+	return nil
+}
+
+// connState tracks active client connections via the http.Server callback.
+func (s *Server) connState(_ net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		s.conns.Add(1)
+	case http.StateClosed, http.StateHijacked:
+		if s.conns.Add(-1) <= 0 && s.draining.Load() {
+			s.signalDrained()
+		}
+	default:
+		// StateActive, StateIdle — no action needed.
+	}
+}
+
+func (s *Server) signalDrained() {
+	s.drainOnce.Do(func() { close(s.connsDrained) })
+}
+
 // forward sends the request to a single frontend pod and returns the result.
 func (s *Server) forward(origReq *http.Request, fe watcher.Frontend, body []byte) PodResult {
 	port := fe.Port
@@ -196,7 +248,7 @@ func (s *Server) forward(origReq *http.Request, fe watcher.Frontend, body []byte
 	url := "http://" + net.JoinHostPort(fe.IP, strconv.FormatInt(int64(port), 10)) + origReq.RequestURI
 
 	ctx := origReq.Context()
-	req, err := http.NewRequestWithContext(ctx, origReq.Method, url, nil)
+	req, err := http.NewRequestWithContext(ctx, origReq.Method, url, http.NoBody)
 	if err != nil {
 		return PodResult{Status: 0, Body: fmt.Sprintf("request error: %v", err)}
 	}
@@ -225,37 +277,4 @@ func (s *Server) forward(origReq *http.Request, fe watcher.Frontend, body []byte
 	}
 
 	return PodResult{Status: resp.StatusCode, Body: string(respBody)}
-}
-
-// ListenAndServe starts the broadcast HTTP server.
-func (s *Server) ListenAndServe() error {
-	return s.srv.ListenAndServe()
-}
-
-// Drain initiates a graceful drain of the broadcast server. It sets the
-// draining flag (causing responses to include Connection: close), then waits
-// up to timeout for all client connections to close before shutting down.
-func (s *Server) Drain(timeout time.Duration) error {
-	s.draining.Store(true)
-	slog.Info("draining broadcast connections", "timeout", timeout)
-
-	if s.conns.Load() <= 0 {
-		s.signalDrained()
-	}
-
-	select {
-	case <-s.connsDrained:
-		slog.Info("all broadcast connections drained")
-	case <-time.After(timeout):
-		slog.Warn("broadcast drain timeout reached", "remaining", s.conns.Load())
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
-	defer cancel()
-	return s.srv.Shutdown(ctx)
-}
-
-// Shutdown gracefully shuts down the broadcast server without draining.
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.srv.Shutdown(ctx)
 }
