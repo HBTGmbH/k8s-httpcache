@@ -147,7 +147,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go func(fe watcher.Frontend) {
 			defer wg.Done()
 			nr := namedResult{name: fe.Name}
-			nr.result = s.forward(r, fe, body)
+			nr.result = s.forward(r, &fe, body)
 			results <- nr
 		}(fe)
 	}
@@ -240,7 +240,7 @@ func (s *Server) signalDrained() {
 }
 
 // forward sends the request to a single frontend pod and returns the result.
-func (s *Server) forward(origReq *http.Request, fe watcher.Frontend, body []byte) PodResult {
+func (s *Server) forward(origReq *http.Request, fe *watcher.Frontend, body []byte) PodResult {
 	port := fe.Port
 	if s.targetPort > 0 {
 		port = s.targetPort

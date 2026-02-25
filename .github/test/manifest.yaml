@@ -138,6 +138,28 @@ metadata:
   namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-httpcache-nodes
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-httpcache-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-httpcache-nodes
+subjects:
+- kind: ServiceAccount
+  name: k8s-httpcache
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: k8s-httpcache
@@ -274,6 +296,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         ports:
         - name: http
           containerPort: 8080

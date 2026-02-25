@@ -43,6 +43,7 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
 - Endpoint change debouncing to avoid rapid VCL reload cycles, with independent timers for frontend and backend changes (`--frontend-debounce`, `--backend-debounce`)
   - https://github.com/mittwald/kube-httpcache/issues/66
 - JSON status endpoint (`/status`) on the metrics server providing runtime state (version, uptime, endpoint counts, reload metrics, varnishd process status)
+- Topology-aware routing: endpoint zone, node name, and routing hints are exposed in templates, allowing weighted directors that prefer same-zone backends
 
 ## Container image
 
@@ -63,6 +64,7 @@ ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
 - **ServiceAccount** — identity for the k8s-httpcache pod
 - **Role** — permissions to list/watch services and endpointslices
 - **RoleBinding** — binds the Role to the ServiceAccount
+- **ClusterRole** + **ClusterRoleBinding** — permissions to read node objects for [topology zone detection](#topology-aware-routing)
 - **Deployment** — runs k8s-httpcache with Varnish (3 replicas, graceful connection draining)
 - **Service** — exposes HTTP (port 80) and the broadcast server (port 8088)
 - **ConfigMap** — holds the VCL template
@@ -528,8 +530,11 @@ The template receives the following data:
 |-------|------|-------------|
 | `.Frontends` | `[]Frontend` | Varnish peer pods from the watched service EndpointSlice |
 | `.Backends` | `map[string][]Endpoint` | Named backend groups keyed by the `name` from `--backend` |
+| `.LocalBackends` | `map[string][]Endpoint` | Same-zone backends (endpoints where `.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty map when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
+| `.RemoteBackends` | `map[string][]Endpoint` | Other-zone backends (all remaining endpoints). Endpoints with an unknown zone and no matching `ForZones` hint are included here. Empty map when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
 | `.Values` | `map[string]map[string]any` | Template values keyed by the `name` from `--values` or `--values-dir`. Each value is YAML-parsed, so structured data (maps, lists, numbers) is accessible. |
 | `.Secrets` | `map[string]map[string]any` | Secret values keyed by the `name` from `--secrets`. Each value is YAML-parsed like `.Values`. |
+| `.LocalZone` | `string` | Topology zone of the Varnish pod (empty if `NODE_NAME` is not set or zone detection fails). See [Topology-aware routing](#topology-aware-routing). |
 
 Each `Frontend` / `Endpoint` has:
 
@@ -538,6 +543,9 @@ Each `Frontend` / `Endpoint` has:
 | `.IP` | `string` | Pod IP address (or hostname for ExternalName) |
 | `.Port` | `int32` | Resolved port number |
 | `.Name` | `string` | Pod name |
+| `.Zone` | `string` | Topology zone from `topology.kubernetes.io/zone` (EndpointSlice) |
+| `.NodeName` | `string` | Node hosting this endpoint |
+| `.ForZones` | `[]string` | Zone names from `endpoint.hints.forZones` ([Topology Aware Routing](https://kubernetes.io/docs/concepts/services-networking/topology-aware-routing/)) |
 
 ### Template functions
 
@@ -637,6 +645,151 @@ sub vcl_recv {
 sub vcl_purge {
   return (synth(200, "Purged"));
 }
+```
+
+## Topology-aware routing
+
+In multi-zone Kubernetes clusters, you may want Varnish to prefer backends in the same zone to reduce latency and cross-zone data transfer costs. k8s-httpcache exposes topology information from EndpointSlices so you can write zone-aware VCL templates.
+
+### Setup
+
+1. **Set the `NODE_NAME` environment variable** via the downward API so k8s-httpcache can detect the local zone:
+
+   ```yaml
+   env:
+   - name: NODE_NAME
+     valueFrom:
+       fieldRef:
+         fieldPath: spec.nodeName
+   ```
+
+2. **Grant node read access** with a ClusterRole (only needed for zone auto-detection):
+
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRole
+   metadata:
+     name: k8s-httpcache-nodes
+   rules:
+   - apiGroups: [""]
+     resources: ["nodes"]
+     verbs: ["get"]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRoleBinding
+   metadata:
+     name: k8s-httpcache-nodes
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: ClusterRole
+     name: k8s-httpcache-nodes
+   subjects:
+   - kind: ServiceAccount
+     name: k8s-httpcache
+     namespace: default
+   ```
+
+   If `NODE_NAME` is not set, the ClusterRole is missing, or the node has no `topology.kubernetes.io/zone` label, zone detection fails gracefully: `.LocalZone` will be empty, `.LocalBackends` and `.RemoteBackends` will both be empty maps, and templates should fall back to `.Backends` (see the `if .LocalZone` guard in the [fallback director example](#example-fallback-director-preferring-same-zone-backends)).
+
+   Zone-aware routing also requires that the **backend pods' nodes** have the `topology.kubernetes.io/zone` label. Kubernetes populates `.Zone` on each endpoint from the node hosting that pod. If the backend nodes lack zone labels, all endpoints will have an empty `.Zone` and land in `.RemoteBackends` even when `.LocalZone` is correctly detected — the local director will always be empty and the fallback director will only use the remote round-robin.
+
+### Available template fields
+
+| Field | Description |
+|-------|-------------|
+| `.LocalZone` | Zone of the Varnish pod (from the node's `topology.kubernetes.io/zone` label) |
+| `.LocalBackends` | Pre-filtered view of `.Backends` containing only same-zone endpoints (`.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty map when `.LocalZone` is empty. |
+| `.RemoteBackends` | Pre-filtered view of `.Backends` containing all other endpoints. Endpoints with unknown zone and no matching `.ForZones` hint land here. Empty map when `.LocalZone` is empty. |
+| `.Zone` | Zone of each endpoint (on `Frontend` / `Endpoint` objects) |
+| `.NodeName` | Node hosting each endpoint |
+| `.ForZones` | Zone hints from Kubernetes Topology Aware Routing (`service.kubernetes.io/topology-mode: Auto`) |
+
+### Example: weighted director preferring same-zone backends
+
+```vcl
+sub vcl_init {
+  new lb = directors.random();
+  <<- range .Backends.myapp >>
+  lb.add_backend(<< .Name >>_myapp,
+    << if eq .Zone $.LocalZone >>10<< else >>1<< end >>);
+  <<- end >>
+}
+```
+
+This gives backends in the same zone a weight of 10, while remote backends get a weight of 1. If `NODE_NAME` is not set or zone detection fails, `.LocalZone` is empty and all backends get the same weight (the `eq` never matches).
+
+### Example: fallback director preferring same-zone backends
+
+`.LocalBackends` and `.RemoteBackends` are pre-filtered views of `.Backends` split by zone, so you can build separate directors without inline conditionals. An endpoint is considered local if its `.Zone` matches `.LocalZone` or if its `.ForZones` hints include `.LocalZone` (Kubernetes Topology Aware Routing). When `.LocalZone` is empty, both maps are empty and you should fall back to `.Backends`.
+
+The pattern works with any number of `--backend` groups. For each group, a local and remote [round-robin director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) is created, then combined via a [fallback director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) that prefers the local director. The backends are declared from `.Backends` (which contains all endpoints regardless of zone), so every pod is reachable; only the director routing favors same-zone pods.
+
+When `.LocalZone` is empty (e.g. `NODE_NAME` not set), both `.LocalBackends` and `.RemoteBackends` are empty. A round-robin director with zero backends returns `NULL` for every request, so the template must guard the fallback pattern with `if .LocalZone` and fall back to a plain round-robin over `.Backends`:
+
+```vcl
+vcl 4.1;
+
+import directors;
+
+<<- range $name, $eps := .Backends >>
+<<- range $eps >>
+backend << .Name >>_<< $name >> {
+  .host = "<< .IP >>";
+  .port = "<< .Port >>";
+}
+<<- end >>
+<<- end >>
+
+sub vcl_init {
+  <<- range $name, $eps := .Backends >>
+  <<- if $.LocalZone >>
+
+  new local_<< $name >> = directors.round_robin();
+  <<- range index $.LocalBackends $name >>
+  local_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+  <<- end >>
+
+  new remote_<< $name >> = directors.round_robin();
+  <<- range index $.RemoteBackends $name >>
+  remote_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+  <<- end >>
+
+  new backend_<< $name >> = directors.fallback();
+  backend_<< $name >>.add_backend(local_<< $name >>.backend());
+  backend_<< $name >>.add_backend(remote_<< $name >>.backend());
+
+  <<- else >>
+
+  new backend_<< $name >> = directors.round_robin();
+  <<- range $eps >>
+  backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+  <<- end >>
+
+  <<- end >>
+  <<- end >>
+}
+
+sub vcl_recv {
+  <<- range $name, $_ := .Backends >>
+  if (req.url ~ "^/<< $name >>/") {
+    set req.backend_hint = backend_<< $name >>.backend();
+  }
+  <<- end >>
+}
+```
+
+With `--backend api=... --backend web=...` and pods spread across two zones, this creates `local_api`, `remote_api`, `backend_api` (fallback), `local_web`, `remote_web`, `backend_web` (fallback). Each `backend_*` director prefers same-zone pods via round-robin and falls back to the remote round-robin only when all local pods are unhealthy. When `.LocalZone` is empty, it degrades gracefully to a plain round-robin over all backends.
+
+### Kubernetes Topology Aware Routing hints
+
+When the Service has `service.kubernetes.io/topology-mode: Auto`, the kube-proxy allocates zone hints on each endpoint. These are available as `.ForZones` (a list of zone names, from `endpoint.hints.forZones`). You can use them to filter endpoints that Kubernetes recommends for your zone:
+
+```vcl
+<<- range .Backends.myapp >>
+<<- if has $.LocalZone .ForZones >>
+backend << .Name >>_myapp { .host = "<< .IP >>"; .port = "<< .Port >>"; }
+<<- end >>
+<<- end >>
 ```
 
 ## Broadcast server

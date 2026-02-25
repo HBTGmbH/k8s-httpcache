@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -15,10 +16,35 @@ import (
 )
 
 type templateData struct {
-	Frontends []watcher.Frontend
-	Backends  map[string][]watcher.Endpoint
-	Values    map[string]map[string]any
-	Secrets   map[string]map[string]any
+	Frontends      []watcher.Frontend
+	Backends       map[string][]watcher.Endpoint
+	LocalBackends  map[string][]watcher.Endpoint // same-zone backends
+	RemoteBackends map[string][]watcher.Endpoint // other-zone backends
+	Values         map[string]map[string]any
+	Secrets        map[string]map[string]any
+	LocalZone      string // zone of the Varnish pod (empty if unknown)
+}
+
+// splitBackendsByZone partitions backends into local (same-zone) and remote
+// (different-zone) groups. An endpoint is considered local if its Zone matches
+// the given zone, or if its ForZones hints include the zone (Kubernetes
+// Topology Aware Routing). Endpoints with an empty Zone and no matching
+// ForZones hint are placed into remote. The zone parameter must be non-empty.
+func splitBackendsByZone(backends map[string][]watcher.Endpoint, zone string) (map[string][]watcher.Endpoint, map[string][]watcher.Endpoint) {
+	local := make(map[string][]watcher.Endpoint, len(backends))
+	remote := make(map[string][]watcher.Endpoint, len(backends))
+
+	for name, eps := range backends {
+		for _, ep := range eps {
+			if ep.Zone == zone || slices.Contains(ep.ForZones, zone) {
+				local[name] = append(local[name], ep)
+			} else {
+				remote[name] = append(remote[name], ep)
+			}
+		}
+	}
+
+	return local, remote
 }
 
 // Renderer renders VCL from a Go template and a list of frontends.
@@ -30,12 +56,19 @@ type Renderer struct {
 	drainBackend string
 	delimLeft    string
 	delimRight   string
+	localZone    string
 }
 
 // SetDrainBackend configures the renderer to auto-inject drain VCL using the
 // given backend name. An empty name disables injection.
 func (r *Renderer) SetDrainBackend(name string) {
 	r.drainBackend = name
+}
+
+// SetLocalZone sets the topology zone of the local Varnish pod, made available
+// as .LocalZone in templates for zone-aware routing decisions.
+func (r *Renderer) SetLocalZone(zone string) {
+	r.localZone = zone
 }
 
 // New parses the template file and returns a Renderer.
@@ -93,9 +126,25 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]wa
 	if secrets == nil {
 		secrets = make(map[string]map[string]any)
 	}
+	var localBackends, remoteBackends map[string][]watcher.Endpoint
+	if r.localZone != "" {
+		localBackends, remoteBackends = splitBackendsByZone(backends, r.localZone)
+	} else {
+		localBackends = make(map[string][]watcher.Endpoint)
+		remoteBackends = make(map[string][]watcher.Endpoint)
+	}
+
 	var buf bytes.Buffer
 
-	err := r.tmpl.Execute(&buf, templateData{Frontends: frontends, Backends: backends, Values: values, Secrets: secrets})
+	err := r.tmpl.Execute(&buf, templateData{
+		Frontends:      frontends,
+		Backends:       backends,
+		LocalBackends:  localBackends,
+		RemoteBackends: remoteBackends,
+		Values:         values,
+		Secrets:        secrets,
+		LocalZone:      r.localZone,
+	})
 	if err != nil {
 		return "", fmt.Errorf("executing template: %w", err)
 	}

@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -18,11 +20,15 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// Endpoint represents a single pod endpoint (IP + port + pod name).
+// Endpoint represents a single pod endpoint (IP + port + pod name) with
+// optional topology metadata.
 type Endpoint struct {
-	IP   string
-	Port int32
-	Name string
+	IP       string
+	Port     int32
+	Name     string
+	Zone     string   // topology.kubernetes.io/zone from EndpointSlice
+	NodeName string   // node hosting this endpoint
+	ForZones []string // zone names from endpoint.hints.forZones (Topology Aware Routing)
 }
 
 // Frontend is an alias for Endpoint, used for Varnish shard peers.
@@ -108,7 +114,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
-	slices, err := lister.EndpointSlices(w.namespace).List(labels.Everything())
+	epSlices, err := lister.EndpointSlices(w.namespace).List(labels.Everything())
 	if err != nil {
 		w.log.Error("failed to list EndpointSlices", "error", err)
 
@@ -116,7 +122,7 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	}
 
 	var endpoints []Endpoint
-	for _, slice := range slices {
+	for _, slice := range epSlices {
 		if slice.AddressType != discoveryv1.AddressTypeIPv4 &&
 			slice.AddressType != discoveryv1.AddressTypeIPv6 {
 			continue
@@ -132,11 +138,28 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 			if ep.TargetRef != nil {
 				name = ep.TargetRef.Name
 			}
+			zone := ""
+			if ep.Zone != nil {
+				zone = *ep.Zone
+			}
+			nodeName := ""
+			if ep.NodeName != nil {
+				nodeName = *ep.NodeName
+			}
+			var forZones []string
+			if ep.Hints != nil {
+				for _, h := range ep.Hints.ForZones {
+					forZones = append(forZones, h.Name)
+				}
+			}
 			for _, addr := range ep.Addresses {
 				endpoints = append(endpoints, Endpoint{
-					IP:   addr,
-					Port: port,
-					Name: name,
+					IP:       addr,
+					Port:     port,
+					Name:     name,
+					Zone:     zone,
+					NodeName: nodeName,
+					ForZones: forZones,
 				})
 			}
 		}
@@ -161,11 +184,11 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		added, removed := diffEndpoints(w.previous, endpoints)
 		for _, ep := range added {
 			w.log.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
-				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port), "zone", ep.Zone)
 		}
 		for _, ep := range removed {
 			w.log.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
-				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port), "zone", ep.Zone)
 		}
 	}
 
@@ -206,28 +229,41 @@ func resolvePort(ports []discoveryv1.EndpointPort, override string) int32 {
 	return 0
 }
 
+// endpointKey returns a comparable string key for use in maps, since Endpoint
+// contains a []string field (ForZones) that makes the struct non-comparable.
+func endpointKey(e *Endpoint) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%s|%s", e.IP, e.Port, e.Name, e.Zone, e.NodeName, strings.Join(e.ForZones, ","))
+}
+
 func diffEndpoints(old, cur []Endpoint) ([]Endpoint, []Endpoint) {
-	oldSet := make(map[Endpoint]struct{}, len(old))
-	for _, e := range old {
-		oldSet[e] = struct{}{}
+	oldSet := make(map[string]struct{}, len(old))
+	for i := range old {
+		oldSet[endpointKey(&old[i])] = struct{}{}
 	}
-	curSet := make(map[Endpoint]struct{}, len(cur))
-	for _, e := range cur {
-		curSet[e] = struct{}{}
+	curSet := make(map[string]struct{}, len(cur))
+	for i := range cur {
+		curSet[endpointKey(&cur[i])] = struct{}{}
 	}
 	var added, removed []Endpoint
-	for _, e := range cur {
-		if _, ok := oldSet[e]; !ok {
-			added = append(added, e)
+	for i := range cur {
+		if _, ok := oldSet[endpointKey(&cur[i])]; !ok {
+			added = append(added, cur[i])
 		}
 	}
-	for _, e := range old {
-		if _, ok := curSet[e]; !ok {
-			removed = append(removed, e)
+	for i := range old {
+		if _, ok := curSet[endpointKey(&old[i])]; !ok {
+			removed = append(removed, old[i])
 		}
 	}
 
 	return added, removed
+}
+
+// endpointEqual compares two Endpoints for equality, including the ForZones slice.
+func endpointEqual(a, b *Endpoint) bool {
+	return a.IP == b.IP && a.Port == b.Port && a.Name == b.Name &&
+		a.Zone == b.Zone && a.NodeName == b.NodeName &&
+		slices.Equal(a.ForZones, b.ForZones)
 }
 
 func endpointsEqual(a, b []Endpoint) bool {
@@ -235,7 +271,7 @@ func endpointsEqual(a, b []Endpoint) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if !endpointEqual(&a[i], &b[i]) {
 			return false
 		}
 	}

@@ -348,6 +348,9 @@ func main() {
 		slog.Info("POD_NAME not set, kubernetes event recording disabled")
 	}
 
+	// Auto-detect topology zone for zone-aware routing templates.
+	localZone := detectLocalZone(clientset)
+
 	// Create varnish manager and detect version before rendering VCL,
 	// because the renderer needs the version to generate compatible VCL.
 	listenAddrs := make([]string, len(cfg.ListenAddrs))
@@ -376,6 +379,9 @@ func main() {
 	}
 	if cfg.Drain {
 		rend.SetDrainBackend(drainBackendName)
+	}
+	if localZone != "" {
+		rend.SetLocalZone(localZone)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1021,6 +1027,38 @@ func (s *warnOnceEventSink) checkErr(err error) {
 				"error", err)
 		})
 	}
+}
+
+// detectLocalZone reads NODE_NAME from the environment, looks up the node's
+// topology.kubernetes.io/zone label, and returns the zone string.
+// Returns "" if NODE_NAME is not set, the node cannot be fetched, or the label is absent.
+func detectLocalZone(clientset kubernetes.Interface) string {
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		slog.Info("NODE_NAME not set, topology zone detection disabled (.LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates)")
+
+		return ""
+	}
+
+	node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		slog.Warn("could not look up node for zone detection; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates", //nolint:gosec // G706: nodeName from pod spec env, not runtime user input
+			"node", nodeName, "error", err)
+
+		return ""
+	}
+
+	zone := node.Labels["topology.kubernetes.io/zone"]
+	if zone == "" {
+		slog.Warn("node has no topology.kubernetes.io/zone label; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates", //nolint:gosec // G706: nodeName from pod spec env, not runtime user input
+			"node", nodeName)
+
+		return ""
+	}
+
+	slog.Info("detected local topology zone", "zone", zone) //nolint:gosec // G706: zone from trusted Kubernetes node label
+
+	return zone
 }
 
 func buildClientset() (kubernetes.Interface, error) {

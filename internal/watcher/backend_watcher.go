@@ -229,11 +229,11 @@ func (bw *BackendWatcher) send(endpoints []Endpoint) {
 		added, removed := diffEndpoints(bw.previous, endpoints)
 		for _, ep := range added {
 			bw.log.Debug("backend endpoint added", "namespace", bw.namespace, "service", bw.serviceName,
-				"name", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+				"name", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port), "zone", ep.Zone)
 		}
 		for _, ep := range removed {
 			bw.log.Debug("backend endpoint removed", "namespace", bw.namespace, "service", bw.serviceName,
-				"name", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+				"name", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port), "zone", ep.Zone)
 		}
 	}
 

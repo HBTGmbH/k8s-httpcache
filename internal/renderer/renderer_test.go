@@ -1762,3 +1762,630 @@ func TestNew_Secrets(t *testing.T) {
 		t.Errorf("expected apikey=s3cr3t, got: %s", out)
 	}
 }
+
+func TestNew_LocalZoneAndEndpointZone(t *testing.T) {
+	t.Parallel()
+	tmpl := `zone=<< .LocalZone >>
+<<- range $name, $eps := .Backends >>
+<<- range $eps >>
+<< .Name >>:zone=<< .Zone >>,node=<< .NodeName >>,forZones=<< join "," .ForZones >>
+<<- end >>
+<<- end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetLocalZone("europe-west3-a")
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a", NodeName: "node-1", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
+			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b", NodeName: "node-2"},
+		},
+	}
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "zone=europe-west3-a") {
+		t.Errorf("expected LocalZone=europe-west3-a, got: %s", out)
+	}
+	if !strings.Contains(out, "pod-a:zone=europe-west3-a,node=node-1,forZones=europe-west3-a,europe-west3-b") {
+		t.Errorf("expected pod-a topology fields, got: %s", out)
+	}
+	if !strings.Contains(out, "pod-b:zone=europe-west3-b,node=node-2,forZones=") {
+		t.Errorf("expected pod-b topology fields, got: %s", out)
+	}
+}
+
+func TestNew_LocalZoneWeightedDirector(t *testing.T) {
+	t.Parallel()
+	// Simulate a weighted director pattern that gives higher weight to same-zone backends.
+	tmpl := `<<- range $name, $eps := .Backends >><<- range $eps >>weight=<< if eq .Zone $.LocalZone >>10<< else >>1<< end >>
+<< end >><<- end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetLocalZone("europe-west3-a")
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+		},
+	}
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "weight=10") {
+		t.Errorf("expected weight=10 for same-zone backend, got: %s", out)
+	}
+	if !strings.Contains(out, "weight=1") {
+		t.Errorf("expected weight=1 for different-zone backend, got: %s", out)
+	}
+}
+
+func TestSplitBackendsByZone(t *testing.T) {
+	t.Parallel()
+
+	// Exhaustive Zone × ForZones matrix (localZone = "europe-west3-a"):
+	//
+	//   Zone         | ForZones                  | Expected | Name
+	//   -------------|---------------------------|----------|-----
+	//   matches      | nil                       | local    | zone-match-no-hints
+	//   matches      | contains local            | local    | zone-match-hints-contain-local
+	//   matches      | doesn't contain local     | local    | zone-match-hints-other
+	//   different    | nil                       | remote   | zone-diff-no-hints
+	//   different    | contains local (only)     | local    | zone-diff-hints-local-only
+	//   different    | contains local + others   | local    | zone-diff-hints-local-among-others
+	//   different    | doesn't contain local     | remote   | zone-diff-hints-other
+	//   empty        | nil                       | remote   | zone-empty-no-hints
+	//   empty        | contains local + others   | local    | zone-empty-hints-local-among-others
+	//   empty        | doesn't contain local     | remote   | zone-empty-hints-other
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			// Zone matches localZone
+			{Name: "zone-match-no-hints", Zone: "europe-west3-a"},
+			{Name: "zone-match-hints-contain-local", Zone: "europe-west3-a", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
+			{Name: "zone-match-hints-other", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}},
+			// Zone is different
+			{Name: "zone-diff-no-hints", Zone: "europe-west3-b"},
+			{Name: "zone-diff-hints-local-only", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}},
+			{Name: "zone-diff-hints-local-among-others", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c", "europe-west3-a"}},
+			{Name: "zone-diff-hints-other", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}},
+			// Zone is empty
+			{Name: "zone-empty-no-hints"},
+			{Name: "zone-empty-hints-local-among-others", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
+			{Name: "zone-empty-hints-other", ForZones: []string{"europe-west3-c"}},
+		},
+	}
+
+	local, remote := splitBackendsByZone(backends, "europe-west3-a")
+
+	wantLocal := []string{
+		"zone-match-no-hints",
+		"zone-match-hints-contain-local",
+		"zone-match-hints-other",
+		"zone-diff-hints-local-only",
+		"zone-diff-hints-local-among-others",
+		"zone-empty-hints-local-among-others",
+	}
+	if len(local["api"]) != len(wantLocal) {
+		t.Fatalf("expected %d local api endpoints, got %d: %v", len(wantLocal), len(local["api"]), local["api"])
+	}
+	for i, name := range wantLocal {
+		if local["api"][i].Name != name {
+			t.Errorf("local[api][%d]: expected %s, got %s", i, name, local["api"][i].Name)
+		}
+	}
+
+	wantRemote := []string{
+		"zone-diff-no-hints",
+		"zone-diff-hints-other",
+		"zone-empty-no-hints",
+		"zone-empty-hints-other",
+	}
+	if len(remote["api"]) != len(wantRemote) {
+		t.Fatalf("expected %d remote api endpoints, got %d: %v", len(wantRemote), len(remote["api"]), remote["api"])
+	}
+	for i, name := range wantRemote {
+		if remote["api"][i].Name != name {
+			t.Errorf("remote[api][%d]: expected %s, got %s", i, name, remote["api"][i].Name)
+		}
+	}
+}
+
+func TestSplitBackendsByZone_MultipleGroups(t *testing.T) {
+	t.Parallel()
+
+	backends := map[string][]watcher.Endpoint{
+		"all-local": {
+			{Name: "a", Zone: "europe-west3-a"},
+			{Name: "b", Zone: "europe-west3-a"},
+		},
+		"all-remote": {
+			{Name: "c", Zone: "europe-west3-b"},
+			{Name: "d", Zone: "europe-west3-c"},
+		},
+		"mixed": {
+			{Name: "e", Zone: "europe-west3-a"},
+			{Name: "f", Zone: "europe-west3-b"},
+		},
+	}
+
+	local, remote := splitBackendsByZone(backends, "europe-west3-a")
+
+	if len(local["all-local"]) != 2 {
+		t.Errorf("expected 2 local all-local endpoints, got %d", len(local["all-local"]))
+	}
+	if len(remote["all-local"]) != 0 {
+		t.Errorf("expected 0 remote all-local endpoints, got %d", len(remote["all-local"]))
+	}
+	if len(local["all-remote"]) != 0 {
+		t.Errorf("expected 0 local all-remote endpoints, got %d", len(local["all-remote"]))
+	}
+	if len(remote["all-remote"]) != 2 {
+		t.Errorf("expected 2 remote all-remote endpoints, got %d", len(remote["all-remote"]))
+	}
+	if len(local["mixed"]) != 1 || local["mixed"][0].Name != "e" {
+		t.Errorf("expected [e] in local mixed, got %v", local["mixed"])
+	}
+	if len(remote["mixed"]) != 1 || remote["mixed"][0].Name != "f" {
+		t.Errorf("expected [f] in remote mixed, got %v", remote["mixed"])
+	}
+}
+
+func TestSplitBackendsByZone_EmptyBackends(t *testing.T) {
+	t.Parallel()
+
+	local, remote := splitBackendsByZone(map[string][]watcher.Endpoint{}, "europe-west3-a")
+
+	if len(local) != 0 {
+		t.Errorf("expected empty local map, got %v", local)
+	}
+	if len(remote) != 0 {
+		t.Errorf("expected empty remote map, got %v", remote)
+	}
+}
+
+func TestSplitBackendsByZone_NilBackends(t *testing.T) {
+	t.Parallel()
+
+	local, remote := splitBackendsByZone(nil, "europe-west3-a")
+
+	if len(local) != 0 {
+		t.Errorf("expected empty local map, got %v", local)
+	}
+	if len(remote) != 0 {
+		t.Errorf("expected empty remote map, got %v", remote)
+	}
+}
+
+func TestRender_LocalRemoteBackends_WithZone(t *testing.T) {
+	t.Parallel()
+
+	tmpl := `local:<<- range $name, $eps := .LocalBackends >><<- range $eps >> << .Name >><< end >><<- end >>
+remote:<<- range $name, $eps := .RemoteBackends >><<- range $eps >> << .Name >><< end >><<- end >>`
+
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetLocalZone("europe-west3-a")
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+		},
+	}
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "local: pod-a") {
+		t.Errorf("expected pod-a in local, got: %s", out)
+	}
+	if !strings.Contains(out, "remote: pod-b") {
+		t.Errorf("expected pod-b in remote, got: %s", out)
+	}
+}
+
+func TestRender_LocalRemoteBackends_EmptyLocalZone(t *testing.T) {
+	t.Parallel()
+
+	tmpl := `local=<< len .LocalBackends >> remote=<< len .RemoteBackends >>`
+
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// localZone not set — both maps should be empty.
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+		},
+	}
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "local=0") {
+		t.Errorf("expected empty LocalBackends when localZone is empty, got: %s", out)
+	}
+	if !strings.Contains(out, "remote=0") {
+		t.Errorf("expected empty RemoteBackends when localZone is empty, got: %s", out)
+	}
+}
+
+func TestRender_LocalRemoteBackends_ByName(t *testing.T) {
+	t.Parallel()
+
+	// Access .LocalBackends and .RemoteBackends by backend name directly.
+	tmpl := `local_api:<<- range .LocalBackends.api >> << .Name >><< end >>
+remote_api:<<- range .RemoteBackends.api >> << .Name >><< end >>`
+
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetLocalZone("europe-west3-a")
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+			{IP: "10.0.0.3", Port: 8080, Name: "pod-c"}, // empty zone → remote
+		},
+	}
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "local_api: pod-a") {
+		t.Errorf("expected pod-a in local_api, got: %s", out)
+	}
+	if !strings.Contains(out, "remote_api: pod-b pod-c") {
+		t.Errorf("expected pod-b and pod-c in remote_api, got: %s", out)
+	}
+}
+
+func TestRender_LocalRemoteBackends_FallbackDirectorPattern(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors the multi-backend fallback director pattern from the README:
+	// uses if $.LocalZone to guard the fallback pattern and falls back to
+	// a plain round-robin when zone info is unavailable.
+	tmpl := `<<- range $name, $eps := .Backends >>
+<<- range $eps >>
+backend << .Name >>_<< $name >> { .host = "<< .IP >>"; }
+<<- end >>
+<<- end >>
+sub vcl_init {
+<<- range $name, $eps := .Backends >>
+<<- if $.LocalZone >>
+  new local_<< $name >> = directors.round_robin();
+  <<- range index $.LocalBackends $name >>
+  local_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+  <<- end >>
+  new remote_<< $name >> = directors.round_robin();
+  <<- range index $.RemoteBackends $name >>
+  remote_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+  <<- end >>
+  new backend_<< $name >> = directors.fallback();
+  backend_<< $name >>.add_backend(local_<< $name >>.backend());
+  backend_<< $name >>.add_backend(remote_<< $name >>.backend());
+<<- else >>
+  new backend_<< $name >> = directors.round_robin();
+  <<- range $eps >>
+  backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+  <<- end >>
+<<- end >>
+<<- end >>
+}`
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {
+			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+		},
+		"web": {
+			{IP: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
+			{IP: "10.0.1.2", Port: 80, Name: "web-b", Zone: "europe-west3-a"},
+		},
+	}
+
+	t.Run("with_zone", func(t *testing.T) {
+		t.Parallel()
+		path := writeTempTemplate(t, tmpl)
+		r, err := New(path, "<<", ">>")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r.SetLocalZone("europe-west3-a")
+
+		out, err := r.Render(nil, backends, nil, nil)
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+
+		// All backends are declared (from .Backends).
+		for _, name := range []string{"pod-a_api", "pod-b_api", "web-a_web", "web-b_web"} {
+			if !strings.Contains(out, "backend "+name) {
+				t.Errorf("expected backend declaration for %s, got:\n%s", name, out)
+			}
+		}
+
+		// Local directors get same-zone backends only.
+		if !strings.Contains(out, "local_api.add_backend(pod-a_api)") {
+			t.Errorf("expected pod-a in local_api director, got:\n%s", out)
+		}
+		if strings.Contains(out, "local_api.add_backend(pod-b_api)") {
+			t.Errorf("pod-b should not be in local_api director, got:\n%s", out)
+		}
+
+		// Remote directors get other-zone backends.
+		if !strings.Contains(out, "remote_api.add_backend(pod-b_api)") {
+			t.Errorf("expected pod-b in remote_api director, got:\n%s", out)
+		}
+
+		// web group: web-b is local, web-a is remote.
+		if !strings.Contains(out, "local_web.add_backend(web-b_web)") {
+			t.Errorf("expected web-b in local_web director, got:\n%s", out)
+		}
+		if !strings.Contains(out, "remote_web.add_backend(web-a_web)") {
+			t.Errorf("expected web-a in remote_web director, got:\n%s", out)
+		}
+
+		// Fallback directors are created for both groups.
+		if !strings.Contains(out, "new backend_api = directors.fallback()") {
+			t.Errorf("expected fallback director for api, got:\n%s", out)
+		}
+		if !strings.Contains(out, "new backend_web = directors.fallback()") {
+			t.Errorf("expected fallback director for web, got:\n%s", out)
+		}
+
+		// No plain round-robin fallback should appear.
+		if strings.Contains(out, "new backend_api = directors.round_robin()") {
+			t.Errorf("should use fallback director when zone is set, got:\n%s", out)
+		}
+	})
+
+	t.Run("without_zone", func(t *testing.T) {
+		t.Parallel()
+		path := writeTempTemplate(t, tmpl)
+		r, err := New(path, "<<", ">>")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// localZone not set — should fall back to plain round-robin.
+
+		out, err := r.Render(nil, backends, nil, nil)
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+
+		// All backends are still declared.
+		for _, name := range []string{"pod-a_api", "pod-b_api", "web-a_web", "web-b_web"} {
+			if !strings.Contains(out, "backend "+name) {
+				t.Errorf("expected backend declaration for %s, got:\n%s", name, out)
+			}
+		}
+
+		// Plain round-robin directors are used instead of fallback.
+		if !strings.Contains(out, "new backend_api = directors.round_robin()") {
+			t.Errorf("expected round-robin director for api when no zone, got:\n%s", out)
+		}
+		if !strings.Contains(out, "new backend_web = directors.round_robin()") {
+			t.Errorf("expected round-robin director for web when no zone, got:\n%s", out)
+		}
+
+		// All backends are added to the round-robin directors.
+		if !strings.Contains(out, "backend_api.add_backend(pod-a_api)") {
+			t.Errorf("expected pod-a in backend_api, got:\n%s", out)
+		}
+		if !strings.Contains(out, "backend_api.add_backend(pod-b_api)") {
+			t.Errorf("expected pod-b in backend_api, got:\n%s", out)
+		}
+
+		// No local/remote directors should appear.
+		if strings.Contains(out, "local_") {
+			t.Errorf("should not have local directors when zone is empty, got:\n%s", out)
+		}
+		if strings.Contains(out, "remote_") {
+			t.Errorf("should not have remote directors when zone is empty, got:\n%s", out)
+		}
+
+		// No fallback directors.
+		if strings.Contains(out, "directors.fallback()") {
+			t.Errorf("should not have fallback directors when zone is empty, got:\n%s", out)
+		}
+	})
+
+	t.Run("all_local", func(t *testing.T) {
+		t.Parallel()
+		path := writeTempTemplate(t, tmpl)
+		r, err := New(path, "<<", ">>")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r.SetLocalZone("europe-west3-a")
+
+		allLocal := map[string][]watcher.Endpoint{
+			"api": {
+				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-a"},
+			},
+		}
+
+		out, err := r.Render(nil, allLocal, nil, nil)
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+
+		// Both endpoints go to local director.
+		if !strings.Contains(out, "local_api.add_backend(pod-a_api)") {
+			t.Errorf("expected pod-a in local_api, got:\n%s", out)
+		}
+		if !strings.Contains(out, "local_api.add_backend(pod-b_api)") {
+			t.Errorf("expected pod-b in local_api, got:\n%s", out)
+		}
+
+		// Remote director is created but empty (no add_backend calls).
+		if !strings.Contains(out, "new remote_api = directors.round_robin()") {
+			t.Errorf("expected remote_api director to be created, got:\n%s", out)
+		}
+		if strings.Contains(out, "remote_api.add_backend(") {
+			t.Errorf("remote_api should have no backends, got:\n%s", out)
+		}
+
+		// Fallback director still wraps both.
+		if !strings.Contains(out, "new backend_api = directors.fallback()") {
+			t.Errorf("expected fallback director, got:\n%s", out)
+		}
+	})
+
+	t.Run("all_remote", func(t *testing.T) {
+		t.Parallel()
+		path := writeTempTemplate(t, tmpl)
+		r, err := New(path, "<<", ">>")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r.SetLocalZone("europe-west3-a")
+
+		allRemote := map[string][]watcher.Endpoint{
+			"api": {
+				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b"},
+				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-c"},
+			},
+		}
+
+		out, err := r.Render(nil, allRemote, nil, nil)
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+
+		// Local director is created but empty.
+		if !strings.Contains(out, "new local_api = directors.round_robin()") {
+			t.Errorf("expected local_api director to be created, got:\n%s", out)
+		}
+		if strings.Contains(out, "local_api.add_backend(") {
+			t.Errorf("local_api should have no backends, got:\n%s", out)
+		}
+
+		// Both endpoints go to remote director.
+		if !strings.Contains(out, "remote_api.add_backend(pod-a_api)") {
+			t.Errorf("expected pod-a in remote_api, got:\n%s", out)
+		}
+		if !strings.Contains(out, "remote_api.add_backend(pod-b_api)") {
+			t.Errorf("expected pod-b in remote_api, got:\n%s", out)
+		}
+
+		// Fallback director still wraps both.
+		if !strings.Contains(out, "new backend_api = directors.fallback()") {
+			t.Errorf("expected fallback director, got:\n%s", out)
+		}
+	})
+
+	t.Run("forZones_hint", func(t *testing.T) {
+		t.Parallel()
+		path := writeTempTemplate(t, tmpl)
+		r, err := New(path, "<<", ">>")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r.SetLocalZone("europe-west3-a")
+
+		hinted := map[string][]watcher.Endpoint{
+			"api": {
+				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}}, // remote zone, but hinted for local → local
+				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},                                       // remote zone, no hint → remote
+				{IP: "10.0.0.3", Port: 8080, Name: "pod-c", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}}, // remote zone, hint for other → remote
+				{IP: "10.0.0.4", Port: 8080, Name: "pod-d", ForZones: []string{"europe-west3-a", "europe-west3-b"}},       // empty zone, hint contains local → local
+				{IP: "10.0.0.5", Port: 8080, Name: "pod-e", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}}, // local zone, hint for other → local (zone match wins)
+			},
+		}
+
+		out, err := r.Render(nil, hinted, nil, nil)
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+
+		// Local director: pod-a (ForZones match), pod-d (ForZones match), pod-e (Zone match).
+		for _, name := range []string{"pod-a", "pod-d", "pod-e"} {
+			if !strings.Contains(out, "local_api.add_backend("+name+"_api)") {
+				t.Errorf("expected %s in local_api, got:\n%s", name, out)
+			}
+		}
+
+		// Remote director: pod-b (no hint), pod-c (hint for other zone).
+		for _, name := range []string{"pod-b", "pod-c"} {
+			if !strings.Contains(out, "remote_api.add_backend("+name+"_api)") {
+				t.Errorf("expected %s in remote_api, got:\n%s", name, out)
+			}
+		}
+
+		// pod-a and pod-d should NOT be in remote.
+		for _, name := range []string{"pod-a", "pod-d", "pod-e"} {
+			if strings.Contains(out, "remote_api.add_backend("+name+"_api)") {
+				t.Errorf("%s should not be in remote_api, got:\n%s", name, out)
+			}
+		}
+	})
+
+	t.Run("mixed_groups", func(t *testing.T) {
+		t.Parallel()
+		path := writeTempTemplate(t, tmpl)
+		r, err := New(path, "<<", ">>")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r.SetLocalZone("europe-west3-a")
+
+		// One group is all-local, another is all-remote.
+		mixed := map[string][]watcher.Endpoint{
+			"api": {
+				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			},
+			"web": {
+				{IP: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
+			},
+		}
+
+		out, err := r.Render(nil, mixed, nil, nil)
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+
+		// api: local has pod-a, remote is empty.
+		if !strings.Contains(out, "local_api.add_backend(pod-a_api)") {
+			t.Errorf("expected pod-a in local_api, got:\n%s", out)
+		}
+		if strings.Contains(out, "remote_api.add_backend(") {
+			t.Errorf("remote_api should be empty, got:\n%s", out)
+		}
+
+		// web: remote has web-a, local is empty.
+		if !strings.Contains(out, "remote_web.add_backend(web-a_web)") {
+			t.Errorf("expected web-a in remote_web, got:\n%s", out)
+		}
+		if strings.Contains(out, "local_web.add_backend(") {
+			t.Errorf("local_web should be empty, got:\n%s", out)
+		}
+	})
+}

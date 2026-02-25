@@ -728,6 +728,70 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestRunExtractsTopologyFields(t *testing.T) {
+	t.Parallel()
+	zone := "europe-west3-a"
+	nodeName := "node-1"
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+				Zone:       &zone,
+				NodeName:   &nodeName,
+				Hints: &discoveryv1.EndpointHints{
+					ForZones: []discoveryv1.ForZone{
+						{Name: "europe-west3-a"},
+						{Name: "europe-west3-b"},
+					},
+				},
+			},
+			{
+				Addresses:  []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-b"},
+				// No zone, nodeName, or hints — fields should be zero-valued.
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(slice)
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 endpoints, got %d", len(eps))
+	}
+
+	// Endpoints are sorted by IP.
+	if eps[0].Zone != "europe-west3-a" {
+		t.Errorf("eps[0].Zone = %q, want europe-west3-a", eps[0].Zone)
+	}
+	if eps[0].NodeName != "node-1" {
+		t.Errorf("eps[0].NodeName = %q, want node-1", eps[0].NodeName)
+	}
+	if len(eps[0].ForZones) != 2 || eps[0].ForZones[0] != "europe-west3-a" || eps[0].ForZones[1] != "europe-west3-b" {
+		t.Errorf("eps[0].ForZones = %v, want [europe-west3-a europe-west3-b]", eps[0].ForZones)
+	}
+
+	if eps[1].Zone != "" {
+		t.Errorf("eps[1].Zone = %q, want empty", eps[1].Zone)
+	}
+	if eps[1].NodeName != "" {
+		t.Errorf("eps[1].NodeName = %q, want empty", eps[1].NodeName)
+	}
+	if eps[1].ForZones != nil {
+		t.Errorf("eps[1].ForZones = %v, want nil", eps[1].ForZones)
+	}
+}
+
 func TestRunDeduplicatesUnchangedEndpoints(t *testing.T) {
 	t.Parallel()
 	slice := makeEndpointSlice("svc-abc",
