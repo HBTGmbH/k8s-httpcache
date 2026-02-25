@@ -11,6 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"k8s-httpcache/internal/telemetry"
 )
 
 // --- mock types ---
@@ -63,8 +67,10 @@ func newTestManager(r *mockRunner) *Manager {
 		varnishdPath:   "/usr/sbin/varnishd",
 		varnishadmPath: "/usr/bin/varnishadm",
 		listenAddrs:    []string{":8080"},
+		log:            slog.New(slog.DiscardHandler),
 		run:            r,
 		done:           make(chan struct{}),
+		metrics:        telemetry.NewMetrics(prometheus.NewRegistry(), nil),
 		AdminTimeout:   30 * time.Second,
 	}
 }
@@ -74,6 +80,7 @@ const varnishdVersionOutput = "varnishd (varnish-7.6.1 revision abc123)"
 // --- tests ---
 
 func TestStartArgs(t *testing.T) {
+	t.Parallel()
 	var gotName string
 	var gotArgs []string
 
@@ -126,6 +133,7 @@ func TestStartArgs(t *testing.T) {
 }
 
 func TestStartAdminWait(t *testing.T) {
+	t.Parallel()
 	pingCount := 0
 	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
 	defer close(mp.waitCh)
@@ -158,6 +166,7 @@ func TestStartAdminWait(t *testing.T) {
 }
 
 func TestStartAdminTimeout(t *testing.T) {
+	t.Parallel()
 	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
 	defer close(mp.waitCh)
 
@@ -194,6 +203,7 @@ func TestStartAdminTimeout(t *testing.T) {
 }
 
 func TestReloadSequence(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn:   func(string, []string) (string, error) { return "200", nil },
@@ -247,6 +257,7 @@ func TestReloadSequence(t *testing.T) {
 }
 
 func TestReloadLoadError(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
@@ -280,6 +291,7 @@ func TestReloadLoadError(t *testing.T) {
 }
 
 func TestReloadUseError(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
@@ -302,6 +314,7 @@ func TestReloadUseError(t *testing.T) {
 }
 
 func TestDiscardOldVCLs(t *testing.T) {
+	t.Parallel()
 	vclListOutput := strings.Join([]string{
 		"active      0 warm          0 boot",
 		"available   0 warm          0 kv_reload_1",
@@ -344,6 +357,7 @@ func TestDiscardOldVCLs(t *testing.T) {
 }
 
 func TestForwardSignal(t *testing.T) {
+	t.Parallel()
 	p := &mockProc{pid: 99}
 	m := &Manager{proc: p}
 
@@ -363,17 +377,17 @@ func TestForwardSignal(t *testing.T) {
 	}
 }
 
-func TestForwardSignalNilProc(_ *testing.T) {
+func TestForwardSignalNilProc(t *testing.T) {
+	t.Parallel()
 	m := &Manager{}
 	// Should not panic.
 	m.ForwardSignal(os.Interrupt)
 }
 
 func TestDebugLogging(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
 	defer close(mp.waitCh)
@@ -389,6 +403,7 @@ func TestDebugLogging(t *testing.T) {
 	}
 
 	m := newTestManager(r)
+	m.log = logger
 
 	// Test varnishd start logging.
 	err := m.Start("/tmp/test.vcl")
@@ -423,10 +438,9 @@ func TestDebugLogging(t *testing.T) {
 }
 
 func TestDebugLoggingDisabled(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
 	defer close(mp.waitCh)
@@ -442,6 +456,7 @@ func TestDebugLoggingDisabled(t *testing.T) {
 	}
 
 	m := newTestManager(r)
+	m.log = logger
 
 	if err := m.Start("/tmp/test.vcl"); err != nil {
 		t.Fatalf("Start() error: %v", err)
@@ -457,8 +472,10 @@ func TestDebugLoggingDisabled(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm",
-		[]string{":8080", ":8443"}, []string{"-p", "default_ttl=3600"}, "/usr/bin/varnishstat")
+		[]string{":8080", ":8443"}, []string{"-p", "default_ttl=3600"}, "/usr/bin/varnishstat",
+		telemetry.NewMetrics(prometheus.NewRegistry(), nil))
 
 	if m.varnishdPath != "/usr/sbin/varnishd" {
 		t.Errorf("varnishdPath = %q, want /usr/sbin/varnishd", m.varnishdPath)
@@ -484,8 +501,10 @@ func TestNew(t *testing.T) {
 }
 
 func TestNewDefaultVarnishstatPath(t *testing.T) {
+	t.Parallel()
 	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm",
-		[]string{":8080"}, nil, "")
+		[]string{":8080"}, nil, "",
+		telemetry.NewMetrics(prometheus.NewRegistry(), nil))
 
 	if m.varnishstatPath != defaultVarnishstatPath {
 		t.Errorf("varnishstatPath = %q, want default %q", m.varnishstatPath, defaultVarnishstatPath)
@@ -493,6 +512,7 @@ func TestNewDefaultVarnishstatPath(t *testing.T) {
 }
 
 func TestDoneAndErr(t *testing.T) {
+	t.Parallel()
 	m := &Manager{done: make(chan struct{}), err: errors.New("test error")}
 
 	// Done should return the channel.
@@ -509,6 +529,7 @@ func TestDoneAndErr(t *testing.T) {
 }
 
 func TestStartDetectVersionError(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
@@ -532,6 +553,7 @@ func TestStartDetectVersionError(t *testing.T) {
 }
 
 func TestStartAdminTimeoutViaStart(t *testing.T) {
+	t.Parallel()
 	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
 	defer close(mp.waitCh)
 
@@ -561,6 +583,7 @@ func TestStartAdminTimeoutViaStart(t *testing.T) {
 }
 
 func TestStartRunnerError(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) {
 			return nil, errors.New("exec failed")
@@ -585,6 +608,7 @@ func TestStartRunnerError(t *testing.T) {
 }
 
 func TestWaitForAdminProcessExited(t *testing.T) {
+	t.Parallel()
 	mp := &mockProc{pid: 1, waitErr: errors.New("exit status 1")}
 
 	r := &mockRunner{
@@ -614,7 +638,8 @@ func TestWaitForAdminProcessExited(t *testing.T) {
 	}
 }
 
-func TestDiscardOldVCLsListError(_ *testing.T) {
+func TestDiscardOldVCLsListError(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
@@ -632,6 +657,7 @@ func TestDiscardOldVCLsListError(_ *testing.T) {
 }
 
 func TestDiscardOldVCLsMalformedLines(t *testing.T) {
+	t.Parallel()
 	vclListOutput := strings.Join([]string{
 		"",                                    // empty line
 		"   ",                                 // whitespace-only
@@ -673,6 +699,7 @@ func TestDiscardOldVCLsMalformedLines(t *testing.T) {
 }
 
 func TestDiscardOldVCLsEmptyOutput(t *testing.T) {
+	t.Parallel()
 	var discardCalls int
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
@@ -700,6 +727,7 @@ func TestDiscardOldVCLsEmptyOutput(t *testing.T) {
 }
 
 func TestMarkBackendSick(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn:   func(string, []string) (string, error) { return "200", nil },
@@ -730,6 +758,7 @@ func TestMarkBackendSick(t *testing.T) {
 }
 
 func TestMarkBackendSickError(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(_ string, args []string) (string, error) {
@@ -749,6 +778,7 @@ func TestMarkBackendSickError(t *testing.T) {
 }
 
 func TestActiveSessions(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"version": 1,
 		"counters": {
@@ -783,6 +813,7 @@ func TestActiveSessions(t *testing.T) {
 }
 
 func TestActiveSessionsZero(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"version": 1,
 		"counters": {
@@ -815,6 +846,7 @@ func TestActiveSessionsZero(t *testing.T) {
 }
 
 func TestActiveSessionsNoCounters(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"version": 1,
 		"counters": {
@@ -846,6 +878,7 @@ func TestActiveSessionsNoCounters(t *testing.T) {
 }
 
 func TestActiveSessionsError(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
@@ -870,6 +903,7 @@ func TestActiveSessionsError(t *testing.T) {
 }
 
 func TestActiveSessionsInvalidJSON(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
@@ -894,6 +928,7 @@ func TestActiveSessionsInvalidJSON(t *testing.T) {
 }
 
 func TestActiveSessionsMalformedValue(t *testing.T) {
+	t.Parallel()
 	// The "value" field is a string instead of a number.
 	varnishstatOutput := `{
 		"version": 1,
@@ -926,10 +961,9 @@ func TestActiveSessionsMalformedValue(t *testing.T) {
 }
 
 func TestDiscardOldVCLsDiscardError(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	vclListOutput := strings.Join([]string{
 		"available   0 warm          0 old_1",
@@ -959,6 +993,7 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 	}
 
 	m := newTestManager(r)
+	m.log = logger
 
 	m.discardOldVCLs("current")
 
@@ -975,6 +1010,7 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 }
 
 func TestDetectVersion(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		output  string
@@ -1016,6 +1052,7 @@ func TestDetectVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			r := &mockRunner{
 				startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 				runFn: func(string, []string) (string, error) {
@@ -1041,6 +1078,7 @@ func TestDetectVersion(t *testing.T) {
 }
 
 func TestActiveSessionsV6(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"timestamp": "2024-01-01T00:00:00",
 		"MEMPOOL.sess0.live": {"value": 5},
@@ -1073,6 +1111,7 @@ func TestActiveSessionsV6(t *testing.T) {
 }
 
 func TestActiveSessionsV6InvalidJSON(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn: func(name string, _ []string) (string, error) {
@@ -1097,6 +1136,7 @@ func TestActiveSessionsV6InvalidJSON(t *testing.T) {
 }
 
 func TestActiveSessionsV6MalformedCounter(t *testing.T) {
+	t.Parallel()
 	// The "value" field is a string instead of a number, causing unmarshal of the individual counter to fail.
 	varnishstatOutput := `{
 		"timestamp": "2024-01-01T00:00:00",
@@ -1127,6 +1167,7 @@ func TestActiveSessionsV6MalformedCounter(t *testing.T) {
 }
 
 func TestActiveSessionsV6NoCounters(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"timestamp": "2024-01-01T00:00:00",
 		"MAIN.uptime": {"value": 12345}
@@ -1156,6 +1197,7 @@ func TestActiveSessionsV6NoCounters(t *testing.T) {
 }
 
 func TestMajorVersion(t *testing.T) {
+	t.Parallel()
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
 		runFn:   func(string, []string) (string, error) { return "", nil },
@@ -1173,6 +1215,7 @@ func TestMajorVersion(t *testing.T) {
 }
 
 func TestActiveSessionsV6Zero(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"timestamp": "2024-01-01T00:00:00",
 		"MEMPOOL.sess0.live": {"value": 0},
@@ -1203,6 +1246,7 @@ func TestActiveSessionsV6Zero(t *testing.T) {
 }
 
 func TestExtractWorkDir(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -1247,6 +1291,7 @@ func TestExtractWorkDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := extractWorkDir(tt.args)
 			if got != tt.want {
 				t.Errorf("extractWorkDir(%v) = %q, want %q", tt.args, got, tt.want)
@@ -1256,6 +1301,7 @@ func TestExtractWorkDir(t *testing.T) {
 }
 
 func TestActiveSessionsWithWorkDir(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"version": 1,
 		"counters": {
@@ -1292,6 +1338,7 @@ func TestActiveSessionsWithWorkDir(t *testing.T) {
 }
 
 func TestActiveSessionsWithoutWorkDir(t *testing.T) {
+	t.Parallel()
 	varnishstatOutput := `{
 		"version": 1,
 		"counters": {
@@ -1327,6 +1374,7 @@ func TestActiveSessionsWithoutWorkDir(t *testing.T) {
 }
 
 func TestAdmArgsWithWorkDir(t *testing.T) {
+	t.Parallel()
 	var gotArgs []string
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
@@ -1355,6 +1403,7 @@ func TestAdmArgsWithWorkDir(t *testing.T) {
 }
 
 func TestAdmArgsWithoutWorkDir(t *testing.T) {
+	t.Parallel()
 	var gotArgs []string
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
@@ -1383,6 +1432,7 @@ func TestAdmArgsWithoutWorkDir(t *testing.T) {
 }
 
 func TestReloadRetrySucceeds(t *testing.T) {
+	t.Parallel()
 	var loadCount atomic.Int32
 
 	r := &mockRunner{
@@ -1413,6 +1463,7 @@ func TestReloadRetrySucceeds(t *testing.T) {
 }
 
 func TestReloadRetriesExhausted(t *testing.T) {
+	t.Parallel()
 	var loadCount atomic.Int32
 
 	r := &mockRunner{
@@ -1444,6 +1495,7 @@ func TestReloadRetriesExhausted(t *testing.T) {
 }
 
 func TestReloadRetriesDisabled(t *testing.T) {
+	t.Parallel()
 	var loadCount atomic.Int32
 
 	r := &mockRunner{
@@ -1471,6 +1523,7 @@ func TestReloadRetriesDisabled(t *testing.T) {
 }
 
 func TestReloadVCLUseNotRetried(t *testing.T) {
+	t.Parallel()
 	var loadCount, useCount atomic.Int32
 
 	r := &mockRunner{
@@ -1509,6 +1562,7 @@ func TestReloadVCLUseNotRetried(t *testing.T) {
 }
 
 func TestReloadRetryCounterIncrements(t *testing.T) {
+	t.Parallel()
 	var loadCount atomic.Int32
 
 	r := &mockRunner{
@@ -1540,6 +1594,7 @@ func TestReloadRetryCounterIncrements(t *testing.T) {
 }
 
 func TestReloadRetryVCLNamesAndCallSequence(t *testing.T) {
+	t.Parallel()
 	// vcl.load fails twice, then succeeds on the 3rd attempt.
 	// Verify the exact names passed to vcl.load/vcl.use and that
 	// vcl.use is only called once with the successful name.
@@ -1604,6 +1659,7 @@ func TestReloadRetryVCLNamesAndCallSequence(t *testing.T) {
 }
 
 func TestReloadRetryNoDiscardOnExhausted(t *testing.T) {
+	t.Parallel()
 	// When all retries are exhausted, discardOldVCLs should NOT be called.
 	var discardCalls atomic.Int32
 
@@ -1633,6 +1689,7 @@ func TestReloadRetryNoDiscardOnExhausted(t *testing.T) {
 }
 
 func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
+	t.Parallel()
 	// When vcl.load succeeds (after retries), discardOldVCLs should be
 	// called with the correct (successful) VCL name.
 	var loadCount atomic.Int32
@@ -1681,6 +1738,7 @@ func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
 }
 
 func TestReloadRetryVCLUseNotCalledOnFailedAttempts(t *testing.T) {
+	t.Parallel()
 	// Verify that vcl.use is never called for attempts where vcl.load failed.
 	var loadCount atomic.Int32
 	var useNames []string
@@ -1726,10 +1784,9 @@ func TestReloadRetryVCLUseNotCalledOnFailedAttempts(t *testing.T) {
 }
 
 func TestReloadRetryLogMessages(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	var loadCount atomic.Int32
 
@@ -1748,6 +1805,7 @@ func TestReloadRetryLogMessages(t *testing.T) {
 	}
 
 	m := newTestManager(r)
+	m.log = logger
 	m.ReloadRetries = 2
 	m.ReloadRetryInterval = time.Millisecond
 
@@ -1768,13 +1826,12 @@ func TestReloadRetryLogMessages(t *testing.T) {
 }
 
 func TestReloadFirstAttemptSuccessWithRetriesConfigured(t *testing.T) {
+	t.Parallel()
 	// When vcl.load succeeds on the first attempt despite retries being
 	// configured, the normal "activated VCL" message (not "after retry")
 	// should be logged, and only one vcl.load + one vcl.use should occur.
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
@@ -1782,6 +1839,7 @@ func TestReloadFirstAttemptSuccessWithRetriesConfigured(t *testing.T) {
 	}
 
 	m := newTestManager(r)
+	m.log = logger
 	m.ReloadRetries = 5
 	m.ReloadRetryInterval = time.Millisecond
 
@@ -1822,6 +1880,7 @@ func TestReloadFirstAttemptSuccessWithRetriesConfigured(t *testing.T) {
 }
 
 func TestVCLSuffix(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -1838,6 +1897,7 @@ func TestVCLSuffix(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := vclSuffix(tt.input)
 			if got != tt.want {
 				t.Errorf("vclSuffix(%q) = %d, want %d", tt.input, got, tt.want)
@@ -1847,6 +1907,7 @@ func TestVCLSuffix(t *testing.T) {
 }
 
 func TestDiscardOldVCLsKeepTwo(t *testing.T) {
+	t.Parallel()
 	vclListOutput := strings.Join([]string{
 		"active      0 warm          0 kv_reload_5",
 		"available   0 warm          0 kv_reload_1",
@@ -1890,6 +1951,7 @@ func TestDiscardOldVCLsKeepTwo(t *testing.T) {
 }
 
 func TestDiscardOldVCLsKeepMoreThanAvailable(t *testing.T) {
+	t.Parallel()
 	vclListOutput := strings.Join([]string{
 		"active      0 warm          0 kv_reload_3",
 		"available   0 warm          0 kv_reload_1",
@@ -1924,6 +1986,7 @@ func TestDiscardOldVCLsKeepMoreThanAvailable(t *testing.T) {
 }
 
 func TestDiscardOldVCLsKeepZeroDiscardsAll(t *testing.T) {
+	t.Parallel()
 	vclListOutput := strings.Join([]string{
 		"active      0 warm          0 kv_reload_3",
 		"available   0 warm          0 kv_reload_1",
@@ -1964,6 +2027,7 @@ func TestDiscardOldVCLsKeepZeroDiscardsAll(t *testing.T) {
 }
 
 func TestDiscardOldVCLsNonKVNames(t *testing.T) {
+	t.Parallel()
 	vclListOutput := strings.Join([]string{
 		"active      0 warm          0 kv_reload_4",
 		"available   0 warm          0 kv_reload_2",
@@ -2008,6 +2072,7 @@ func TestDiscardOldVCLsNonKVNames(t *testing.T) {
 }
 
 func TestDiscardOldVCLsKeepExactCount(t *testing.T) {
+	t.Parallel()
 	vclListOutput := strings.Join([]string{
 		"active      0 warm          0 kv_reload_4",
 		"available   0 warm          0 kv_reload_2",
@@ -2043,6 +2108,7 @@ func TestDiscardOldVCLsKeepExactCount(t *testing.T) {
 }
 
 func TestReloadRetryCounterContinuityAcrossCalls(t *testing.T) {
+	t.Parallel()
 	// Two successive Reload() calls, each with retries, should produce
 	// a continuous reloadCounter sequence.
 	var loadCount atomic.Int32

@@ -16,6 +16,7 @@ import (
 )
 
 func TestResolvePort(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		ports    []discoveryv1.EndpointPort
@@ -95,6 +96,7 @@ func TestResolvePort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := resolvePort(tt.ports, tt.override)
 			if got != tt.want {
 				t.Errorf("resolvePort(%v, %q) = %d, want %d", tt.ports, tt.override, got, tt.want)
@@ -104,6 +106,7 @@ func TestResolvePort(t *testing.T) {
 }
 
 func TestFrontendsEqual(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		a, b []Frontend
@@ -185,6 +188,7 @@ func TestFrontendsEqual(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := endpointsEqual(tt.a, tt.b)
 			if got != tt.want {
 				t.Errorf("endpointsEqual(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
@@ -194,6 +198,7 @@ func TestFrontendsEqual(t *testing.T) {
 }
 
 func TestDiffEndpoints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		old, new    []Endpoint
@@ -239,6 +244,7 @@ func TestDiffEndpoints(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			added, removed := diffEndpoints(tt.old, tt.new)
 			if !endpointsEqual(added, tt.wantAdded) {
 				t.Errorf("added = %v, want %v", added, tt.wantAdded)
@@ -251,14 +257,14 @@ func TestDiffEndpoints(t *testing.T) {
 }
 
 func TestDebugLogging(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	w := &Watcher{
 		namespace:   "ns",
 		serviceName: "svc",
+		log:         logger,
 		synced:      true,
 		previous: []Endpoint{
 			{IP: "10.0.0.1", Port: 80, Name: "pod-a"},
@@ -273,11 +279,11 @@ func TestDebugLogging(t *testing.T) {
 
 	added, removed := diffEndpoints(w.previous, endpoints)
 	for _, ep := range added {
-		slog.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
+		w.log.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
 			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 	}
 	for _, ep := range removed {
-		slog.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
+		w.log.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
 			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 	}
 
@@ -300,6 +306,7 @@ func TestDebugLogging(t *testing.T) {
 }
 
 func TestNewAndChanges(t *testing.T) {
+	t.Parallel()
 	w := New(nil, "test-ns", "test-svc", "8080")
 
 	if w.namespace != "test-ns" {
@@ -323,14 +330,14 @@ func TestNewAndChanges(t *testing.T) {
 }
 
 func TestDebugLoggingDisabled(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	w := &Watcher{
 		namespace:   "ns",
 		serviceName: "svc",
+		log:         logger,
 		synced:      true,
 		previous: []Endpoint{
 			{IP: "10.0.0.1", Port: 80, Name: "pod-a"},
@@ -344,11 +351,11 @@ func TestDebugLoggingDisabled(t *testing.T) {
 
 	added, removed := diffEndpoints(w.previous, endpoints)
 	for _, ep := range added {
-		slog.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
+		w.log.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
 			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 	}
 	for _, ep := range removed {
-		slog.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
+		w.log.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
 			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 	}
 
@@ -400,6 +407,7 @@ func assertNoChanges(t *testing.T, w *Watcher, timeout time.Duration) {
 }
 
 func TestRunDeliversInitialEndpoints(t *testing.T) {
+	t.Parallel()
 	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
@@ -435,6 +443,7 @@ func TestRunDeliversInitialEndpoints(t *testing.T) {
 }
 
 func TestRunDeliversEmptyInitialState(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
 	ctx := t.Context()
@@ -447,6 +456,7 @@ func TestRunDeliversEmptyInitialState(t *testing.T) {
 }
 
 func TestRunDetectsAddedEndpointSlice(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
 	ctx := t.Context()
@@ -484,6 +494,7 @@ func TestRunDetectsAddedEndpointSlice(t *testing.T) {
 }
 
 func TestRunDetectsUpdatedEndpointSlice(t *testing.T) {
+	t.Parallel()
 	// Start empty, then create, then update — avoids timing issues between
 	// the informer's initial list+watch and the pre-loaded objects.
 	clientset := fake.NewClientset()
@@ -542,6 +553,7 @@ func TestRunDetectsUpdatedEndpointSlice(t *testing.T) {
 }
 
 func TestRunDetectsDeletedEndpointSlice(t *testing.T) {
+	t.Parallel()
 	// Start with no slices, then create one, then delete it.
 	// This avoids timing issues between the informer's initial list+watch
 	// and the subsequent delete.
@@ -593,6 +605,7 @@ func TestRunDetectsDeletedEndpointSlice(t *testing.T) {
 }
 
 func TestRunFiltersNonReadyEndpoints(t *testing.T) {
+	t.Parallel()
 	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
@@ -632,6 +645,7 @@ func TestRunFiltersNonReadyEndpoints(t *testing.T) {
 }
 
 func TestRunFiltersNonIPv4v6AddressTypes(t *testing.T) {
+	t.Parallel()
 	fqdnSlice := makeEndpointSlice("svc-fqdn",
 		discoveryv1.AddressTypeFQDN,
 		[]discoveryv1.Endpoint{
@@ -657,6 +671,7 @@ func TestRunFiltersNonIPv4v6AddressTypes(t *testing.T) {
 }
 
 func TestRunPortOverrideName(t *testing.T) {
+	t.Parallel()
 	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{
@@ -687,6 +702,7 @@ func TestRunPortOverrideName(t *testing.T) {
 }
 
 func TestRunStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -712,6 +728,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 }
 
 func TestRunDeduplicatesUnchangedEndpoints(t *testing.T) {
+	t.Parallel()
 	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
 		[]discoveryv1.Endpoint{

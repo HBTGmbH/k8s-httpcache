@@ -68,12 +68,14 @@ type Manager struct {
 	listenAddrs         []string
 	extraArgs           []string
 	workDir             string // varnishd -n instance name, forwarded to varnishadm/varnishstat
+	log                 *slog.Logger
 	run                 runner
 	proc                proc
 	majorVersion        int // major version of varnishd (e.g. 6, 7, 8)
 	done                chan struct{}
 	err                 error
 	reloadCounter       atomic.Int64
+	metrics             *telemetry.Metrics
 	AdminTimeout        time.Duration
 	ReloadRetries       int
 	ReloadRetryInterval time.Duration
@@ -103,7 +105,7 @@ const defaultVarnishstatPath = "varnishstat"
 // New creates a new varnish Manager. listenAddrs are passed as individual -a
 // flags to varnishd. extraArgs are appended to the varnishd command line.
 // varnishstatPath is the path to the varnishstat binary (defaults to "varnishstat" if empty).
-func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []string, varnishstatPath string) *Manager {
+func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []string, varnishstatPath string, metrics *telemetry.Metrics) *Manager {
 	if varnishstatPath == "" {
 		varnishstatPath = defaultVarnishstatPath
 	}
@@ -114,8 +116,10 @@ func New(varnishdPath, varnishadmPath string, listenAddrs []string, extraArgs []
 		listenAddrs:     listenAddrs,
 		extraArgs:       extraArgs,
 		workDir:         extractWorkDir(extraArgs),
+		log:             slog.Default(),
 		run:             execRunner{},
 		done:            make(chan struct{}),
+		metrics:         metrics,
 		AdminTimeout:    30 * time.Second,
 	}
 }
@@ -143,7 +147,7 @@ func (m *Manager) DetectVersion() error {
 	}
 	if trunkVersionRe.MatchString(out) {
 		m.majorVersion = trunkMajorVersion
-		slog.Info("detected varnish version", "major", "trunk")
+		m.log.Info("detected varnish version", "major", "trunk")
 		return nil
 	}
 	matches := versionRe.FindStringSubmatch(out)
@@ -155,7 +159,7 @@ func (m *Manager) DetectVersion() error {
 		return fmt.Errorf("parsing major version %q: %w", matches[1], err)
 	}
 	m.majorVersion = v
-	slog.Info("detected varnish version", "major", m.majorVersion)
+	m.log.Info("detected varnish version", "major", m.majorVersion)
 	return nil
 }
 
@@ -185,7 +189,7 @@ func (m *Manager) Start(initialVCL string) error {
 	)
 	args = append(args, m.extraArgs...)
 
-	slog.Debug("exec", "cmd", m.varnishdPath, "args", args)
+	m.log.Debug("exec", "cmd", m.varnishdPath, "args", args)
 
 	p, err := m.run.Start(m.varnishdPath, args)
 	if err != nil {
@@ -193,7 +197,7 @@ func (m *Manager) Start(initialVCL string) error {
 	}
 	m.proc = p
 
-	slog.Info("started varnishd", "pid", m.proc.Pid())
+	m.log.Info("started varnishd", "pid", m.proc.Pid())
 
 	// Monitor the process in the background.
 	go func() {
@@ -206,7 +210,7 @@ func (m *Manager) Start(initialVCL string) error {
 		return fmt.Errorf("waiting for varnish admin: %w", err)
 	}
 
-	slog.Info("varnish admin ready")
+	m.log.Info("varnish admin ready")
 	return nil
 }
 
@@ -217,7 +221,7 @@ func (m *Manager) Start(initialVCL string) error {
 func (m *Manager) Reload(vclPath string) error {
 	start := time.Now()
 	err := m.reload(vclPath)
-	telemetry.VCLReloadDurationSeconds.Observe(time.Since(start).Seconds())
+	m.metrics.VCLReloadDurationSeconds.Observe(time.Since(start).Seconds())
 	return err
 }
 
@@ -235,8 +239,8 @@ func (m *Manager) reload(vclPath string) error {
 			lastErr = fmt.Errorf("vcl.load: %w: %s", err, resp)
 
 			if attempt < maxAttempts-1 {
-				telemetry.VCLReloadRetriesTotal.Inc()
-				slog.Warn("vcl.load failed, retrying",
+				m.metrics.VCLReloadRetriesTotal.Inc()
+				m.log.Warn("vcl.load failed, retrying",
 					"attempt", attempt+1,
 					"max_attempts", maxAttempts,
 					"error", lastErr,
@@ -254,9 +258,9 @@ func (m *Manager) reload(vclPath string) error {
 		}
 
 		if attempt > 0 {
-			slog.Info("activated VCL after retry", "name", name, "attempts", attempt+1)
+			m.log.Info("activated VCL after retry", "name", name, "attempts", attempt+1)
 		} else {
-			slog.Info("activated VCL", "name", name)
+			m.log.Info("activated VCL", "name", name)
 		}
 
 		// Discard old available VCLs in the background (best-effort).
@@ -375,7 +379,7 @@ func (m *Manager) adm(args ...string) (string, error) {
 	}
 	cmdArgs = append(cmdArgs, args...)
 
-	slog.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
+	m.log.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
 
 	return m.run.Run(m.varnishadmPath, cmdArgs)
 }
@@ -436,7 +440,7 @@ func (m *Manager) discardOldVCLs(currentName string) {
 
 	for _, name := range available {
 		if _, err := m.adm("vcl.discard", name); err != nil {
-			slog.Warn("failed to discard VCL", "name", name, "error", err)
+			m.log.Warn("failed to discard VCL", "name", name, "error", err)
 		}
 	}
 }

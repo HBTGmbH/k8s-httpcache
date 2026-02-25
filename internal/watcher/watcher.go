@@ -35,6 +35,7 @@ type Watcher struct {
 	namespace    string
 	serviceName  string
 	portOverride string // numeric string, port name, or "" = first slice port
+	log          *slog.Logger
 	ch           chan []Endpoint
 	mu           sync.Mutex // protects previous and synced
 	previous     []Endpoint
@@ -50,6 +51,7 @@ func New(clientset kubernetes.Interface, namespace, serviceName string, portOver
 		namespace:    namespace,
 		serviceName:  serviceName,
 		portOverride: portOverride,
+		log:          slog.Default(),
 		ch:           make(chan []Endpoint, 1),
 	}
 }
@@ -98,7 +100,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	// EndpointSlices (so no Add events fired during cache sync).
 	w.sync(lister)
 
-	slog.Info("watching EndpointSlices", "namespace", w.namespace, "service", w.serviceName)
+	w.log.Info("watching EndpointSlices", "namespace", w.namespace, "service", w.serviceName)
 	<-ctx.Done()
 	return nil
 }
@@ -106,7 +108,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	slices, err := lister.EndpointSlices(w.namespace).List(labels.Everything())
 	if err != nil {
-		slog.Error("failed to list EndpointSlices", "error", err)
+		w.log.Error("failed to list EndpointSlices", "error", err)
 		return
 	}
 
@@ -154,11 +156,11 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	if w.synced {
 		added, removed := diffEndpoints(w.previous, endpoints)
 		for _, ep := range added {
-			slog.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
+			w.log.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
 				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 		}
 		for _, ep := range removed {
-			slog.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
+			w.log.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
 				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 		}
 	}

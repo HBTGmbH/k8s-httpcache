@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
+	"k8s-httpcache/internal/telemetry"
 	"k8s-httpcache/internal/watcher"
 )
 
@@ -32,6 +35,7 @@ func newTestServer() *Server {
 		ClientTimeout:     10 * time.Second,
 		ClientIdleTimeout: 90 * time.Second,
 		ShutdownTimeout:   5 * time.Second,
+		Metrics:           telemetry.NewMetrics(prometheus.NewRegistry(), nil),
 	})
 }
 
@@ -52,6 +56,7 @@ func frontendFromServer(name string, ts *httptest.Server) watcher.Frontend {
 }
 
 func TestNoFrontends(t *testing.T) {
+	t.Parallel()
 	s := newTestServer()
 
 	req := httptest.NewRequest(http.MethodGet, "/purge/foo", nil)
@@ -72,6 +77,7 @@ func TestNoFrontends(t *testing.T) {
 }
 
 func TestSingleFrontend(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("purged"))
@@ -107,6 +113,7 @@ func TestSingleFrontend(t *testing.T) {
 }
 
 func TestMultipleFrontends(t *testing.T) {
+	t.Parallel()
 	makeBackend := func(resp string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -156,6 +163,7 @@ func TestMultipleFrontends(t *testing.T) {
 }
 
 func TestFrontendDown(t *testing.T) {
+	t.Parallel()
 	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -201,6 +209,7 @@ func TestFrontendDown(t *testing.T) {
 }
 
 func TestMethodAndHeadersPreserved(t *testing.T) {
+	t.Parallel()
 	var gotMethod string
 	var gotHeaders http.Header
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +245,7 @@ func TestMethodAndHeadersPreserved(t *testing.T) {
 }
 
 func TestRequestBodyForwarded(t *testing.T) {
+	t.Parallel()
 	var bodies []string
 	var mu = &sync.Mutex{}
 
@@ -280,6 +290,7 @@ func TestRequestBodyForwarded(t *testing.T) {
 }
 
 func TestTargetPortOverride(t *testing.T) {
+	t.Parallel()
 	// Start a backend on a specific port. The frontend's Port field will
 	// differ from the TargetPort, verifying the override works.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -302,6 +313,7 @@ func TestTargetPortOverride(t *testing.T) {
 		ClientTimeout:     10 * time.Second,
 		ClientIdleTimeout: 90 * time.Second,
 		ShutdownTimeout:   5 * time.Second,
+		Metrics:           telemetry.NewMetrics(prometheus.NewRegistry(), nil),
 	})
 	s.SetFrontends([]watcher.Frontend{fe})
 
@@ -325,6 +337,7 @@ func TestTargetPortOverride(t *testing.T) {
 }
 
 func TestDrainingConnectionClose(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -357,6 +370,7 @@ func TestDrainingConnectionClose(t *testing.T) {
 }
 
 func TestDrainWaitsForConnections(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -407,6 +421,7 @@ func TestDrainWaitsForConnections(t *testing.T) {
 }
 
 func TestDrainTimeoutWithHeldConnection(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -462,6 +477,7 @@ func TestDrainTimeoutWithHeldConnection(t *testing.T) {
 }
 
 func TestNoFrontendsDraining(t *testing.T) {
+	t.Parallel()
 	s := newTestServer()
 	s.draining.Store(true)
 
@@ -478,6 +494,7 @@ func TestNoFrontendsDraining(t *testing.T) {
 }
 
 func TestDrainNoConnections(t *testing.T) {
+	t.Parallel()
 	s := newTestServer()
 
 	// Drain with no connections should return immediately.
@@ -497,6 +514,7 @@ func TestDrainNoConnections(t *testing.T) {
 }
 
 func TestShutdown(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -541,6 +559,7 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestMaxBodySizeTruncation(t *testing.T) {
+	t.Parallel()
 	// Create a backend that returns more than maxBodySize (1 MiB).
 	bigBody := strings.Repeat("X", 2<<20) // 2 MiB
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -576,6 +595,7 @@ func TestMaxBodySizeTruncation(t *testing.T) {
 }
 
 func TestRedirectNotFollowed(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/other", http.StatusFound)
 	}))
@@ -604,6 +624,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 }
 
 func TestRequestBodyReadError(t *testing.T) {
+	t.Parallel()
 	s := newTestServer()
 	s.SetFrontends([]watcher.Frontend{
 		{Name: "pod-0", IP: "127.0.0.1", Port: 9999},
@@ -627,6 +648,7 @@ func TestRequestBodyReadError(t *testing.T) {
 }
 
 func TestRequestBodyReadErrorDraining(t *testing.T) {
+	t.Parallel()
 	s := newTestServer()
 	s.draining.Store(true)
 	s.SetFrontends([]watcher.Frontend{
@@ -646,6 +668,7 @@ func TestRequestBodyReadErrorDraining(t *testing.T) {
 }
 
 func TestListenAndServe(t *testing.T) {
+	t.Parallel()
 	s := New(Options{
 		Addr:              "127.0.0.1:0",
 		ServerIdleTimeout: 120 * time.Second,
@@ -653,6 +676,7 @@ func TestListenAndServe(t *testing.T) {
 		ClientTimeout:     10 * time.Second,
 		ClientIdleTimeout: 90 * time.Second,
 		ShutdownTimeout:   5 * time.Second,
+		Metrics:           telemetry.NewMetrics(prometheus.NewRegistry(), nil),
 	})
 
 	// ListenAndServe blocks, so start it in a goroutine and then shut down.
@@ -677,6 +701,7 @@ func TestListenAndServe(t *testing.T) {
 }
 
 func TestConcurrentSetFrontends(t *testing.T) {
+	t.Parallel()
 	b0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok-0"))

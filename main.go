@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -224,10 +225,11 @@ func backendCountsMap(backends map[string][]watcher.Endpoint) map[string]int {
 
 // loopConfig holds all inputs for the main event loop.
 type loopConfig struct {
-	rend   vclRenderer
-	mgr    varnishProcess
-	bcast  broadcaster  // nil when broadcast is disabled
-	status *statusStore // nil when status endpoint is disabled
+	rend    vclRenderer
+	mgr     varnishProcess
+	bcast   broadcaster  // nil when broadcast is disabled
+	status  *statusStore // nil when status endpoint is disabled
+	metrics *telemetry.Metrics
 
 	frontendCh <-chan []watcher.Frontend
 	backendCh  chan backendChange
@@ -274,11 +276,9 @@ func main() {
 	}
 	slog.SetDefault(slog.New(logHandler))
 
-	// Register configurable histogram before any metrics are observed.
-	telemetry.RegisterDebounceLatency(cfg.DebounceLatencyBuckets)
-
-	// Set build info metric.
-	telemetry.BuildInfo.WithLabelValues(version, runtime.Version()).Set(1)
+	// Create metrics instance on the default registry.
+	metrics := telemetry.NewMetrics(prometheus.DefaultRegisterer, cfg.DebounceLatencyBuckets)
+	metrics.BuildInfo.WithLabelValues(version, runtime.Version()).Set(1)
 
 	// Create status store for the /status endpoint.
 	status := &statusStore{
@@ -342,7 +342,7 @@ func main() {
 	for i, la := range cfg.ListenAddrs {
 		listenAddrs[i] = la.Raw
 	}
-	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, listenAddrs, cfg.ExtraVarnishd, cfg.VarnishstatPath)
+	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, listenAddrs, cfg.ExtraVarnishd, cfg.VarnishstatPath, metrics)
 	mgr.AdminTimeout = cfg.AdminTimeout
 	mgr.ReloadRetries = cfg.VCLReloadRetries
 	mgr.ReloadRetryInterval = cfg.VCLReloadRetryInterval
@@ -458,9 +458,9 @@ func main() {
 	status.valuesCount = len(latestValues)
 
 	// Set initial endpoint gauges.
-	telemetry.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
+	metrics.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
 	for name, eps := range latestBackends {
-		telemetry.Endpoints.WithLabelValues("backend", name).Set(float64(len(eps)))
+		metrics.Endpoints.WithLabelValues("backend", name).Set(float64(len(eps)))
 	}
 
 	// Start broadcast server if configured.
@@ -474,6 +474,7 @@ func main() {
 			ClientTimeout:     cfg.BroadcastClientTimeout,
 			ClientIdleTimeout: cfg.BroadcastClientIdleTimeout,
 			ShutdownTimeout:   cfg.BroadcastShutdownTimeout,
+			Metrics:           metrics,
 		})
 		bcast.SetFrontends(latestFrontends)
 		go func() {
@@ -486,7 +487,7 @@ func main() {
 	// Render VCL with real endpoint data and start varnishd.
 	renderStart := time.Now()
 	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends, latestValues)
-	telemetry.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
+	metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
 		log.Fatalf("initial render: %v", err) //nolint:gocritic // fatal before Start is intentional; deferred cancel is harmless to skip
 	}
@@ -495,7 +496,7 @@ func main() {
 	if err := mgr.Start(initialVCL); err != nil {
 		log.Fatalf("varnish start: %v", err)
 	}
-	telemetry.VarnishdUp.Set(1)
+	metrics.VarnishdUp.Set(1)
 	status.setVarnishdUp(true)
 	if eventRecorder != nil && podRef != nil {
 		eventRecorder.Event(podRef, v1.EventTypeNormal, "VCLReloaded", "Initial VCL loaded and varnishd started")
@@ -560,10 +561,11 @@ func main() {
 
 	// Main event loop with debounce.
 	os.Exit(runLoop(ctx, cancel, loopConfig{
-		rend:   rend,
-		mgr:    mgr,
-		bcast:  bcast,
-		status: status,
+		rend:    rend,
+		mgr:     mgr,
+		bcast:   bcast,
+		status:  status,
+		metrics: metrics,
 
 		frontendCh: w.Changes(),
 		backendCh:  backendCh,
@@ -633,7 +635,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		reloadedTemplate := false
 		if templateChanged {
 			if err := lc.rend.Reload(); err != nil {
-				telemetry.VCLTemplateParseErrorsTotal.Inc()
+				lc.metrics.VCLTemplateParseErrorsTotal.Inc()
 				slog.Error("template parse error, keeping old template", "error", err)
 				emitEvent(&lc, v1.EventTypeWarning, "VCLTemplateParseFailed", fmt.Sprintf("Template parse error: %v", err))
 			} else {
@@ -645,13 +647,13 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		renderStart := time.Now()
 		vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
-		telemetry.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
+		lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 		if err != nil {
-			telemetry.VCLRenderErrorsTotal.Inc()
+			lc.metrics.VCLRenderErrorsTotal.Inc()
 			slog.Error("render error", "error", err)
 			emitEvent(&lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error: %v", err))
 			if reloadedTemplate {
-				telemetry.VCLRollbacksTotal.Inc()
+				lc.metrics.VCLRollbacksTotal.Inc()
 				lc.rend.Rollback()
 				emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
 			}
@@ -659,7 +661,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		}
 
 		if err := lc.mgr.Reload(vclPath); err != nil {
-			telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
+			lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
 			slog.Error("reload error", "error", err)
 			emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
 			_ = os.Remove(vclPath)
@@ -671,26 +673,26 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			// New template produced VCL that Varnish rejected; revert and
 			// retry so that any concurrent frontend/backend changes still
 			// take effect with the old (known-good) template.
-			telemetry.VCLRollbacksTotal.Inc()
+			lc.metrics.VCLRollbacksTotal.Inc()
 			lc.rend.Rollback()
 			slog.Warn("rolled back to previous template")
 			emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Rolled back to previous template after reload failure")
 
 			renderStart = time.Now()
 			vclPath, err = lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
-			telemetry.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
+			lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 			if err != nil {
-				telemetry.VCLRenderErrorsTotal.Inc()
+				lc.metrics.VCLRenderErrorsTotal.Inc()
 				slog.Error("render error after rollback", "error", err)
 				emitEvent(&lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error after rollback: %v", err))
 				return
 			}
 			if err := lc.mgr.Reload(vclPath); err != nil {
-				telemetry.VCLReloadsTotal.WithLabelValues("error").Inc()
+				lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
 				slog.Error("reload error after rollback", "error", err)
 				emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed after rollback: %v", err))
 			} else {
-				telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
+				lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
 				emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully after rollback (%s)", reasons))
 				if lc.status != nil {
 					lc.status.recordReload()
@@ -701,7 +703,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			return
 		}
 
-		telemetry.VCLReloadsTotal.WithLabelValues("success").Inc()
+		lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
 		emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully (%s)", reasons))
 		if lc.status != nil {
 			lc.status.recordReload()
@@ -713,8 +715,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 	for {
 		select {
 		case <-lc.templateCh:
-			telemetry.VCLTemplateChangesTotal.Inc()
-			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
+			lc.metrics.VCLTemplateChangesTotal.Inc()
+			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("VCL template changed on disk, scheduling reload")
 			emitEvent(&lc, v1.EventTypeNormal, "VCLTemplateChanged", "VCL template file change detected on disk")
 			pendingReload = true
@@ -724,9 +726,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		case frontends := <-lc.frontendCh:
 			lc.latestFrontends = frontends
-			telemetry.EndpointUpdatesTotal.WithLabelValues("frontend", lc.serviceName).Inc()
-			telemetry.Endpoints.WithLabelValues("frontend", lc.serviceName).Set(float64(len(lc.latestFrontends)))
-			telemetry.DebounceEventsTotal.WithLabelValues("frontend").Inc()
+			lc.metrics.EndpointUpdatesTotal.WithLabelValues("frontend", lc.serviceName).Inc()
+			lc.metrics.Endpoints.WithLabelValues("frontend", lc.serviceName).Set(float64(len(lc.latestFrontends)))
+			lc.metrics.DebounceEventsTotal.WithLabelValues("frontend").Inc()
 			if lc.bcast != nil {
 				lc.bcast.SetFrontends(lc.latestFrontends)
 			}
@@ -736,45 +738,45 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		case bc := <-backendChan(lc.backendCh):
 			lc.latestBackends[bc.name] = bc.endpoints
-			telemetry.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
-			telemetry.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
-			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
+			lc.metrics.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
+			lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
+			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			pendingReload = true
 			pendingReasons = appendUnique(pendingReasons, "backend endpoints changed")
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case vc := <-valuesChan(lc.valuesCh):
 			lc.latestValues[vc.name] = vc.data
-			telemetry.ValuesUpdatesTotal.WithLabelValues(vc.name).Inc()
-			telemetry.DebounceEventsTotal.WithLabelValues("backend").Inc()
+			lc.metrics.ValuesUpdatesTotal.WithLabelValues(vc.name).Inc()
+			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("values ConfigMap updated", "name", vc.name)
 			pendingReload = true
 			pendingReasons = appendUnique(pendingReasons, "values updated")
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case <-timerChan(frontend.timer):
-			telemetry.DebounceFiresTotal.WithLabelValues("frontend").Inc()
+			lc.metrics.DebounceFiresTotal.WithLabelValues("frontend").Inc()
 			if frontend.capped {
-				telemetry.DebounceMaxEnforcementsTotal.WithLabelValues("frontend").Inc()
+				lc.metrics.DebounceMaxEnforcementsTotal.WithLabelValues("frontend").Inc()
 			}
 			if !frontend.firstEvent.IsZero() {
-				telemetry.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
+				lc.metrics.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
 			}
 			if !backend.firstEvent.IsZero() {
-				telemetry.DebounceLatencySeconds.WithLabelValues("backend").Observe(time.Since(backend.firstEvent).Seconds())
+				lc.metrics.DebounceLatencySeconds.WithLabelValues("backend").Observe(time.Since(backend.firstEvent).Seconds())
 			}
 			handleReload()
 
 		case <-timerChan(backend.timer):
-			telemetry.DebounceFiresTotal.WithLabelValues("backend").Inc()
+			lc.metrics.DebounceFiresTotal.WithLabelValues("backend").Inc()
 			if backend.capped {
-				telemetry.DebounceMaxEnforcementsTotal.WithLabelValues("backend").Inc()
+				lc.metrics.DebounceMaxEnforcementsTotal.WithLabelValues("backend").Inc()
 			}
 			if !backend.firstEvent.IsZero() {
-				telemetry.DebounceLatencySeconds.WithLabelValues("backend").Observe(time.Since(backend.firstEvent).Seconds())
+				lc.metrics.DebounceLatencySeconds.WithLabelValues("backend").Observe(time.Since(backend.firstEvent).Seconds())
 			}
 			if !frontend.firstEvent.IsZero() {
-				telemetry.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
+				lc.metrics.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
 			}
 			handleReload()
 
@@ -858,7 +860,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			return 0
 
 		case <-lc.mgr.Done():
-			telemetry.VarnishdUp.Set(0)
+			lc.metrics.VarnishdUp.Set(0)
 			if lc.status != nil {
 				lc.status.setVarnishdUp(false)
 			}

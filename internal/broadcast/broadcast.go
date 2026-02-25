@@ -30,13 +30,14 @@ type PodResult struct {
 
 // Options configures the broadcast server.
 type Options struct {
-	Addr              string        // listen address
-	TargetPort        int32         // Varnish listen port to target for fan-out (overrides frontend port)
-	ServerIdleTimeout time.Duration // max idle time for client keep-alive connections
-	ReadHeaderTimeout time.Duration // max time to read request headers
-	ClientTimeout     time.Duration // per-pod fan-out request timeout
-	ClientIdleTimeout time.Duration // max idle time for connections to Varnish pods
-	ShutdownTimeout   time.Duration // grace period for in-flight requests after drain
+	Addr              string             // listen address
+	TargetPort        int32              // Varnish listen port to target for fan-out (overrides frontend port)
+	ServerIdleTimeout time.Duration      // max idle time for client keep-alive connections
+	ReadHeaderTimeout time.Duration      // max time to read request headers
+	ClientTimeout     time.Duration      // per-pod fan-out request timeout
+	ClientIdleTimeout time.Duration      // max idle time for connections to Varnish pods
+	ShutdownTimeout   time.Duration      // grace period for in-flight requests after drain
+	Metrics           *telemetry.Metrics // Prometheus metrics
 }
 
 // Server fans out incoming HTTP requests to all known Varnish frontend pods
@@ -46,6 +47,7 @@ type Server struct {
 	client          *http.Client
 	targetPort      int32
 	shutdownTimeout time.Duration
+	metrics         *telemetry.Metrics
 
 	mu        sync.RWMutex
 	frontends []watcher.Frontend
@@ -70,6 +72,7 @@ func New(opts Options) *Server {
 		},
 		targetPort:      opts.TargetPort,
 		shutdownTimeout: opts.ShutdownTimeout,
+		metrics:         opts.Metrics,
 		connsDrained:    make(chan struct{}),
 	}
 	s.srv = &http.Server{
@@ -114,7 +117,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if len(frontends) == 0 {
-		telemetry.BroadcastRequestsTotal.WithLabelValues(r.Method, "503").Inc()
+		s.metrics.BroadcastRequestsTotal.WithLabelValues(r.Method, "503").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		if s.draining.Load() {
 			w.Header().Set("Connection", "close")
@@ -127,7 +130,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		telemetry.BroadcastRequestsTotal.WithLabelValues(r.Method, "400").Inc()
+		s.metrics.BroadcastRequestsTotal.WithLabelValues(r.Method, "400").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		if s.draining.Load() {
 			w.Header().Set("Connection", "close")
@@ -148,7 +151,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	results := make(chan namedResult, len(frontends))
 	var wg sync.WaitGroup
 
-	telemetry.BroadcastFanoutTargets.Set(float64(len(frontends)))
+	s.metrics.BroadcastFanoutTargets.Set(float64(len(frontends)))
 
 	for _, fe := range frontends {
 		wg.Add(1)
@@ -168,9 +171,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out[nr.name] = nr.result
 	}
 
-	telemetry.BroadcastDurationSeconds.Observe(time.Since(fanoutStart).Seconds())
+	s.metrics.BroadcastDurationSeconds.Observe(time.Since(fanoutStart).Seconds())
 
-	telemetry.BroadcastRequestsTotal.WithLabelValues(r.Method, "200").Inc()
+	s.metrics.BroadcastRequestsTotal.WithLabelValues(r.Method, "200").Inc()
 	w.Header().Set("Content-Type", "application/json")
 	if s.draining.Load() {
 		w.Header().Set("Connection", "close")

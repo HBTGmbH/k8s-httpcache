@@ -15,9 +15,9 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// syncBuffer is a goroutine-safe wrapper around bytes.Buffer.
-// It prevents data races when goroutines from previous tests are still
-// writing to the global slog default while a new test reads/resets the buffer.
+// syncBuffer is a goroutine-safe wrapper around bytes.Buffer for use
+// with per-instance loggers in tests where multiple goroutines may
+// write concurrently.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -104,6 +104,7 @@ func getService(t *testing.T, ctx context.Context, clientset *fake.Clientset) *c
 }
 
 func TestBackendWatcherExternalNameService(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -127,11 +128,13 @@ func TestBackendWatcherExternalNameService(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameDefaultPort(t *testing.T) {
-	buf := captureLogs(t, slog.LevelWarn)
+	t.Parallel()
+	buf, logger := captureLogs(t, slog.LevelWarn)
 
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "")
+	bw.log = logger
 
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
@@ -152,11 +155,13 @@ func TestBackendWatcherExternalNameDefaultPort(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameNamedPort(t *testing.T) {
-	buf := captureLogs(t, slog.LevelWarn)
+	t.Parallel()
+	buf, logger := captureLogs(t, slog.LevelWarn)
 
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "http")
+	bw.log = logger
 
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
@@ -179,6 +184,7 @@ func TestBackendWatcherExternalNameNamedPort(t *testing.T) {
 }
 
 func TestBackendWatcherClusterIPService(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeClusterIP, "")
 	slice := makeEndpointSlice("svc-abc",
 		discoveryv1.AddressTypeIPv4,
@@ -216,6 +222,7 @@ func TestBackendWatcherClusterIPService(t *testing.T) {
 }
 
 func TestBackendWatcherServiceNotExists(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
@@ -229,6 +236,7 @@ func TestBackendWatcherServiceNotExists(t *testing.T) {
 }
 
 func TestBackendWatcherServiceAppearsLate(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
@@ -261,6 +269,7 @@ func TestBackendWatcherServiceAppearsLate(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -312,6 +321,7 @@ func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
 }
 
 func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeClusterIP, "")
 	svc.Spec.ClusterIP = "10.96.0.1"
 	slice := makeEndpointSlice("svc-abc",
@@ -364,6 +374,7 @@ func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
 }
 
 func TestBackendWatcherServiceDeleted(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -391,11 +402,13 @@ func TestBackendWatcherServiceDeleted(t *testing.T) {
 }
 
 func TestBackendWatcherDebugLogging(t *testing.T) {
-	buf := captureLogs(t, slog.LevelDebug)
+	t.Parallel()
+	buf, logger := captureLogs(t, slog.LevelDebug)
 
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.log = logger
 
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
@@ -434,6 +447,7 @@ func TestBackendWatcherDebugLogging(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameUpdated(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -466,6 +480,7 @@ func TestBackendWatcherExternalNameUpdated(t *testing.T) {
 }
 
 func TestBackendWatcherStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -493,6 +508,7 @@ func TestBackendWatcherStopsOnContextCancel(t *testing.T) {
 }
 
 func TestBackendWatcherDeduplicatesUnchanged(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -517,6 +533,7 @@ func TestBackendWatcherDeduplicatesUnchanged(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameDeletedAndRecreated(t *testing.T) {
+	t.Parallel()
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
@@ -559,6 +576,7 @@ func TestBackendWatcherExternalNameDeletedAndRecreated(t *testing.T) {
 }
 
 func TestBackendWatcherClusterIPAppearsLate(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "")
 
@@ -610,11 +628,13 @@ func TestBackendWatcherClusterIPAppearsLate(t *testing.T) {
 }
 
 func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
-	buf := captureLogs(t, slog.LevelWarn)
+	t.Parallel()
+	buf, logger := captureLogs(t, slog.LevelWarn)
 
 	svc := makeService(corev1.ServiceTypeExternalName, "")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.log = logger
 
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
@@ -651,25 +671,21 @@ func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
 	}
 }
 
-// captureLogs redirects slog to a buffer at the given level and returns
-// the buffer. The original logger is restored via t.Cleanup.
-// The returned syncBuffer is goroutine-safe so that stale goroutines from
-// previous tests writing to the global slog default do not race with
-// reads/resets in the current test.
-func captureLogs(t *testing.T, level slog.Level) *syncBuffer {
-	t.Helper()
+// captureLogs creates a per-test logger at the given level and returns the
+// logger and its backing buffer. The returned syncBuffer is goroutine-safe.
+func captureLogs(_ *testing.T, level slog.Level) (*syncBuffer, *slog.Logger) {
 	buf := &syncBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level}))
+	return buf, logger
 }
 
 func TestBackendWatcherWarnServiceNotFound(t *testing.T) {
-	buf := captureLogs(t, slog.LevelWarn)
+	t.Parallel()
+	buf, logger := captureLogs(t, slog.LevelWarn)
 
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.log = logger
 
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
@@ -691,11 +707,13 @@ func TestBackendWatcherWarnServiceNotFound(t *testing.T) {
 }
 
 func TestBackendWatcherWarnEndpointsBecomeEmpty(t *testing.T) {
-	buf := captureLogs(t, slog.LevelWarn)
+	t.Parallel()
+	buf, logger := captureLogs(t, slog.LevelWarn)
 
 	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.log = logger
 
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
@@ -734,10 +752,12 @@ func TestBackendWatcherWarnEndpointsBecomeEmpty(t *testing.T) {
 }
 
 func TestBackendWatcherWarnReappearsAndDisappears(t *testing.T) {
-	buf := captureLogs(t, slog.LevelWarn)
+	t.Parallel()
+	buf, logger := captureLogs(t, slog.LevelWarn)
 
 	clientset := fake.NewClientset()
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.log = logger
 
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
