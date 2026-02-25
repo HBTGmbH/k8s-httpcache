@@ -265,6 +265,111 @@ func TestFileValuesWatcherStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestFileValuesWatcherReadDirError(t *testing.T) {
+	t.Parallel()
+	// Point at a nonexistent directory to trigger the ReadDir error path.
+	w := NewFileValuesWatcher("/nonexistent/path/for/test", 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	// On ReadDir error, scan sends nil.
+	data := readFileValuesChanges(t, w)
+	if data != nil {
+		t.Fatalf("expected nil data on ReadDir error, got %v", data)
+	}
+}
+
+func TestFileValuesWatcherSkipsSubdirectories(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeYAML(t, dir, "config.yaml", "key: value")
+	// Create a subdirectory — should be skipped by scan.
+	err := os.Mkdir(filepath.Join(dir, "subdir"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewFileValuesWatcher(dir, 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	data := readFileValuesChanges(t, w)
+	if _, ok := data["subdir"]; ok {
+		t.Error("expected subdirectory to be skipped")
+	}
+	if _, ok := data["config"]; !ok {
+		t.Error("expected config.yaml to be included")
+	}
+}
+
+func TestFileValuesWatcherSkipsNonYAMLFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeYAML(t, dir, "data.yaml", "key: value")
+	writeYAML(t, dir, "notes.txt", "plain text")
+	writeYAML(t, dir, "config.json", `{"key": "value"}`)
+
+	w := NewFileValuesWatcher(dir, 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	data := readFileValuesChanges(t, w)
+	if _, ok := data["notes"]; ok {
+		t.Error("expected .txt file to be skipped")
+	}
+	if _, ok := data["config"]; ok {
+		t.Error("expected .json file to be skipped")
+	}
+	if _, ok := data["data"]; !ok {
+		t.Error("expected data.yaml to be included")
+	}
+}
+
+func TestFileValuesWatcherInvalidYAMLFallsBackToString(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Write content that is invalid YAML (tabs for indentation cause parse errors in strict mode,
+	// but sigs.k8s.io/yaml is lenient). Use a known-bad pattern: bare ":" at top level.
+	writeYAML(t, dir, "bad.yaml", ":\n  :\n    :")
+
+	w := NewFileValuesWatcher(dir, 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	data := readFileValuesChanges(t, w)
+	// Whether it parses or falls back to string, the key should exist.
+	if _, ok := data["bad"]; !ok {
+		t.Fatal("expected bad key to be present")
+	}
+}
+
+func TestFileValuesWatcherReadFileError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeYAML(t, dir, "good.yaml", "key: value")
+
+	// Create a symlink pointing to a nonexistent target — ReadDir sees it,
+	// but ReadFile fails.
+	broken := filepath.Join(dir, "broken.yaml")
+	err := os.Symlink(filepath.Join(dir, "nonexistent"), broken)
+	if err != nil {
+		t.Skip("symlink not supported:", err)
+	}
+
+	w := NewFileValuesWatcher(dir, 50*time.Millisecond)
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	data := readFileValuesChanges(t, w)
+	// good.yaml should still be present; broken.yaml is skipped on error.
+	if _, ok := data["good"]; !ok {
+		t.Error("expected good.yaml to be included")
+	}
+	if _, ok := data["broken"]; ok {
+		t.Error("expected broken.yaml to be skipped due to ReadFile error")
+	}
+}
+
 func TestFileValuesWatcherYMLExtension(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

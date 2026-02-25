@@ -48,7 +48,7 @@ func TestNew_CustomDelimiters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestNew_ConfigurableDelimiters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestNew_ConfigurableDelimitersLiteralPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
 		{IP: "10.0.0.2", Port: 8080, Name: "pod-b"},
 	}
 
-	out, err := r.Render(frontends, nil, nil)
+	out, err := r.Render(frontends, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
 		},
 	}
 
-	out, err := r.Render(nil, backends, nil)
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestNew_ConfigurableDelimitersWithValues(t *testing.T) {
 		"config": {"ttl": "300"},
 	}
 
-	out, err := r.Render(nil, nil, values)
+	out, err := r.Render(nil, nil, values, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestNew_ConfigurableDelimitersSprigFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
 		{IP: "10.0.0.5", Port: 80, Name: "x"},
 	}
 
-	outPath, err := r.RenderToFile(frontends, nil, nil)
+	outPath, err := r.RenderToFile(frontends, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("RenderToFile error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestNew_ConfigurableDelimitersReload(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, _ := r.Render(nil, nil, nil)
+	out, _ := r.Render(nil, nil, nil, nil)
 	if !strings.Contains(out, "BEFORE") {
 		t.Fatalf("expected BEFORE, got: %s", out)
 	}
@@ -234,7 +234,7 @@ func TestNew_ConfigurableDelimitersReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload error: %v", err)
 	}
-	out, _ = r.Render(nil, nil, nil)
+	out, _ = r.Render(nil, nil, nil, nil)
 	if !strings.Contains(out, "AFTER") {
 		t.Errorf("expected AFTER after reload, got: %s", out)
 	}
@@ -257,14 +257,14 @@ func TestNew_ConfigurableDelimitersRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload error: %v", err)
 	}
-	out, _ := r.Render(nil, nil, nil)
+	out, _ := r.Render(nil, nil, nil, nil)
 	if !strings.Contains(out, "NEW") {
 		t.Fatalf("expected NEW after reload, got: %s", out)
 	}
 
 	// Rollback should restore the old template.
 	r.Rollback()
-	out, _ = r.Render(nil, nil, nil)
+	out, _ = r.Render(nil, nil, nil, nil)
 	if !strings.Contains(out, "OLD") {
 		t.Errorf("expected OLD after rollback, got: %s", out)
 	}
@@ -299,7 +299,7 @@ sub vcl_deliver {
 	}
 	r.SetDrainBackend("drain_flag")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestNew_UnusualDelimiters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestRender_EmptyFrontends(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestRender_WithFrontends(t *testing.T) {
 		{IP: "10.0.0.2", Port: 8080, Name: "pod-b"},
 	}
 
-	out, err := r.Render(frontends, nil, nil)
+	out, err := r.Render(frontends, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestRender_SprigFunctions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			out, err := r.Render(frontends, nil, nil)
+			out, err := r.Render(frontends, nil, nil, nil)
 			if err != nil {
 				t.Fatalf("render error: %v", err)
 			}
@@ -538,7 +538,7 @@ func TestReload(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, _ := r.Render(nil, nil, nil)
+	out, _ := r.Render(nil, nil, nil, nil)
 	if out != "BEFORE" {
 		t.Fatalf("expected BEFORE, got: %s", out)
 	}
@@ -554,7 +554,7 @@ func TestReload(t *testing.T) {
 		t.Fatalf("reload error: %v", err)
 	}
 
-	out, _ = r.Render(nil, nil, nil)
+	out, _ = r.Render(nil, nil, nil, nil)
 	if out != "AFTER" {
 		t.Errorf("expected AFTER after reload, got: %s", out)
 	}
@@ -578,7 +578,7 @@ func TestRollback(t *testing.T) {
 		t.Fatalf("reload error: %v", err)
 	}
 
-	out, _ := r.Render(nil, nil, nil)
+	out, _ := r.Render(nil, nil, nil, nil)
 	if out != "NEW" {
 		t.Fatalf("expected NEW after reload, got: %s", out)
 	}
@@ -586,7 +586,7 @@ func TestRollback(t *testing.T) {
 	// Rollback should restore the old template.
 	r.Rollback()
 
-	out, _ = r.Render(nil, nil, nil)
+	out, _ = r.Render(nil, nil, nil, nil)
 	if out != "OLD" {
 		t.Errorf("expected OLD after rollback, got: %s", out)
 	}
@@ -612,7 +612,7 @@ func TestReload_InvalidTemplate(t *testing.T) {
 	}
 
 	// Old template should still work.
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render should still work with old template: %v", err)
 	}
@@ -709,7 +709,7 @@ sub vcl_backend_response {
 
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
-		out, err := r.Render(nil, nil, nil)
+		out, err := r.Render(nil, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
@@ -730,7 +730,7 @@ sub vcl_backend_response {
 			{IP: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
 			{IP: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
 		}
-		out, err := r.Render(frontends, nil, nil)
+		out, err := r.Render(frontends, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
@@ -777,7 +777,7 @@ sub vcl_backend_response {
 				{IP: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
 			},
 		}
-		out, err := r.Render(nil, backends, nil)
+		out, err := r.Render(nil, backends, nil, nil)
 		if err != nil {
 			t.Fatalf("render error: %v", err)
 		}
@@ -827,7 +827,7 @@ func TestRenderToFile(t *testing.T) {
 		{IP: "10.0.0.5", Port: 80, Name: "x"},
 	}
 
-	outPath, err := r.RenderToFile(frontends, nil, nil)
+	outPath, err := r.RenderToFile(frontends, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("RenderToFile error: %v", err)
 	}
@@ -863,7 +863,7 @@ func TestRender_WithBackends(t *testing.T) {
 		},
 	}
 
-	out, err := r.Render(nil, backends, nil)
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -899,7 +899,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 		{IP: "10.0.0.1", Port: 80, Name: "a"},
 	}
 
-	_, err = r.RenderToFile(frontends, nil, nil)
+	_, err = r.RenderToFile(frontends, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from RenderToFile with broken template execution")
 	}
@@ -925,7 +925,7 @@ func TestReload_FileRemoved(t *testing.T) {
 	}
 
 	// Old template should still work.
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render should still work: %v", err)
 	}
@@ -945,7 +945,7 @@ func TestRollback_NoOp(t *testing.T) {
 	// Rollback without prior Reload should be a no-op.
 	r.Rollback()
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -973,7 +973,7 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 		},
 	}
 
-	out, err := r.Render(frontends, backends, nil)
+	out, err := r.Render(frontends, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -999,7 +999,7 @@ func TestRender_WithValues(t *testing.T) {
 		"tuning": {"greeting": "hello-world"},
 	}
 
-	out, err := r.Render(nil, nil, values)
+	out, err := r.Render(nil, nil, values, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1018,7 +1018,7 @@ func TestRender_EmptyValues(t *testing.T) {
 	}
 
 	// nil values should be normalised to empty map — template should still work.
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1045,7 +1045,7 @@ func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
 		"config": {"ttl": "120"},
 	}
 
-	out, err := r.Render(frontends, backends, values)
+	out, err := r.Render(frontends, backends, values, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1079,7 +1079,7 @@ sub vcl_deliver {
 	}
 	r.SetDrainBackend("drain_flag")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1122,7 +1122,7 @@ sub vcl_recv {
 	}
 	r.SetDrainBackend("drain_flag")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1149,7 +1149,7 @@ sub vcl_recv {
 	}
 	// No SetDrainBackend call — drain is disabled.
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1177,7 +1177,7 @@ sub vcl_recv {
 	}
 	r.SetDrainBackend("my_drain")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1216,7 +1216,7 @@ sub vcl_deliver {
 	}
 	r.SetDrainBackend("drain_flag")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1268,7 +1268,7 @@ sub vcl_deliver {
 	}
 	r.SetDrainBackend("drain_flag")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1314,7 +1314,7 @@ sub vcl_deliver {
 	}
 	r.SetDrainBackend("drain_flag")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1610,7 +1610,7 @@ sub vcl_deliver {
 		{IP: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
 	}
 
-	out, err := r.Render(frontends, nil, nil)
+	out, err := r.Render(frontends, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1665,7 +1665,7 @@ sub vcl_recv {
 	}
 	r.SetDrainBackend("drain_flag")
 
-	out, err := r.Render(nil, nil, nil)
+	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1698,7 +1698,7 @@ func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
 			}
 			r.SetDrainBackend("drain_flag")
 
-			out, err := r.Render(nil, nil, nil)
+			out, err := r.Render(nil, nil, nil, nil)
 			if err != nil {
 				t.Fatalf("render error: %v", err)
 			}
@@ -1728,7 +1728,7 @@ func TestRender_NestedValues(t *testing.T) {
 		},
 	}
 
-	out, err := r.Render(nil, nil, values)
+	out, err := r.Render(nil, nil, values, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1737,5 +1737,28 @@ func TestRender_NestedValues(t *testing.T) {
 	}
 	if !strings.Contains(out, "port=8080") {
 		t.Errorf("expected port=8080, got: %s", out)
+	}
+}
+
+func TestNew_Secrets(t *testing.T) {
+	t.Parallel()
+	path := writeTempTemplate(t, `apikey=<< .Secrets.myapp.apikey >>`)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	secrets := map[string]map[string]any{
+		"myapp": {
+			"apikey": "s3cr3t",
+		},
+	}
+
+	out, err := r.Render(nil, nil, nil, secrets)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "apikey=s3cr3t") {
+		t.Errorf("expected apikey=s3cr3t, got: %s", out)
 	}
 }

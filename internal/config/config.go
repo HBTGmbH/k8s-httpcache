@@ -37,6 +37,13 @@ type ValuesSpec struct {
 	Namespace     string // Kubernetes namespace (resolved from [namespace/]configmap or --namespace)
 }
 
+// SecretsSpec describes one Secret to watch and expose as template values.
+type SecretsSpec struct {
+	Name       string // template key, accessible as .Secrets.<Name>.<key>
+	SecretName string // Kubernetes Secret name
+	Namespace  string // Kubernetes namespace (resolved from [namespace/]secret or --namespace)
+}
+
 // ValuesDirSpec describes a filesystem directory to poll for YAML values.
 type ValuesDirSpec struct {
 	Name string // template key, accessible as .Values.<Name>.<key>
@@ -107,6 +114,30 @@ func (v *valuesFlags) Set(val string) error {
 	*v = append(*v, ValuesSpec{
 		Name:          name,
 		ConfigMapName: ref, // namespace resolution happens in Parse()
+	})
+
+	return nil
+}
+
+// secretsFlags implements a parser for repeatable --secrets flags.
+type secretsFlags []SecretsSpec
+
+func (s *secretsFlags) String() string { return fmt.Sprintf("%v", *s) }
+
+func (s *secretsFlags) Set(val string) error {
+	name, ref, ok := strings.Cut(val, ":")
+	if !ok {
+		return fmt.Errorf("invalid --secrets %q: expected name:[namespace/]secret", val)
+	}
+	if name == "" {
+		return fmt.Errorf("empty name in --secrets %q", val)
+	}
+	if ref == "" {
+		return fmt.Errorf("empty secret in --secrets %q", val)
+	}
+	*s = append(*s, SecretsSpec{
+		Name:       name,
+		SecretName: ref, // namespace resolution happens in Parse()
 	})
 
 	return nil
@@ -201,6 +232,7 @@ type Config struct {
 	ShutdownTimeout            time.Duration
 	Backends                   []BackendSpec
 	Values                     []ValuesSpec
+	Secrets                    []SecretsSpec
 	ValuesDirs                 []ValuesDirSpec
 	ValuesDirPollInterval      time.Duration
 	MetricsAddr                string
@@ -332,6 +364,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 		rawBackends               []string
 		rawListenAddrs            []string
 		rawValues                 []string
+		rawSecrets                []string
 		rawValuesDirs             []string
 		templateDelims            string
 		logLevel                  string
@@ -393,6 +426,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    "Listen, backend, and values:",
 				Usage:       "ConfigMap to watch for template values: name:[namespace/]configmap (repeatable)",
 				Destination: &rawValues,
+			},
+			&cli.StringSliceFlag{
+				Name:        "secrets",
+				Category:    "Listen, backend, and values:",
+				Usage:       "Secret to watch for template values: name:[namespace/]secret (repeatable)",
+				Destination: &rawSecrets,
 			},
 			&cli.StringSliceFlag{
 				Name:        "values-dir",
@@ -918,6 +957,36 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				values[i].ConfigMapName = cm
 			}
 			c.Values = []ValuesSpec(values)
+
+			// Parse and validate secrets.
+			var secrets secretsFlags
+			for _, raw := range rawSecrets {
+				err := secrets.Set(raw)
+				if err != nil {
+					actionErr = validationError(cmd, "%v", err)
+
+					return nil
+				}
+			}
+			seenSecrets := make(map[string]bool, len(secrets))
+			for i, s := range secrets {
+				if seenSecrets[s.Name] {
+					actionErr = validationError(cmd, "duplicate --secrets name %q", s.Name)
+
+					return nil
+				}
+				seenSecrets[s.Name] = true
+
+				ns, sec, err := parseNamespacedService(s.SecretName, c.Namespace)
+				if err != nil {
+					actionErr = validationError(cmd, "--secrets %q: %v", s.Name, err)
+
+					return nil
+				}
+				secrets[i].Namespace = ns
+				secrets[i].SecretName = sec
+			}
+			c.Secrets = []SecretsSpec(secrets)
 
 			// Parse and validate values-dir.
 			var valuesDirs valuesDirFlags

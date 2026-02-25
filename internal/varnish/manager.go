@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"k8s-httpcache/internal/redact"
 	"k8s-httpcache/internal/telemetry"
 )
 
@@ -35,12 +37,15 @@ type proc interface {
 }
 
 // execRunner is the real implementation that uses os/exec.
-type execRunner struct{}
+type execRunner struct {
+	stdout io.Writer
+	stderr io.Writer
+}
 
-func (execRunner) Start(name string, args []string) (proc, error) {
+func (r execRunner) Start(name string, args []string) (proc, error) {
 	cmd := exec.Command(name, args...) //nolint:noctx // varnishd runs for the container's lifetime; cancelled via SIGTERM, not context.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = r.stdout
+	cmd.Stderr = r.stderr
 
 	err := cmd.Start()
 	if err != nil {
@@ -50,7 +55,7 @@ func (execRunner) Start(name string, args []string) (proc, error) {
 	return &execProc{cmd: cmd}, nil
 }
 
-func (execRunner) Run(name string, args []string) (string, error) {
+func (r execRunner) Run(name string, args []string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:noctx // varnishadm commands are short-lived; timeout is handled by the admin socket.
 	out, err := cmd.CombinedOutput()
 
@@ -74,6 +79,7 @@ type Manager struct {
 	workDir             string // varnishd -n instance name, forwarded to varnishadm/varnishstat
 	log                 *slog.Logger
 	run                 runner
+	redactor            *redact.Redactor
 	proc                proc
 	majorVersion        int // major version of varnishd (e.g. 6, 7, 8)
 	done                chan struct{}
@@ -127,10 +133,21 @@ func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, v
 		extraArgs:       extraArgs,
 		workDir:         extractWorkDir(extraArgs),
 		log:             slog.Default(),
-		run:             execRunner{},
+		run:             execRunner{stdout: os.Stdout, stderr: os.Stderr},
 		done:            make(chan struct{}),
 		metrics:         metrics,
 		AdminTimeout:    30 * time.Second,
+	}
+}
+
+// SetRedactor installs a Redactor that filters secret values from varnishd
+// stdout/stderr and varnishadm command responses.
+func (m *Manager) SetRedactor(r *redact.Redactor) {
+	m.redactor = r
+	if er, ok := m.run.(execRunner); ok {
+		er.stdout = r.Writer(er.stdout)
+		er.stderr = r.Writer(er.stderr)
+		m.run = er
 	}
 }
 
@@ -411,7 +428,12 @@ func (m *Manager) adm(args ...string) (string, error) {
 
 	m.log.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
 
-	return m.run.Run(m.varnishadmPath, cmdArgs) //nolint:wrapcheck // internal helper; callers add context
+	resp, err := m.run.Run(m.varnishadmPath, cmdArgs)
+	if m.redactor != nil {
+		resp = m.redactor.Redact(resp)
+	}
+
+	return resp, err //nolint:wrapcheck // internal helper; callers add context
 }
 
 // vclSuffix parses the numeric suffix from a VCL name matching the

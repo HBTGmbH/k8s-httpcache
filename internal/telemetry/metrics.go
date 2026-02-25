@@ -23,6 +23,7 @@ type Metrics struct {
 	BroadcastFanoutTargets       prometheus.Gauge
 	VCLReloadRetriesTotal        prometheus.Counter
 	ValuesUpdatesTotal           *prometheus.CounterVec
+	SecretsUpdatesTotal          *prometheus.CounterVec
 	BuildInfo                    *prometheus.GaugeVec
 	DebounceEventsTotal          *prometheus.CounterVec
 	DebounceFiresTotal           *prometheus.CounterVec
@@ -113,6 +114,12 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Help:      "Total number of ConfigMap value updates received.",
 		}, []string{"configmap"}),
 
+		SecretsUpdatesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "secrets_updates_total",
+			Help:      "Total number of Secret value updates received.",
+		}, []string{"secret"}),
+
 		BuildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "build_info",
@@ -177,6 +184,7 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 		m.Endpoints,
 		m.VarnishdUp,
 		m.ValuesUpdatesTotal,
+		m.SecretsUpdatesTotal,
 		m.BroadcastRequestsTotal,
 		m.BroadcastFanoutTargets,
 		m.BuildInfo,

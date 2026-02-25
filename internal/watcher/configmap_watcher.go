@@ -47,6 +47,8 @@ func (w *ConfigMapWatcher) Changes() <-chan map[string]any {
 }
 
 // Run starts watching the ConfigMap and blocks until ctx is cancelled.
+//
+//nolint:dupl // Mirrors SecretWatcher.Run; the two use different API types and cannot share code.
 func (w *ConfigMapWatcher) Run(ctx context.Context) error {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		w.clientset,

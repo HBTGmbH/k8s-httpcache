@@ -31,7 +31,8 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
 - Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more
 - ExternalName service support for hostname-based backends
   - https://github.com/mittwald/kube-httpcache/issues/39
-- Template values from Kubernetes ConfigMaps (`--values`) or mounted directories (`--values-dir`), dynamically reloaded on changes
+- Template values from Kubernetes ConfigMaps (`--values`), Secrets (`--secrets`), or mounted directories (`--values-dir`), dynamically reloaded on changes
+- Secret values are automatically redacted from varnishd process output, varnishadm responses, and error logs
 - Cross-namespace backends and values via `namespace/service` syntax
 - All [Sprig](http://masterminds.github.io/sprig/) template functions available in VCL templates (including [`env`](http://masterminds.github.io/sprig/os.html) for environment variables)
   - https://github.com/mittwald/kube-httpcache/issues/53
@@ -93,6 +94,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--listen-addr`, `-l` | `http=:8080,HTTP` | Varnish listen address (repeatable). See [Listen address specification](#listen-address-specification). |
 | `--backend`, `-b` | | Backend service (repeatable). See [Backend specification](#backend-specification). |
 | `--values` | | ConfigMap to watch for template values (repeatable). See [Values specification](#values-specification). |
+| `--secrets` | | Secret to watch for template values (repeatable). See [Secrets specification](#secrets-specification). |
 | `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
 | `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories (only effective when `--file-watch` is enabled) |
 
@@ -137,6 +139,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `vcl_rollbacks_total` | Counter | | Template rollbacks to previous known-good version |
 | `endpoint_updates_total` | Counter | `role`, `service` | EndpointSlice updates received (`frontend` or `backend`) |
 | `values_updates_total` | Counter | `configmap` | ConfigMap value updates received |
+| `secrets_updates_total` | Counter | `secret` | Secret value updates received |
 | `endpoints` | Gauge | `role`, `service` | Current ready endpoint count per service |
 | `varnishd_up` | Gauge | | Whether the varnishd process is running (1/0) |
 | `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
@@ -150,7 +153,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `vcl_reload_duration_seconds` | Histogram | | Time for varnishd VCL reload (`vcl.load` + `vcl.use`), including retries |
 | `broadcast_duration_seconds` | Histogram | | Total wall-clock time for broadcast fan-out to all frontend pods |
 
-The `group` label is either `frontend` (`--service-name` endpoint changes) or `backend` (`--backend`, `--values`, `--values-dir`, and VCL template changes).
+The `group` label is either `frontend` (`--service-name` endpoint changes) or `backend` (`--backend`, `--values`, `--secrets`, `--values-dir`, and VCL template changes).
 
 #### Status endpoint
 
@@ -420,6 +423,46 @@ set req.http.X-Origin = "<< .Values.config.server.host >>:<< .Values.config.serv
 
 Use the `namespace/configmap` syntax to reference a ConfigMap in another namespace. This requires a Role and RoleBinding granting `list` and `watch` on `configmaps` in the target namespace. See [RBAC](#rbac).
 
+## Secrets specification
+
+Format: `name:[namespace/]secret`
+
+| Part | Required | Description |
+|------|----------|-------------|
+| `name` | yes | Template key, accessible as `.Secrets.<name>.<key>` |
+| `namespace/` | no | Kubernetes namespace; defaults to `--namespace` if omitted |
+| `secret` | yes | Kubernetes Secret name to watch |
+
+Each Secret `data` value (which Kubernetes stores as `[]byte`) is converted to a string and YAML-parsed into its natural type, just like `--values`. The parsed data is exposed under `.Secrets.<name>`. When the Secret is updated, the VCL template is re-rendered and Varnish is reloaded (after debounce). If the Secret does not exist, an empty map is used.
+
+### Examples
+
+```
+--secrets=auth:my-api-keys              # default namespace
+--secrets=creds:staging/origin-tokens   # cross-namespace
+```
+
+Using secrets in a VCL template:
+
+```vcl
+sub vcl_backend_fetch {
+  set bereq.http.Authorization = "Bearer << index .Secrets.auth "api-key" >>";
+}
+```
+
+### Cross-namespace secrets
+
+Use the `namespace/secret` syntax to reference a Secret in another namespace. This requires a Role and RoleBinding granting `list` and `watch` on `secrets` in the target namespace. See [RBAC](#rbac).
+
+### Security considerations
+
+Secret values are rendered directly into VCL and passed to Varnish, so it is important to understand where they can appear:
+
+- **Rendered VCL on disk.** The rendered VCL is written to a temporary file that Varnish reads during `vcl.load`. The file is deleted immediately after use. In a Kubernetes deployment, the `/tmp` directory should be an `emptyDir` volume with `medium: Memory` (see [Security context](#security-context)) so that rendered VCL is never written to persistent storage.
+- **Request and response headers.** If your VCL template sets a secret value as an HTTP header (e.g. `bereq.http.Authorization`), that header is visible to backend services and may appear in their access logs. Similarly, secrets placed on response headers (e.g. `resp.http.*`) are visible to clients and any intermediary proxies that log headers. Only set secrets on headers that are strictly necessary, and ensure that both upstream and downstream services treat those headers as sensitive.
+- **Varnish process output and error messages.** When VCL compilation fails, `varnishd` and `varnishadm` may include VCL source lines — containing rendered secrets — in their error output. k8s-httpcache automatically redacts all known secret values (strings of 6 characters or longer) from process output, command responses, log messages, and Kubernetes Events. This protects against accidental exposure in logs, but the redactor only covers values it knows about — secrets must be loaded via `--secrets` to be redacted.
+- **Varnish shared memory log (VSL).** Varnish logs request and response headers to its shared memory log, accessible via `varnishlog` / `varnishncsa`. If a secret is set on a header, it will appear in VSL. This is outside the control of k8s-httpcache. If you expose VSL tooling, be aware that header values may contain secrets.
+
 ## Values from directories
 
 Format: `name:/path/to/dir`
@@ -469,6 +512,7 @@ The template receives the following data:
 | `.Frontends` | `[]Frontend` | Varnish peer pods from the watched service EndpointSlice |
 | `.Backends` | `map[string][]Endpoint` | Named backend groups keyed by the `name` from `--backend` |
 | `.Values` | `map[string]map[string]any` | Template values keyed by the `name` from `--values` or `--values-dir`. Each value is YAML-parsed, so structured data (maps, lists, numbers) is accessible. |
+| `.Secrets` | `map[string]map[string]any` | Secret values keyed by the `name` from `--secrets`. Each value is YAML-parsed like `.Values`. |
 
 Each `Frontend` / `Endpoint` has:
 
@@ -669,7 +713,7 @@ terminationGracePeriodSeconds: 90
 
 ### Minimum permissions
 
-k8s-httpcache needs `list` and `watch` on `services` and `endpointslices` in its own namespace. If using `--values`, it also needs `list` and `watch` on `configmaps`:
+k8s-httpcache needs `list` and `watch` on `services` and `endpointslices` in its own namespace. If using `--values`, it also needs `list` and `watch` on `configmaps`. If using `--secrets`, it also needs `list` and `watch` on `secrets`:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -686,6 +730,9 @@ rules:
   verbs: ["list", "watch"]
 - apiGroups: [""]
   resources: ["configmaps"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
   verbs: ["list", "watch"]
 ```
 
@@ -704,7 +751,7 @@ The `pods` `get` permission allows the event recorder to look up the pod UID so 
 
 ### Cross-namespace
 
-To watch services or ConfigMaps in other namespaces (for cross-namespace backends or values), create a Role and RoleBinding in each target namespace. The RoleBinding must reference the ServiceAccount from the k8s-httpcache namespace:
+To watch services, ConfigMaps, or Secrets in other namespaces (for cross-namespace backends, values, or secrets), create a Role and RoleBinding in each target namespace. The RoleBinding must reference the ServiceAccount from the k8s-httpcache namespace:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -721,6 +768,9 @@ rules:
   verbs: ["list", "watch"]
 - apiGroups: [""]
   resources: ["configmaps"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
   verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

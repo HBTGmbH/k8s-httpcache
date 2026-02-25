@@ -109,6 +109,13 @@ func TestValuesUpdatesTotal(t *testing.T) {
 	assertCounterValue(t, m.ValuesUpdatesTotal.WithLabelValues("my-configmap"), 1)
 }
 
+func TestSecretsUpdatesTotal(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.SecretsUpdatesTotal.WithLabelValues("my-secret").Inc()
+	assertCounterValue(t, m.SecretsUpdatesTotal.WithLabelValues("my-secret"), 1)
+}
+
 func TestDebounceEventsTotal(t *testing.T) {
 	t.Parallel()
 	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
@@ -233,6 +240,7 @@ func TestMetricsRegistered(t *testing.T) {
 		"k8s_httpcache_endpoints",
 		"k8s_httpcache_varnishd_up",
 		"k8s_httpcache_values_updates_total",
+		"k8s_httpcache_secrets_updates_total",
 		"k8s_httpcache_broadcast_requests_total",
 		"k8s_httpcache_broadcast_fanout_targets",
 		"k8s_httpcache_build_info",
@@ -277,6 +285,29 @@ func assertCounterValue(t *testing.T, c prometheus.Counter, expected float64) {
 	}
 	if got := m.GetCounter().GetValue(); got != expected {
 		t.Errorf("counter value = %v, want %v", got, expected)
+	}
+}
+
+func TestNewMetrics_NilBucketsUsesDefaults(t *testing.T) {
+	t.Parallel()
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg, nil)
+
+	// Observe a value and verify the histogram works (proves DefBuckets was used).
+	m.DebounceLatencySeconds.WithLabelValues("frontend").Observe(0.5)
+
+	var dm dto.Metric
+	observer := m.DebounceLatencySeconds.WithLabelValues("frontend")
+	pm, ok := observer.(prometheus.Metric)
+	if !ok {
+		t.Fatal("histogram does not implement prometheus.Metric")
+	}
+	err := pm.Write(&dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dm.GetHistogram().GetSampleCount(); got != 1 {
+		t.Errorf("histogram sample count = %d, want 1", got)
 	}
 }
 

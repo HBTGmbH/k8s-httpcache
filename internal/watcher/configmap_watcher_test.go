@@ -218,6 +218,31 @@ func TestConfigMapWatcherStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestConfigMapWatcherInvalidYAMLFallback(t *testing.T) {
+	t.Parallel()
+	cm := makeConfigMap("my-cm", map[string]string{
+		"valid":   "hello",
+		"invalid": "a: [unterminated",
+	})
+	clientset := fake.NewClientset(cm)
+	w := NewConfigMapWatcher(clientset, "default", "my-cm")
+
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	data := readConfigMapChanges(t, w)
+
+	// Valid key parsed normally.
+	if data["valid"] != "hello" {
+		t.Errorf("expected valid=hello, got %v", data["valid"])
+	}
+
+	// Invalid YAML falls back to raw string.
+	if data["invalid"] != "a: [unterminated" {
+		t.Errorf("expected raw string fallback, got %v (%T)", data["invalid"], data["invalid"])
+	}
+}
+
 func TestConfigMapWatcherYAMLParsing(t *testing.T) {
 	t.Parallel()
 	cm := makeConfigMap("my-cm", map[string]string{

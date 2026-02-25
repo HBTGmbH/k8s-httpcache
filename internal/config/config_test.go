@@ -1894,6 +1894,160 @@ func TestParseNoValues(t *testing.T) {
 	}
 }
 
+// --- --secrets flag tests ---
+
+func TestSecretsFlagsSet(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		input   string
+		wantSS  SecretsSpec
+		wantErr bool
+	}{
+		{
+			name:  "name and secret",
+			input: "auth:my-secret",
+			wantSS: SecretsSpec{
+				Name:       "auth",
+				SecretName: "my-secret",
+			},
+		},
+		{
+			name:  "with namespace prefix",
+			input: "auth:staging/my-secret",
+			wantSS: SecretsSpec{ //nolint:gosec // G101: test fixture, not a credential
+				Name:       "auth",
+				SecretName: "staging/my-secret",
+			},
+		},
+		{
+			name:    "missing secret",
+			input:   "auth",
+			wantErr: true,
+		},
+		{
+			name:    "empty name",
+			input:   ":my-secret",
+			wantErr: true,
+		},
+		{
+			name:    "empty secret",
+			input:   "auth:",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var sf secretsFlags
+			err := sf.Set(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %+v", sf)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(sf) != 1 {
+				t.Fatalf("expected 1 secrets spec, got %d", len(sf))
+			}
+			got := sf[0]
+			if got.Name != tt.wantSS.Name {
+				t.Errorf("Name = %q, want %q", got.Name, tt.wantSS.Name)
+			}
+			if got.SecretName != tt.wantSS.SecretName {
+				t.Errorf("SecretName = %q, want %q", got.SecretName, tt.wantSS.SecretName)
+			}
+		})
+	}
+}
+
+func TestSecretsFlagsString(t *testing.T) {
+	t.Parallel()
+	var sf secretsFlags
+	_ = sf.Set("auth:my-secret")
+	s := sf.String()
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}
+
+func TestParseDuplicateSecretsNames(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--secrets=auth:secret-a",
+		"--secrets=auth:secret-b",
+	})
+	if err == nil {
+		t.Fatal("expected error for duplicate --secrets name")
+	}
+	if !strings.Contains(err.Error(), "duplicate --secrets name") {
+		t.Errorf("error = %q, want substring 'duplicate --secrets name'", err)
+	}
+}
+
+func TestParseSecretsNamespaceResolution(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--secrets=auth:my-secret",
+		"--secrets=config:staging/other-secret",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Secrets) != 2 {
+		t.Fatalf("expected 2 secrets, got %d", len(cfg.Secrets))
+	}
+	// First secret uses default namespace.
+	if cfg.Secrets[0].Namespace != "default" {
+		t.Errorf("Secrets[0].Namespace = %q, want default", cfg.Secrets[0].Namespace)
+	}
+	if cfg.Secrets[0].SecretName != "my-secret" {
+		t.Errorf("Secrets[0].SecretName = %q, want my-secret", cfg.Secrets[0].SecretName)
+	}
+	// Second secret uses explicit namespace.
+	if cfg.Secrets[1].Namespace != "staging" {
+		t.Errorf("Secrets[1].Namespace = %q, want staging", cfg.Secrets[1].Namespace)
+	}
+	if cfg.Secrets[1].SecretName != "other-secret" {
+		t.Errorf("Secrets[1].SecretName = %q, want other-secret", cfg.Secrets[1].SecretName)
+	}
+}
+
+func TestParseSecretsInvalidRef(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--secrets=auth:/secret",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid secrets reference")
+	}
+	if !strings.Contains(err.Error(), "--secrets") {
+		t.Errorf("error = %q, want substring '--secrets'", err)
+	}
+}
+
 // --- --values-dir flag tests ---
 
 func TestValuesDirFlagsSet(t *testing.T) {

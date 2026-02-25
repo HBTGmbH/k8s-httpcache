@@ -34,6 +34,7 @@ import (
 
 	"k8s-httpcache/internal/broadcast"
 	"k8s-httpcache/internal/config"
+	"k8s-httpcache/internal/redact"
 	"k8s-httpcache/internal/renderer"
 	"k8s-httpcache/internal/telemetry"
 	"k8s-httpcache/internal/varnish"
@@ -51,7 +52,7 @@ const drainBackendName = "drain_flag"
 // vclRenderer abstracts VCL template operations (satisfied by *renderer.Renderer).
 type vclRenderer interface {
 	Reload() error
-	RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values map[string]map[string]any) (string, error)
+	RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error)
 	Rollback()
 }
 
@@ -124,6 +125,7 @@ type statusStore struct {
 	frontendCount int
 	backendCounts map[string]int
 	valuesCount   int
+	secretsCount  int
 	lastReloadAt  time.Time
 	reloadCount   int64
 	varnishdUp    bool
@@ -143,6 +145,7 @@ type statusResponse struct {
 	FrontendCount       int            `json:"frontendCount"`
 	BackendCounts       map[string]int `json:"backendCounts"`
 	ValuesCount         int            `json:"valuesCount"`
+	SecretsCount        int            `json:"secretsCount"`
 	LastReloadAt        *time.Time     `json:"lastReloadAt"`
 	ReloadCount         int64          `json:"reloadCount"`
 	VarnishdUp          bool           `json:"varnishdUp"`
@@ -172,6 +175,7 @@ func (s *statusStore) snapshot() statusResponse {
 		FrontendCount:       s.frontendCount,
 		BackendCounts:       maps.Clone(s.backendCounts),
 		ValuesCount:         s.valuesCount,
+		SecretsCount:        s.secretsCount,
 		LastReloadAt:        lastReload,
 		ReloadCount:         s.reloadCount,
 		VarnishdUp:          s.varnishdUp,
@@ -227,15 +231,17 @@ func backendCountsMap(backends map[string][]watcher.Endpoint) map[string]int {
 
 // loopConfig holds all inputs for the main event loop.
 type loopConfig struct {
-	rend    vclRenderer
-	mgr     varnishProcess
-	bcast   broadcaster  // nil when broadcast is disabled
-	status  *statusStore // nil when status endpoint is disabled
-	metrics *telemetry.Metrics
+	rend     vclRenderer
+	mgr      varnishProcess
+	bcast    broadcaster  // nil when broadcast is disabled
+	status   *statusStore // nil when status endpoint is disabled
+	metrics  *telemetry.Metrics
+	redactor *redact.Redactor // nil when no secrets are configured
 
 	frontendCh <-chan []watcher.Frontend
 	backendCh  chan backendChange
 	valuesCh   chan valuesChange
+	secretsCh  chan secretsChange
 	templateCh <-chan struct{}
 	sigCh      <-chan os.Signal
 
@@ -258,6 +264,7 @@ type loopConfig struct {
 	latestFrontends []watcher.Frontend
 	latestBackends  map[string][]watcher.Endpoint
 	latestValues    map[string]map[string]any
+	latestSecrets   map[string]map[string]any
 }
 
 func main() {
@@ -353,6 +360,9 @@ func main() {
 	mgr.ReloadRetryInterval = cfg.VCLReloadRetryInterval
 	mgr.VCLKept = cfg.VCLKept
 
+	secretRedactor := redact.NewRedactor()
+	mgr.SetRedactor(secretRedactor)
+
 	err = mgr.DetectVersion()
 	if err != nil {
 		log.Fatalf("varnish version: %v", err)
@@ -416,6 +426,24 @@ func main() {
 		vwWatchers = append(vwWatchers, vw)
 	}
 
+	// Start SecretWatchers for --secrets.
+	var (
+		swNames    = make([]string, 0, len(cfg.Secrets))
+		swWatchers = make([]*watcher.SecretWatcher, 0, len(cfg.Secrets))
+	)
+	for _, s := range cfg.Secrets {
+		sw := watcher.NewSecretWatcher(clientset, s.Namespace, s.SecretName)
+		name := s.Name
+		go func() {
+			err := sw.Run(ctx)
+			if err != nil {
+				slog.Error("secrets watcher error", "secrets", name, "error", err)
+			}
+		}()
+		swNames = append(swNames, name)
+		swWatchers = append(swWatchers, sw)
+	}
+
 	// Start directory watchers for --values-dir.
 	var (
 		fvwNames    = make([]string, 0, len(cfg.ValuesDirs))
@@ -461,11 +489,17 @@ func main() {
 	for i, fvw := range fvwWatchers {
 		latestValues[fvwNames[i]] = <-fvw.Changes()
 	}
-	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues)) //nolint:gosec // G706: values are integer counts, not user strings
+	latestSecrets := make(map[string]map[string]any)
+	for i, sw := range swWatchers {
+		latestSecrets[swNames[i]] = <-sw.Changes()
+	}
+	secretRedactor.Update(latestSecrets)
+	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues), "secrets", len(latestSecrets)) //nolint:gosec // G706: values are integer counts, not user strings
 
 	// Set initial status counts.
 	status.setEndpointCounts(len(latestFrontends), backendCountsMap(latestBackends))
 	status.valuesCount = len(latestValues)
+	status.secretsCount = len(latestSecrets)
 
 	// Set initial endpoint gauges.
 	metrics.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
@@ -497,7 +531,7 @@ func main() {
 
 	// Render VCL with real endpoint data and start varnishd.
 	renderStart := time.Now()
-	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends, latestValues)
+	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends, latestValues, latestSecrets)
 	metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
 		log.Fatalf("initial render: %v", err) //nolint:gocritic // fatal before Start is intentional; deferred cancel is harmless to skip
@@ -567,21 +601,37 @@ func main() {
 		}
 	}
 
+	// Fan-in SecretWatcher updates to a single channel.
+	var secretsCh chan secretsChange
+	if len(swWatchers) > 0 {
+		secretsCh = make(chan secretsChange, len(swWatchers))
+		for i, sw := range swWatchers {
+			name := swNames[i]
+			go func() {
+				for data := range sw.Changes() {
+					secretsCh <- secretsChange{name: name, data: data}
+				}
+			}()
+		}
+	}
+
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// Main event loop with debounce.
 	os.Exit(runLoop(ctx, cancel, loopConfig{
-		rend:    rend,
-		mgr:     mgr,
-		bcast:   bcast,
-		status:  status,
-		metrics: metrics,
+		rend:     rend,
+		mgr:      mgr,
+		bcast:    bcast,
+		status:   status,
+		metrics:  metrics,
+		redactor: secretRedactor,
 
 		frontendCh: w.Changes(),
 		backendCh:  backendCh,
 		valuesCh:   valuesCh,
+		secretsCh:  secretsCh,
 		templateCh: templateCh,
 		sigCh:      sigCh,
 
@@ -604,6 +654,7 @@ func main() {
 		latestFrontends: latestFrontends,
 		latestBackends:  latestBackends,
 		latestValues:    latestValues,
+		latestSecrets:   latestSecrets,
 	}))
 }
 
@@ -612,7 +663,7 @@ func main() {
 // Varnish. Called after the primary reload fails on a new template.
 func rollbackReload(lc *loopConfig, reasons string) {
 	renderStart := time.Now()
-	vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
+	vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 	lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
 		lc.metrics.VCLRenderErrorsTotal.Inc()
@@ -755,7 +806,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		templateChanged = false
 
 		renderStart := time.Now()
-		vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues)
+		vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 		lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 		if err != nil {
 			lc.metrics.VCLRenderErrorsTotal.Inc()
@@ -843,6 +894,18 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Info("values ConfigMap updated", "name", vc.name)
 			pendingReload = true
 			pendingReasons = appendUnique(pendingReasons, "values updated")
+			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
+
+		case sc := <-secretsChan(lc.secretsCh):
+			lc.latestSecrets[sc.name] = sc.data
+			if lc.redactor != nil {
+				lc.redactor.Update(lc.latestSecrets)
+			}
+			lc.metrics.SecretsUpdatesTotal.WithLabelValues(sc.name).Inc()
+			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
+			slog.Info("values Secret updated", "name", sc.name)
+			pendingReload = true
+			pendingReasons = appendUnique(pendingReasons, "secrets updated")
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case <-timerChan(frontend.timer):
@@ -993,6 +1056,11 @@ type valuesChange struct {
 	data map[string]any
 }
 
+type secretsChange struct {
+	name string
+	data map[string]any
+}
+
 // backendChan returns ch, or nil if ch is nil (so select skips it).
 func backendChan(ch chan backendChange) <-chan backendChange {
 	if ch == nil {
@@ -1004,6 +1072,15 @@ func backendChan(ch chan backendChange) <-chan backendChange {
 
 // valuesChan returns ch, or nil if ch is nil (so select skips it).
 func valuesChan(ch chan valuesChange) <-chan valuesChange {
+	if ch == nil {
+		return nil
+	}
+
+	return ch
+}
+
+// secretsChan returns ch, or nil if ch is nil (so select skips it).
+func secretsChan(ch chan secretsChange) <-chan secretsChange {
 	if ch == nil {
 		return nil
 	}
