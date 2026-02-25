@@ -722,7 +722,7 @@ This gives backends in the same zone a weight of 10, while remote backends get a
 
 `.LocalBackends` and `.RemoteBackends` are pre-filtered views of `.Backends` split by zone, so you can build separate directors without inline conditionals. An endpoint is considered local if its `.Zone` matches `.LocalZone` or if its `.ForZones` hints include `.LocalZone` (Kubernetes Topology Aware Routing). When `.LocalZone` is empty, both maps are empty and you should fall back to `.Backends`.
 
-The pattern works with any number of `--backend` groups. For each group, a local and remote [round-robin director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) is created, then combined via a [fallback director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) that prefers the local director. The backends are declared from `.Backends` (which contains all endpoints regardless of zone), so every pod is reachable; only the director routing favors same-zone pods.
+The pattern works with any number of `--backend` groups. For each group, a local and remote [round-robin director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) can be created, then combined via a [fallback director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) that prefers the local director. The backends are declared from `.Backends` (which contains all endpoints regardless of zone), so every pod is reachable; only the director routing favors same-zone pods.
 
 When `.LocalZone` is empty (e.g. `NODE_NAME` not set), both `.LocalBackends` and `.RemoteBackends` are empty. A round-robin director with zero backends returns `NULL` for every request, so the template must guard the fallback pattern with `if .LocalZone` and fall back to a plain round-robin over `.Backends`:
 
@@ -779,6 +779,8 @@ sub vcl_recv {
 ```
 
 With `--backend api=... --backend web=...` and pods spread across two zones, this creates `local_api`, `remote_api`, `backend_api` (fallback), `local_web`, `remote_web`, `backend_web` (fallback). Each `backend_*` director prefers same-zone pods via round-robin and falls back to the remote round-robin only when all local pods are unhealthy. When `.LocalZone` is empty, it degrades gracefully to a plain round-robin over all backends.
+
+> **Note on shard routing:** When [frontend sharding](#reference-vcl-template) is combined with zone-aware backend directors, shard routing can still cause cross-zone traffic. The shard director selects the owning Varnish pod by URL hash — if the selected pod is in a different zone, the request is forwarded there before the backend director runs. The zone-aware fallback director then picks a backend local to *that* pod, not the pod that originally received the request. This is by design (it preserves cache efficiency), but means that cross-zone hops between Varnish pods are not eliminated by zone-aware backend routing alone.
 
 ### Kubernetes Topology Aware Routing hints
 
