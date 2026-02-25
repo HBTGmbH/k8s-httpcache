@@ -401,6 +401,21 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 	}
 }
 
+// waitForStatus polls the status store until check returns true, or fails
+// the test after 2 seconds. Use this instead of a fixed time.Sleep when
+// asserting that a reload (or other async event) has updated the store.
+func waitForStatus(t *testing.T, store *statusStore, check func(statusResponse) bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if check(store.snapshot()) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("status store condition not met within 2s")
+}
+
 // withRecorder wires a FakeRecorder and podRef into the harness so that
 // emitEvent calls produce observable events.
 func (h *testHarness) withRecorder() *record.FakeRecorder {
@@ -4053,12 +4068,9 @@ func TestRunLoop_StatusStoreUpdatedOnReload(t *testing.T) {
 		{IP: "10.0.0.1", Port: 80, Name: "pod-1"},
 		{IP: "10.0.0.2", Port: 80, Name: "pod-2"},
 	}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitForStatus(t, store, func(s statusResponse) bool { return s.ReloadCount >= 1 })
 
 	snap := store.snapshot()
-	if snap.ReloadCount < 1 {
-		t.Errorf("ReloadCount = %d, want >= 1", snap.ReloadCount)
-	}
 	if snap.FrontendCount != 2 {
 		t.Errorf("FrontendCount = %d, want 2", snap.FrontendCount)
 	}
@@ -4140,12 +4152,9 @@ func TestRunLoop_StatusStoreBackendCounts(t *testing.T) {
 			{IP: "10.0.1.3", Port: 8080, Name: "api-2"},
 		},
 	}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitForStatus(t, store, func(s statusResponse) bool { return s.ReloadCount >= 1 })
 
 	snap := store.snapshot()
-	if snap.ReloadCount < 1 {
-		t.Errorf("ReloadCount = %d, want >= 1", snap.ReloadCount)
-	}
 	if snap.BackendCounts["api"] != 3 {
 		t.Errorf("BackendCounts[api] = %d, want 3", snap.BackendCounts["api"])
 	}
@@ -4191,12 +4200,9 @@ func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
 
 	// Template change → first reload fails → rollback → retry succeeds.
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitForStatus(t, store, func(s statusResponse) bool { return s.ReloadCount >= 1 })
 
 	snap := store.snapshot()
-	if snap.ReloadCount < 1 {
-		t.Errorf("ReloadCount = %d after post-rollback success, want >= 1", snap.ReloadCount)
-	}
 	if snap.LastReloadAt == nil {
 		t.Error("LastReloadAt = nil after post-rollback success, want non-nil")
 	}
