@@ -40,6 +40,7 @@ func writeYAML(t *testing.T, dir, name, content string) {
 }
 
 func TestFileValuesWatcherInitialSync(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "server.yaml", "host: example.com\nport: 8080")
 
@@ -58,6 +59,7 @@ func TestFileValuesWatcherInitialSync(t *testing.T) {
 }
 
 func TestFileValuesWatcherEmptyDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	w := NewFileValuesWatcher(dir, 50*time.Millisecond)
@@ -71,6 +73,7 @@ func TestFileValuesWatcherEmptyDir(t *testing.T) {
 }
 
 func TestFileValuesWatcherUpdate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "ttl.yaml", "300")
 
@@ -94,6 +97,7 @@ func TestFileValuesWatcherUpdate(t *testing.T) {
 }
 
 func TestFileValuesWatcherDeduplicatesUnchanged(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "key.yaml", "value")
 
@@ -109,6 +113,7 @@ func TestFileValuesWatcherDeduplicatesUnchanged(t *testing.T) {
 }
 
 func TestFileValuesWatcherSkipsDotfiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "server.yaml", "host: example.com")
 	writeYAML(t, dir, ".hidden.yaml", "secret: true")
@@ -131,6 +136,7 @@ func TestFileValuesWatcherSkipsDotfiles(t *testing.T) {
 }
 
 func TestFileValuesWatcherYAMLParsing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "plain.yaml", "hello")
 	writeYAML(t, dir, "number.yaml", "42")
@@ -176,6 +182,7 @@ func TestFileValuesWatcherYAMLParsing(t *testing.T) {
 }
 
 func TestFileValuesWatcherFileAddedLater(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	w := NewFileValuesWatcher(dir, 50*time.Millisecond)
@@ -202,6 +209,7 @@ func TestFileValuesWatcherFileAddedLater(t *testing.T) {
 }
 
 func TestFileValuesWatcherFileDeleted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "server.yaml", "host: example.com")
 
@@ -227,6 +235,7 @@ func TestFileValuesWatcherFileDeleted(t *testing.T) {
 }
 
 func TestFileValuesWatcherStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "key.yaml", "value")
 
@@ -254,6 +263,7 @@ func TestFileValuesWatcherStopsOnContextCancel(t *testing.T) {
 }
 
 func TestFileValuesWatcherYMLExtension(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "config.yml", "key: value")
 

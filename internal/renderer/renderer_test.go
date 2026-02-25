@@ -22,6 +22,7 @@ func writeTempTemplate(t *testing.T, content string) string {
 }
 
 func TestNew_InvalidPath(t *testing.T) {
+	t.Parallel()
 	_, err := New("/nonexistent/path.tmpl", "<<", ">>")
 	if err == nil {
 		t.Fatal("expected error for nonexistent template path")
@@ -29,6 +30,7 @@ func TestNew_InvalidPath(t *testing.T) {
 }
 
 func TestNew_InvalidTemplate(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `<< if >>`)
 	_, err := New(path, "<<", ">>")
 	if err == nil {
@@ -37,6 +39,7 @@ func TestNew_InvalidTemplate(t *testing.T) {
 }
 
 func TestNew_CustomDelimiters(t *testing.T) {
+	t.Parallel()
 	// Ensure {{ }} is treated as literal text, not Go template syntax.
 	path := writeTempTemplate(t, `{{ .Helm }} << .Frontends >>`)
 	r, err := New(path, "<<", ">>")
@@ -53,6 +56,7 @@ func TestNew_CustomDelimiters(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimiters(t *testing.T) {
+	t.Parallel()
 	// Use {{ }} delimiters instead of << >>.
 	path := writeTempTemplate(t, `hello {{ .Frontends }} world`)
 	r, err := New(path, "{{", "}}")
@@ -69,6 +73,7 @@ func TestNew_ConfigurableDelimiters(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersLiteralPassthrough(t *testing.T) {
+	t.Parallel()
 	// When using {{ }} delimiters, << >> should pass through as literal text.
 	path := writeTempTemplate(t, `<< literal >> {{ len .Frontends }}`)
 	r, err := New(path, "{{", "}}")
@@ -88,6 +93,7 @@ func TestNew_ConfigurableDelimitersLiteralPassthrough(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
+	t.Parallel()
 	tmpl := `{{ range .Frontends }}backend {{ .Name }} { .host = "{{ .IP }}"; .port = "{{ .Port }}"; }
 {{ end }}`
 	path := writeTempTemplate(t, tmpl)
@@ -114,6 +120,7 @@ func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
+	t.Parallel()
 	tmpl := `{{ range $name, $eps := .Backends }}{{ range $eps }}{{ .Name }}_{{ $name }}={{ .IP }}:{{ .Port }} {{ end }}{{ end }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}")
@@ -137,6 +144,7 @@ func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersWithValues(t *testing.T) {
+	t.Parallel()
 	tmpl := `ttl={{ index .Values.config "ttl" }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}")
@@ -158,6 +166,7 @@ func TestNew_ConfigurableDelimitersWithValues(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersSprigFunctions(t *testing.T) {
+	t.Parallel()
 	tmpl := `{{ "hello world" | upper | replace " " "_" }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}")
@@ -174,6 +183,7 @@ func TestNew_ConfigurableDelimitersSprigFunctions(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1; {{ range .Frontends }}{{ .IP }} {{ end }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}")
@@ -201,6 +211,7 @@ func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersReload(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `BEFORE {{ .Frontends }}`)
 	r, err := New(path, "{{", "}}")
 	if err != nil {
@@ -226,6 +237,7 @@ func TestNew_ConfigurableDelimitersReload(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersRollback(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `OLD {{ len .Frontends }}`)
 	r, err := New(path, "{{", "}}")
 	if err != nil {
@@ -253,6 +265,7 @@ func TestNew_ConfigurableDelimitersRollback(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersInvalidTemplate(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `{{ if }}`)
 	_, err := New(path, "{{", "}}")
 	if err == nil {
@@ -261,6 +274,7 @@ func TestNew_ConfigurableDelimitersInvalidTemplate(t *testing.T) {
 }
 
 func TestNew_ConfigurableDelimitersDrainVCL(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 backend origin {
@@ -296,6 +310,7 @@ sub vcl_deliver {
 }
 
 func TestNew_UnusualDelimiters(t *testing.T) {
+	t.Parallel()
 	// Verify that arbitrary multi-character delimiters work.
 	tmpl := `result=[% len .Frontends %]`
 	path := writeTempTemplate(t, tmpl)
@@ -313,6 +328,7 @@ func TestNew_UnusualDelimiters(t *testing.T) {
 }
 
 func TestRender_EmptyFrontends(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 << if .Frontends >>HAS_BACKENDS<< else >>NO_BACKENDS<< end >>`
 	path := writeTempTemplate(t, tmpl)
@@ -334,6 +350,7 @@ func TestRender_EmptyFrontends(t *testing.T) {
 }
 
 func TestRender_WithFrontends(t *testing.T) {
+	t.Parallel()
 	tmpl := `<< range .Frontends >>backend << .Name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >>`
 	path := writeTempTemplate(t, tmpl)
@@ -366,6 +383,7 @@ func TestRender_WithFrontends(t *testing.T) {
 }
 
 func TestRender_SprigFunctions(t *testing.T) {
+	t.Parallel()
 	frontends := []watcher.Frontend{
 		{IP: "10.0.0.1", Port: 80, Name: "my-cool-pod"},
 	}
@@ -489,6 +507,7 @@ func TestRender_SprigFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			path := writeTempTemplate(t, tt.tmpl)
 			r, err := New(path, "<<", ">>")
 			if err != nil {
@@ -506,6 +525,7 @@ func TestRender_SprigFunctions(t *testing.T) {
 }
 
 func TestReload(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `BEFORE`)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
@@ -533,6 +553,7 @@ func TestReload(t *testing.T) {
 }
 
 func TestRollback(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `OLD`)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
@@ -562,6 +583,7 @@ func TestRollback(t *testing.T) {
 }
 
 func TestReload_InvalidTemplate(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `VALID`)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
@@ -588,6 +610,7 @@ func TestReload_InvalidTemplate(t *testing.T) {
 }
 
 func TestRender_ExampleTemplate(t *testing.T) {
+	t.Parallel()
 	// Test against a realistic VCL template to catch regressions.
 	const exampleVCL = `vcl 4.1;
 
@@ -673,6 +696,7 @@ sub vcl_backend_response {
 	}
 
 	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
 		out, err := r.Render(nil, nil, nil)
 		if err != nil {
 			t.Fatalf("render error: %v", err)
@@ -689,6 +713,7 @@ sub vcl_backend_response {
 	})
 
 	t.Run("with_frontends", func(t *testing.T) {
+		t.Parallel()
 		frontends := []watcher.Frontend{
 			{IP: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
 			{IP: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
@@ -733,6 +758,7 @@ sub vcl_backend_response {
 	})
 
 	t.Run("with_backends", func(t *testing.T) {
+		t.Parallel()
 		backends := map[string][]watcher.Endpoint{
 			"api": {
 				{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
@@ -777,6 +803,7 @@ sub vcl_backend_response {
 }
 
 func TestRenderToFile(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1; << range .Frontends >><< .IP >> << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -804,6 +831,7 @@ func TestRenderToFile(t *testing.T) {
 }
 
 func TestRender_WithBackends(t *testing.T) {
+	t.Parallel()
 	tmpl := `<< range $name, $eps := .Backends >>` +
 		`<< range $eps >>backend << .Name >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >><< end >>`
@@ -846,6 +874,7 @@ func TestRender_WithBackends(t *testing.T) {
 }
 
 func TestRenderToFile_RenderError(t *testing.T) {
+	t.Parallel()
 	// Template that will fail during execution (call undefined method).
 	tmpl := `<< range .Frontends >><< .Nonexistent >><< end >>`
 	path := writeTempTemplate(t, tmpl)
@@ -865,6 +894,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 }
 
 func TestReload_FileRemoved(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `VALID`)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
@@ -891,6 +921,7 @@ func TestReload_FileRemoved(t *testing.T) {
 }
 
 func TestRollback_NoOp(t *testing.T) {
+	t.Parallel()
 	path := writeTempTemplate(t, `ONLY`)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
@@ -910,6 +941,7 @@ func TestRollback_NoOp(t *testing.T) {
 }
 
 func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
+	t.Parallel()
 	tmpl := `frontends:<< range .Frontends >> << .IP >><< end >>` +
 		` backends:<< range $name, $eps := .Backends >><< range $eps >> << .IP >>/<< $name >><< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
@@ -941,6 +973,7 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 }
 
 func TestRender_WithValues(t *testing.T) {
+	t.Parallel()
 	tmpl := `greeting=<< index .Values.tuning "greeting" >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -962,6 +995,7 @@ func TestRender_WithValues(t *testing.T) {
 }
 
 func TestRender_EmptyValues(t *testing.T) {
+	t.Parallel()
 	tmpl := `<< if .Values >>HAS_VALUES<< else >>NO_VALUES<< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -981,6 +1015,7 @@ func TestRender_EmptyValues(t *testing.T) {
 }
 
 func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
+	t.Parallel()
 	tmpl := `ttl=<< index .Values.config "ttl" >> frontends=<< len .Frontends >> backends=<< len .Backends >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -1012,6 +1047,7 @@ func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
 }
 
 func TestRender_DrainVCLInjection(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 sub vcl_recv {
@@ -1056,6 +1092,7 @@ sub vcl_deliver {
 }
 
 func TestRender_DrainVCLImportStdDedup(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 import std;
@@ -1084,6 +1121,7 @@ sub vcl_recv {
 }
 
 func TestRender_NoDrainVCLWhenDisabled(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 sub vcl_recv {
@@ -1111,6 +1149,7 @@ sub vcl_recv {
 }
 
 func TestRender_DrainVCLCustomBackendName(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 sub vcl_recv {
@@ -1142,6 +1181,7 @@ sub vcl_recv {
 }
 
 func TestRender_DrainVCLOrdering(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 backend origin {
@@ -1190,6 +1230,7 @@ sub vcl_deliver {
 }
 
 func TestRender_DrainVCLBackendWithProbe(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 backend origin {
@@ -1240,6 +1281,7 @@ sub vcl_deliver {
 }
 
 func TestRender_DrainVCLNoBackends(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 sub vcl_recv {
@@ -1296,6 +1338,7 @@ sub vcl_deliver {
 }
 
 func TestVclVersionEnd(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		vcl  string
@@ -1324,6 +1367,7 @@ func TestVclVersionEnd(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := vclVersionEnd(tt.vcl)
 			if got != tt.want {
 				t.Errorf("vclVersionEnd() = %d, want %d", got, tt.want)
@@ -1333,6 +1377,7 @@ func TestVclVersionEnd(t *testing.T) {
 }
 
 func TestBackendBlocksEnd(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		vcl  string
@@ -1509,6 +1554,7 @@ func TestBackendBlocksEnd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := backendBlocksEnd(tt.vcl)
 			if got != tt.want {
 				t.Errorf("backendBlocksEnd() = %d, want %d\nvcl:\n%s", got, tt.want, tt.vcl)
@@ -1518,6 +1564,7 @@ func TestBackendBlocksEnd(t *testing.T) {
 }
 
 func TestRender_DrainVCLMultipleBackends(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 backend origin {
@@ -1586,6 +1633,7 @@ sub vcl_deliver {
 }
 
 func TestRender_DrainVCLImportStdInComment(t *testing.T) {
+	t.Parallel()
 	tmpl := `vcl 4.1;
 
 /*
@@ -1615,6 +1663,7 @@ sub vcl_recv {
 }
 
 func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		line string
@@ -1626,6 +1675,7 @@ func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			tmpl := "vcl 4.1;\n" + tt.line + "\n\nsub vcl_recv {\n  set req.backend_hint = origin;\n}\n"
 			path := writeTempTemplate(t, tmpl)
 			r, err := New(path, "<<", ">>")
@@ -1649,6 +1699,7 @@ func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
 }
 
 func TestRender_NestedValues(t *testing.T) {
+	t.Parallel()
 	tmpl := `host=<< index .Values.server "host" >> port=<< index .Values.server "port" >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")

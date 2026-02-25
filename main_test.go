@@ -28,12 +28,8 @@ import (
 	"k8s-httpcache/internal/watcher"
 )
 
-func TestMain(m *testing.M) {
-	telemetry.RegisterDebounceLatency(config.DefaultDebounceLatencyBuckets)
-	os.Exit(m.Run())
-}
-
 func TestBackendChanNil(t *testing.T) {
+	t.Parallel()
 	ch := backendChan(nil)
 	if ch != nil {
 		t.Fatal("expected nil channel for nil input")
@@ -41,6 +37,7 @@ func TestBackendChanNil(t *testing.T) {
 }
 
 func TestBackendChanNonNil(t *testing.T) {
+	t.Parallel()
 	input := make(chan backendChange, 1)
 	ch := backendChan(input)
 	if ch == nil {
@@ -60,6 +57,7 @@ func TestBackendChanNonNil(t *testing.T) {
 }
 
 func TestTimerChanNil(t *testing.T) {
+	t.Parallel()
 	ch := timerChan(nil)
 	if ch != nil {
 		t.Fatal("expected nil channel for nil timer")
@@ -67,6 +65,7 @@ func TestTimerChanNil(t *testing.T) {
 }
 
 func TestTimerChanNonNil(t *testing.T) {
+	t.Parallel()
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 
@@ -80,6 +79,7 @@ func TestTimerChanNonNil(t *testing.T) {
 }
 
 func TestWatchFileDetectsChange(t *testing.T) {
+	t.Parallel()
 	f, err := os.CreateTemp(t.TempDir(), "watchfile-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +113,7 @@ func TestWatchFileDetectsChange(t *testing.T) {
 }
 
 func TestWatchFileNoChangeNoNotification(t *testing.T) {
+	t.Parallel()
 	f, err := os.CreateTemp(t.TempDir(), "watchfile-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -139,6 +140,7 @@ func TestWatchFileNoChangeNoNotification(t *testing.T) {
 }
 
 func TestWatchFileStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	f, err := os.CreateTemp(t.TempDir(), "watchfile-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -335,9 +337,10 @@ func (m *mockBroadcast) drainCalls() int {
 
 // testHarness bundles mocks and channels for a runLoop test.
 type testHarness struct {
-	rend  *mockRenderer
-	mgr   *mockManager
-	bcast *mockBroadcast
+	rend    *mockRenderer
+	mgr     *mockManager
+	bcast   *mockBroadcast
+	metrics *telemetry.Metrics
 
 	frontendCh chan []watcher.Frontend
 	backendCh  chan backendChange
@@ -345,28 +348,33 @@ type testHarness struct {
 	templateCh chan struct{}
 	sigCh      chan os.Signal
 
+	serviceName string // defaults to "test-svc"
+
 	recorder *record.FakeRecorder
 	podRef   *v1.ObjectReference
 }
 
 func newTestHarness() *testHarness {
 	return &testHarness{
-		rend:       &mockRenderer{},
-		mgr:        &mockManager{done: make(chan struct{})},
-		bcast:      &mockBroadcast{},
-		frontendCh: make(chan []watcher.Frontend, 1),
-		backendCh:  make(chan backendChange, 1),
-		valuesCh:   make(chan valuesChange, 1),
-		templateCh: make(chan struct{}, 1),
-		sigCh:      make(chan os.Signal, 1),
+		rend:        &mockRenderer{},
+		mgr:         &mockManager{done: make(chan struct{})},
+		bcast:       &mockBroadcast{},
+		metrics:     telemetry.NewMetrics(prometheus.NewRegistry(), config.DefaultDebounceLatencyBuckets),
+		frontendCh:  make(chan []watcher.Frontend, 1),
+		backendCh:   make(chan backendChange, 1),
+		valuesCh:    make(chan valuesChange, 1),
+		templateCh:  make(chan struct{}, 1),
+		sigCh:       make(chan os.Signal, 1),
+		serviceName: "test-svc",
 	}
 }
 
 func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 	return loopConfig{
-		rend:  h.rend,
-		mgr:   h.mgr,
-		bcast: bcast,
+		rend:    h.rend,
+		mgr:     h.mgr,
+		bcast:   bcast,
+		metrics: h.metrics,
 
 		frontendCh: h.frontendCh,
 		backendCh:  h.backendCh,
@@ -374,7 +382,7 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 		templateCh: h.templateCh,
 		sigCh:      h.sigCh,
 
-		serviceName:           "test-svc",
+		serviceName:           h.serviceName,
 		frontendDebounce:      1 * time.Millisecond,
 		frontendDebounceMax:   0,
 		backendDebounce:       1 * time.Millisecond,
@@ -428,6 +436,7 @@ func (h *testHarness) runAndWait(bcast broadcaster) (wait func() int) {
 // --- runLoop tests ---
 
 func TestRunLoop_ReloadZeroFrontends(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	wait := h.runAndWait(h.bcast)
 
@@ -449,6 +458,7 @@ func TestRunLoop_ReloadZeroFrontends(t *testing.T) {
 }
 
 func TestRunLoop_ReloadWithFrontends(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	var mu sync.Mutex
 	var gotFrontends []watcher.Frontend
@@ -459,8 +469,8 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 		return "test.vcl", nil
 	}
 
-	euBefore := getCounter2Value(t, "frontend", "test-svc", telemetry.EndpointUpdatesTotal)
-	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
+	euBefore := getCounter2Value(t, "frontend", h.serviceName, h.metrics.EndpointUpdatesTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", h.metrics.VCLReloadsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -479,13 +489,13 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 	}
 
 	// Verify metrics.
-	if delta := getCounter2Value(t, "frontend", "test-svc", telemetry.EndpointUpdatesTotal) - euBefore; delta < 1 {
+	if delta := getCounter2Value(t, "frontend", h.serviceName, h.metrics.EndpointUpdatesTotal) - euBefore; delta < 1 {
 		t.Errorf("endpoint_updates_total(frontend) delta = %v, want >= 1", delta)
 	}
-	if got := getGauge2Value(t, "frontend", "test-svc", telemetry.Endpoints); got != 2 {
+	if got := getGauge2Value(t, "frontend", h.serviceName, h.metrics.Endpoints); got != 2 {
 		t.Errorf("endpoints(frontend) = %v, want 2", got)
 	}
-	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+	if delta := getCounterValue(t, "success", h.metrics.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
 		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1", delta)
 	}
 
@@ -496,14 +506,16 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 }
 
 func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
-	euBefore := getCounter2Value(t, "backend", "api", telemetry.EndpointUpdatesTotal)
-	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
+	backendName := "api"
+	euBefore := getCounter2Value(t, "backend", backendName, h.metrics.EndpointUpdatesTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", h.metrics.VCLReloadsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
 	h.backendCh <- backendChange{
-		name:      "api",
+		name:      backendName,
 		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -517,13 +529,13 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 	}
 
 	// Verify metrics.
-	if delta := getCounter2Value(t, "backend", "api", telemetry.EndpointUpdatesTotal) - euBefore; delta < 1 {
+	if delta := getCounter2Value(t, "backend", backendName, h.metrics.EndpointUpdatesTotal) - euBefore; delta < 1 {
 		t.Errorf("endpoint_updates_total(backend) delta = %v, want >= 1", delta)
 	}
-	if got := getGauge2Value(t, "backend", "api", telemetry.Endpoints); got != 1 {
-		t.Errorf("endpoints(backend,api) = %v, want 1", got)
+	if got := getGauge2Value(t, "backend", backendName, h.metrics.Endpoints); got != 1 {
+		t.Errorf("endpoints(backend,%s) = %v, want 1", backendName, got)
 	}
-	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+	if delta := getCounterValue(t, "success", h.metrics.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
 		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1", delta)
 	}
 
@@ -534,8 +546,9 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 }
 
 func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
-	vuBefore := getCounterValue(t, "tuning", telemetry.ValuesUpdatesTotal)
+	vuBefore := getCounterValue(t, "tuning", h.metrics.ValuesUpdatesTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -554,7 +567,7 @@ func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
 	}
 
 	// Verify metric.
-	if delta := getCounterValue(t, "tuning", telemetry.ValuesUpdatesTotal) - vuBefore; delta < 1 {
+	if delta := getCounterValue(t, "tuning", h.metrics.ValuesUpdatesTotal) - vuBefore; delta < 1 {
 		t.Errorf("values_updates_total(tuning) delta = %v, want >= 1", delta)
 	}
 
@@ -565,6 +578,7 @@ func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
 }
 
 func TestValuesChanNil(t *testing.T) {
+	t.Parallel()
 	ch := valuesChan(nil)
 	if ch != nil {
 		t.Fatal("expected nil channel for nil input")
@@ -572,6 +586,7 @@ func TestValuesChanNil(t *testing.T) {
 }
 
 func TestValuesChanNonNil(t *testing.T) {
+	t.Parallel()
 	input := make(chan valuesChange, 1)
 	ch := valuesChan(input)
 	if ch == nil {
@@ -590,9 +605,10 @@ func TestValuesChanNonNil(t *testing.T) {
 }
 
 func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
-	tcBefore := getSingleCounterValue(t, telemetry.VCLTemplateChangesTotal)
-	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
+	tcBefore := getSingleCounterValue(t, h.metrics.VCLTemplateChangesTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", h.metrics.VCLReloadsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -608,10 +624,10 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 	}
 
 	// Verify metrics.
-	if delta := getSingleCounterValue(t, telemetry.VCLTemplateChangesTotal) - tcBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLTemplateChangesTotal) - tcBefore; delta < 1 {
 		t.Errorf("vcl_template_changes_total delta = %v, want >= 1", delta)
 	}
-	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+	if delta := getCounterValue(t, "success", h.metrics.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
 		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1", delta)
 	}
 
@@ -622,9 +638,10 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 }
 
 func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.rend.reloadFn = func() error { return errors.New("parse error") }
-	parseBefore := getSingleCounterValue(t, telemetry.VCLTemplateParseErrorsTotal)
+	parseBefore := getSingleCounterValue(t, h.metrics.VCLTemplateParseErrorsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -640,7 +657,7 @@ func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 	}
 
 	// Verify metric.
-	if delta := getSingleCounterValue(t, telemetry.VCLTemplateParseErrorsTotal) - parseBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLTemplateParseErrorsTotal) - parseBefore; delta < 1 {
 		t.Errorf("vcl_template_parse_errors_total delta = %v, want >= 1", delta)
 	}
 
@@ -651,6 +668,7 @@ func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 }
 
 func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	var renderCalls atomic.Int32
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
@@ -659,8 +677,8 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 		}
 		return "test.vcl", nil
 	}
-	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
-	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
+	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -674,10 +692,10 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 	}
 
 	// Verify metrics.
-	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
 		t.Errorf("vcl_render_errors_total delta = %v, want >= 1", delta)
 	}
-	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
 		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
 
@@ -688,6 +706,7 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 }
 
 func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	var mgrCalls atomic.Int32
 	h.mgr.reloadFn = func(_ string) error {
@@ -696,9 +715,9 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 		}
 		return nil
 	}
-	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
-	reloadSuccessBefore := getCounterValue(t, "success", telemetry.VCLReloadsTotal)
-	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+	reloadErrBefore := getCounterValue(t, "error", h.metrics.VCLReloadsTotal)
+	reloadSuccessBefore := getCounterValue(t, "success", h.metrics.VCLReloadsTotal)
+	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -717,13 +736,13 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 	}
 
 	// Verify metrics.
-	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
+	if delta := getCounterValue(t, "error", h.metrics.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
 		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 1", delta)
 	}
-	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
 		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
-	if delta := getCounterValue(t, "success", telemetry.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
+	if delta := getCounterValue(t, "success", h.metrics.VCLReloadsTotal) - reloadSuccessBefore; delta < 1 {
 		t.Errorf("vcl_reloads_total(success) delta = %v, want >= 1 (retry succeeded)", delta)
 	}
 
@@ -734,12 +753,13 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 }
 
 func TestRunLoop_RollbackRenderError(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render always fails")
 	}
-	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
-	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
+	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -756,10 +776,10 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 	}
 
 	// Verify metrics.
-	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
 		t.Errorf("vcl_render_errors_total delta = %v, want >= 1", delta)
 	}
-	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
 		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
 
@@ -771,12 +791,13 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 }
 
 func TestRunLoop_RollbackReloadError(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish always rejects")
 	}
-	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
-	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
+	reloadErrBefore := getCounterValue(t, "error", h.metrics.VCLReloadsTotal)
+	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -786,10 +807,10 @@ func TestRunLoop_RollbackReloadError(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Verify metrics: two reload errors (initial + retry) and one rollback.
-	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 2 {
+	if delta := getCounterValue(t, "error", h.metrics.VCLReloadsTotal) - reloadErrBefore; delta < 2 {
 		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 2", delta)
 	}
-	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
 		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
 
@@ -801,6 +822,7 @@ func TestRunLoop_RollbackReloadError(t *testing.T) {
 }
 
 func TestRunLoop_SignalShutdown(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -837,6 +859,7 @@ func TestRunLoop_SignalShutdown(t *testing.T) {
 }
 
 func TestRunLoop_VarnishdUnexpectedExit(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.err = errors.New("crashed")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -856,18 +879,20 @@ func TestRunLoop_VarnishdUnexpectedExit(t *testing.T) {
 		t.Fatalf("expected exit 1, got %d", result)
 	}
 
-	// Verify metric.
-	if got := getGaugeValue(t, telemetry.VarnishdUp); got != 0 {
+	// Verify metric. VarnishdUp is safe to assert here: only run() sets it
+	// to 1, and tests call runLoop() directly, so no parallel test changes it.
+	if got := getGaugeValue(t, h.metrics.VarnishdUp); got != 0 {
 		t.Errorf("varnishd_up = %v, want 0", got)
 	}
 }
 
 func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
 	}
-	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
+	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -884,7 +909,7 @@ func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 	}
 
 	// Verify metric.
-	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
 		t.Errorf("vcl_render_errors_total delta = %v, want >= 1", delta)
 	}
 
@@ -895,11 +920,12 @@ func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 }
 
 func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish reload error")
 	}
-	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
+	reloadErrBefore := getCounterValue(t, "error", h.metrics.VCLReloadsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -916,7 +942,7 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 	}
 
 	// Verify metric.
-	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
+	if delta := getCounterValue(t, "error", h.metrics.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
 		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 1", delta)
 	}
 
@@ -927,6 +953,7 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 }
 
 func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	var renderCalls atomic.Int32
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
@@ -938,9 +965,9 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish reload error")
 	}
-	reloadErrBefore := getCounterValue(t, "error", telemetry.VCLReloadsTotal)
-	rollbackBefore := getSingleCounterValue(t, telemetry.VCLRollbacksTotal)
-	renderErrBefore := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal)
+	reloadErrBefore := getCounterValue(t, "error", h.metrics.VCLReloadsTotal)
+	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
+	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
@@ -958,13 +985,13 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	}
 
 	// Verify metrics.
-	if delta := getCounterValue(t, "error", telemetry.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
+	if delta := getCounterValue(t, "error", h.metrics.VCLReloadsTotal) - reloadErrBefore; delta < 1 {
 		t.Errorf("vcl_reloads_total(error) delta = %v, want >= 1", delta)
 	}
-	if delta := getSingleCounterValue(t, telemetry.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal) - rollbackBefore; delta < 1 {
 		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
-	if delta := getSingleCounterValue(t, telemetry.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
+	if delta := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal) - renderErrBefore; delta < 1 {
 		t.Errorf("vcl_render_errors_total delta = %v, want >= 1 (retry render failed)", delta)
 	}
 
@@ -975,6 +1002,7 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 }
 
 func TestRunLoop_ShutdownTimeout(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -1010,6 +1038,7 @@ func TestRunLoop_ShutdownTimeout(t *testing.T) {
 }
 
 func TestRunLoop_SignalShutdownVarnishError(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.err = errors.New("exit status 1")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1033,6 +1062,7 @@ func TestRunLoop_SignalShutdownVarnishError(t *testing.T) {
 }
 
 func TestRunLoop_DebounceCoalescing(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -1071,6 +1101,7 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 }
 
 func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1162,6 +1193,7 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 }
 
 func TestRunLoop_BroadcastDisabled(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	// bcast is nil — should not panic.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1191,6 +1223,7 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 // --- Drain tests ---
 
 func TestRunLoop_DrainOnShutdown(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	var sessionCalls atomic.Int32
 	h.mgr.activeSessionsFn = func() (int64, error) {
@@ -1250,6 +1283,7 @@ func TestRunLoop_DrainOnShutdown(t *testing.T) {
 }
 
 func TestRunLoop_DrainSkippedWhenDisabled(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -1287,6 +1321,7 @@ func TestRunLoop_DrainSkippedWhenDisabled(t *testing.T) {
 }
 
 func TestRunLoop_DrainInterruptedBySecondSignal(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	// ActiveSessions always returns >0 to keep polling.
 	h.mgr.activeSessionsFn = func() (int64, error) {
@@ -1326,6 +1361,7 @@ func TestRunLoop_DrainInterruptedBySecondSignal(t *testing.T) {
 }
 
 func TestRunLoop_DrainMarkSickError(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.markBackendFn = func(_ string) error {
 		return errors.New("backend not found")
@@ -1363,6 +1399,7 @@ func TestRunLoop_DrainMarkSickError(t *testing.T) {
 }
 
 func TestRunLoop_DrainMarkSickErrorContinuesDrain(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.markBackendFn = func(_ string) error {
 		return errors.New("backend not found")
@@ -1405,6 +1442,7 @@ func TestRunLoop_DrainMarkSickErrorContinuesDrain(t *testing.T) {
 }
 
 func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	// ActiveSessions always returns >0 so sessions never clear.
 	h.mgr.activeSessionsFn = func() (int64, error) {
@@ -1449,6 +1487,7 @@ func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
 }
 
 func TestRunLoop_DrainSecondSignalDuringPolling(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	// ActiveSessions always returns >0 to keep polling.
 	h.mgr.activeSessionsFn = func() (int64, error) {
@@ -1491,6 +1530,7 @@ func TestRunLoop_DrainSecondSignalDuringPolling(t *testing.T) {
 }
 
 func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	var calls atomic.Int32
 	h.mgr.activeSessionsFn = func() (int64, error) {
@@ -1533,6 +1573,7 @@ func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
 }
 
 func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.activeSessionsFn = func() (int64, error) {
 		t.Fatal("ActiveSessions should not be called when drainTimeout is 0")
@@ -1575,6 +1616,7 @@ func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
 }
 
 func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
+	t.Parallel()
 	// Create a temp VCL file and start a real watchFile to prove the
 	// file actually changes on disk.
 	f, err := os.CreateTemp(t.TempDir(), "vcl-test-*")
@@ -1630,6 +1672,7 @@ func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
 }
 
 func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/ttl.yaml", []byte("300"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1701,6 +1744,7 @@ func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 }
 
 func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/greeting.yaml", []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1786,6 +1830,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 }
 
 func TestDrainBackendForLoop(t *testing.T) {
+	t.Parallel()
 	if got := drainBackendForLoop(true); got != drainBackendName {
 		t.Errorf("drainBackendForLoop(true) = %q, want %q", got, drainBackendName)
 	}
@@ -1802,6 +1847,7 @@ func TestDrainBackendForLoop(t *testing.T) {
 // Scenario 1: Single event, then quiet.
 // debounceMax is set but irrelevant — reload fires at the normal debounce time.
 func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -1835,6 +1881,7 @@ func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 // Scenario 2: Brief burst of events, then quiet.
 // Events stop well before debounceMax; reload fires at last-event + debounce.
 func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -1873,6 +1920,7 @@ func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
 // Scenario 3: Events arriving slower than debounce.
 // Each event triggers its own reload; debounceMax has no effect.
 func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -1915,6 +1963,7 @@ func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 // Without debounceMax the timer perpetually resets and never fires.
 // With debounceMax the reload is forced periodically.
 func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -1964,6 +2013,7 @@ func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
 // Scenario 5: Long stream — deadline resets after each forced reload.
 // Two separate bursts each get their own debounceMax window.
 func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2016,6 +2066,7 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 
 // Scenario 6: debounceMax=0 (disabled) — perpetual timer reset, no forced reload.
 func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2073,6 +2124,7 @@ func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 // Uses backend, values, template, and mixed events in a single test to
 // avoid duplicating the same pattern four times.
 func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		send func(h *testHarness)
@@ -2100,6 +2152,7 @@ func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newTestHarness()
 			ctx, cancel := context.WithCancel(context.Background())
 			var code atomic.Int32
@@ -2148,6 +2201,7 @@ func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
 // Verify debounceMax deadline is shared across mixed event types:
 // alternating frontend and backend events within one debounceMax window.
 func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2203,6 +2257,7 @@ func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
 // --- Per-source debounce tests ---
 
 func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2250,6 +2305,7 @@ func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
 }
 
 func TestRunLoop_CrossGroupClearOnReload(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2286,6 +2342,7 @@ func TestRunLoop_CrossGroupClearOnReload(t *testing.T) {
 }
 
 func TestRunLoop_IndependentDebounceMaxGroups(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2333,6 +2390,7 @@ func TestRunLoop_IndependentDebounceMaxGroups(t *testing.T) {
 }
 
 func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2412,6 +2470,7 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 }
 
 func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2459,6 +2518,7 @@ func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
 }
 
 func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2538,6 +2598,7 @@ func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 // --- resetDebounce unit tests ---
 
 func TestResetDebounce_SetsDeadlineOnFirstCall(t *testing.T) {
+	t.Parallel()
 	var s debounceState
 	resetDebounce(&s, 100*time.Millisecond, 500*time.Millisecond)
 	defer s.timer.Stop()
@@ -2553,6 +2614,7 @@ func TestResetDebounce_SetsDeadlineOnFirstCall(t *testing.T) {
 }
 
 func TestResetDebounce_CapsAtDeadline(t *testing.T) {
+	t.Parallel()
 	var s debounceState
 	// Set a deadline 50ms from now.
 	s.deadline = time.Now().Add(50 * time.Millisecond)
@@ -2571,6 +2633,7 @@ func TestResetDebounce_CapsAtDeadline(t *testing.T) {
 }
 
 func TestResetDebounce_NoDeadlineWhenMaxIsZero(t *testing.T) {
+	t.Parallel()
 	var s debounceState
 	resetDebounce(&s, 100*time.Millisecond, 0)
 	defer s.timer.Stop()
@@ -2581,6 +2644,7 @@ func TestResetDebounce_NoDeadlineWhenMaxIsZero(t *testing.T) {
 }
 
 func TestResetDebounce_SetsFirstEventOnFirstCall(t *testing.T) {
+	t.Parallel()
 	var s debounceState
 	before := time.Now()
 	resetDebounce(&s, 100*time.Millisecond, 0)
@@ -2595,6 +2659,7 @@ func TestResetDebounce_SetsFirstEventOnFirstCall(t *testing.T) {
 }
 
 func TestResetDebounce_PreservesFirstEventOnSubsequentCalls(t *testing.T) {
+	t.Parallel()
 	var s debounceState
 	resetDebounce(&s, 100*time.Millisecond, 0)
 	first := s.firstEvent
@@ -2610,6 +2675,7 @@ func TestResetDebounce_PreservesFirstEventOnSubsequentCalls(t *testing.T) {
 }
 
 func TestResetDebounce_CappedSetWhenDeadlineForcesShortTimer(t *testing.T) {
+	t.Parallel()
 	var s debounceState
 	s.deadline = time.Now().Add(10 * time.Millisecond)
 
@@ -2622,6 +2688,7 @@ func TestResetDebounce_CappedSetWhenDeadlineForcesShortTimer(t *testing.T) {
 }
 
 func TestResetDebounce_CappedFalseWhenNotConstrained(t *testing.T) {
+	t.Parallel()
 	var s debounceState
 	resetDebounce(&s, 100*time.Millisecond, 5*time.Second)
 	defer s.timer.Stop()
@@ -2634,6 +2701,7 @@ func TestResetDebounce_CappedFalseWhenNotConstrained(t *testing.T) {
 // --- Debounce metrics integration tests ---
 
 func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2644,10 +2712,10 @@ func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 	lc.backendDebounce = 50 * time.Millisecond
 
 	// Snapshot counters before the test (other tests may have incremented them).
-	feEventsBefore := getCounterValue(t, "frontend", telemetry.DebounceEventsTotal)
-	beEventsBefore := getCounterValue(t, "backend", telemetry.DebounceEventsTotal)
-	feFiresBefore := getCounterValue(t, "frontend", telemetry.DebounceFiresTotal)
-	beFiresBefore := getCounterValue(t, "backend", telemetry.DebounceFiresTotal)
+	feEventsBefore := getCounterValue(t, "frontend", h.metrics.DebounceEventsTotal)
+	beEventsBefore := getCounterValue(t, "backend", h.metrics.DebounceEventsTotal)
+	feFiresBefore := getCounterValue(t, "frontend", h.metrics.DebounceFiresTotal)
+	beFiresBefore := getCounterValue(t, "backend", h.metrics.DebounceFiresTotal)
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -2664,10 +2732,10 @@ func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.2", Port: 8080, Name: "api-1"}}}
 	time.Sleep(200 * time.Millisecond)
 
-	feEventsAfter := getCounterValue(t, "frontend", telemetry.DebounceEventsTotal)
-	beEventsAfter := getCounterValue(t, "backend", telemetry.DebounceEventsTotal)
-	feFiresAfter := getCounterValue(t, "frontend", telemetry.DebounceFiresTotal)
-	beFiresAfter := getCounterValue(t, "backend", telemetry.DebounceFiresTotal)
+	feEventsAfter := getCounterValue(t, "frontend", h.metrics.DebounceEventsTotal)
+	beEventsAfter := getCounterValue(t, "backend", h.metrics.DebounceEventsTotal)
+	feFiresAfter := getCounterValue(t, "frontend", h.metrics.DebounceFiresTotal)
+	beFiresAfter := getCounterValue(t, "backend", h.metrics.DebounceFiresTotal)
 
 	if feEventsDelta := feEventsAfter - feEventsBefore; feEventsDelta < 3 {
 		t.Errorf("frontend debounce_events_total delta = %v, want >= 3", feEventsDelta)
@@ -2689,6 +2757,7 @@ func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 }
 
 func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2700,7 +2769,7 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 	lc.backendDebounce = 250 * time.Millisecond
 	lc.backendDebounceMax = 0
 
-	enforceBefore := getCounterValue(t, "frontend", telemetry.DebounceMaxEnforcementsTotal)
+	enforceBefore := getCounterValue(t, "frontend", h.metrics.DebounceMaxEnforcementsTotal)
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -2725,7 +2794,7 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 	close(stop)
 	time.Sleep(300 * time.Millisecond) // let final timer fire
 
-	enforceAfter := getCounterValue(t, "frontend", telemetry.DebounceMaxEnforcementsTotal)
+	enforceAfter := getCounterValue(t, "frontend", h.metrics.DebounceMaxEnforcementsTotal)
 	if enforceDelta := enforceAfter - enforceBefore; enforceDelta < 1 {
 		t.Errorf("frontend debounce_max_enforcements_total delta = %v, want >= 1", enforceDelta)
 	}
@@ -2737,6 +2806,7 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 }
 
 func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2745,7 +2815,7 @@ func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 	lc := h.loopConfig(h.bcast)
 	lc.frontendDebounce = 50 * time.Millisecond
 
-	samplesBefore := getHistogramSampleCount(t, "frontend", telemetry.DebounceLatencySeconds)
+	samplesBefore := getHistogramSampleCount(t, "frontend", h.metrics.DebounceLatencySeconds)
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -2755,7 +2825,7 @@ func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	time.Sleep(200 * time.Millisecond)
 
-	samplesAfter := getHistogramSampleCount(t, "frontend", telemetry.DebounceLatencySeconds)
+	samplesAfter := getHistogramSampleCount(t, "frontend", h.metrics.DebounceLatencySeconds)
 	if samplesDelta := samplesAfter - samplesBefore; samplesDelta < 1 {
 		t.Errorf("frontend debounce_latency_seconds sample count delta = %d, want >= 1", samplesDelta)
 	}
@@ -2767,6 +2837,7 @@ func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 }
 
 func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2776,7 +2847,7 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 	lc.backendDebounce = 250 * time.Millisecond
 	lc.backendDebounceMax = 250 * time.Millisecond
 
-	enforceBefore := getCounterValue(t, "backend", telemetry.DebounceMaxEnforcementsTotal)
+	enforceBefore := getCounterValue(t, "backend", h.metrics.DebounceMaxEnforcementsTotal)
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -2801,7 +2872,7 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 	close(stop)
 	time.Sleep(300 * time.Millisecond) // let final timer fire
 
-	enforceAfter := getCounterValue(t, "backend", telemetry.DebounceMaxEnforcementsTotal)
+	enforceAfter := getCounterValue(t, "backend", h.metrics.DebounceMaxEnforcementsTotal)
 	if enforceDelta := enforceAfter - enforceBefore; enforceDelta < 1 {
 		t.Errorf("backend debounce_max_enforcements_total delta = %v, want >= 1", enforceDelta)
 	}
@@ -2813,6 +2884,7 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 }
 
 func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	ctx, cancel := context.WithCancel(context.Background())
 	var code atomic.Int32
@@ -2821,7 +2893,7 @@ func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
 	lc := h.loopConfig(h.bcast)
 	lc.backendDebounce = 50 * time.Millisecond
 
-	samplesBefore := getHistogramSampleCount(t, "backend", telemetry.DebounceLatencySeconds)
+	samplesBefore := getHistogramSampleCount(t, "backend", h.metrics.DebounceLatencySeconds)
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -2831,7 +2903,7 @@ func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
 	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}}
 	time.Sleep(200 * time.Millisecond)
 
-	samplesAfter := getHistogramSampleCount(t, "backend", telemetry.DebounceLatencySeconds)
+	samplesAfter := getHistogramSampleCount(t, "backend", h.metrics.DebounceLatencySeconds)
 	if samplesDelta := samplesAfter - samplesBefore; samplesDelta < 1 {
 		t.Errorf("backend debounce_latency_seconds sample count delta = %d, want >= 1", samplesDelta)
 	}
@@ -2924,12 +2996,14 @@ func getHistogramSampleCount(t *testing.T, label string, hv *prometheus.Histogra
 // --- emitEvent tests ---
 
 func TestEmitEventNilRecorder(t *testing.T) {
+	t.Parallel()
 	t.Log("verifying emitEvent does not panic when recorder and podRef are nil")
 	lc := &loopConfig{}
 	emitEvent(lc, v1.EventTypeNormal, "Test", "test message")
 }
 
 func TestEmitEventRecordsEvent(t *testing.T) {
+	t.Parallel()
 	fakeRecorder := record.NewFakeRecorder(10)
 	podRef := &v1.ObjectReference{
 		Kind:      "Pod",
@@ -3003,6 +3077,7 @@ func newForbiddenErr() error {
 }
 
 func TestWarnOnceEventSinkLogsForbiddenOnce(t *testing.T) {
+	t.Parallel()
 	inner := &fakeEventSink{createErr: newForbiddenErr()}
 	sink := &warnOnceEventSink{inner: inner}
 
@@ -3027,6 +3102,7 @@ func TestWarnOnceEventSinkLogsForbiddenOnce(t *testing.T) {
 }
 
 func TestWarnOnceEventSinkPassesThroughOnSuccess(t *testing.T) {
+	t.Parallel()
 	inner := &fakeEventSink{}
 	sink := &warnOnceEventSink{inner: inner}
 
@@ -3039,6 +3115,7 @@ func TestWarnOnceEventSinkPassesThroughOnSuccess(t *testing.T) {
 }
 
 func TestWarnOnceEventSinkNonForbiddenErrorDoesNotWarn(t *testing.T) {
+	t.Parallel()
 	// A 500 server error should pass through without triggering the
 	// warn-once guard, leaving it available for a future Forbidden error.
 	serverErr := apierrors.NewInternalError(errors.New("internal"))
@@ -3070,6 +3147,7 @@ func TestWarnOnceEventSinkNonForbiddenErrorDoesNotWarn(t *testing.T) {
 }
 
 func TestWarnOnceEventSinkPatchForbidden(t *testing.T) {
+	t.Parallel()
 	// Patch is the primary path for updated events (client-go patches
 	// existing events to increment their count). A Forbidden on Patch
 	// should also trigger the warn-once.
@@ -3095,6 +3173,7 @@ func TestWarnOnceEventSinkPatchForbidden(t *testing.T) {
 }
 
 func TestWarnOnceEventSinkUpdateForbidden(t *testing.T) {
+	t.Parallel()
 	inner := &fakeEventSink{updateErr: newForbiddenErr()}
 	sink := &warnOnceEventSink{inner: inner}
 
@@ -3111,6 +3190,7 @@ func TestWarnOnceEventSinkUpdateForbidden(t *testing.T) {
 }
 
 func TestWarnOnceEventSinkWarnsOnceAcrossMethods(t *testing.T) {
+	t.Parallel()
 	// If Create gets a 403 and then Patch also gets a 403,
 	// the warning should fire exactly once total (sync.Once).
 	inner := &fakeEventSink{
@@ -3135,6 +3215,7 @@ func TestWarnOnceEventSinkWarnsOnceAcrossMethods(t *testing.T) {
 }
 
 func TestEmitEventNilRecorderSetPodRef(t *testing.T) {
+	t.Parallel()
 	t.Log("verifying emitEvent does not panic when only podRef is set")
 	lc := &loopConfig{
 		podRef: &v1.ObjectReference{Kind: "Pod", Name: "p", Namespace: "ns"},
@@ -3143,6 +3224,7 @@ func TestEmitEventNilRecorderSetPodRef(t *testing.T) {
 }
 
 func TestEmitEventNilPodRefSetRecorder(t *testing.T) {
+	t.Parallel()
 	t.Log("verifying emitEvent does not panic when only recorder is set")
 	lc := &loopConfig{
 		recorder: record.NewFakeRecorder(1),
@@ -3175,6 +3257,7 @@ func requireEvent(t *testing.T, events []string, reason, msgSubstr string) {
 }
 
 func TestRunLoop_EventReasonFrontendEndpoints(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 
@@ -3193,6 +3276,7 @@ func TestRunLoop_EventReasonFrontendEndpoints(t *testing.T) {
 }
 
 func TestRunLoop_EventReasonBackendEndpoints(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 
@@ -3214,6 +3298,7 @@ func TestRunLoop_EventReasonBackendEndpoints(t *testing.T) {
 }
 
 func TestRunLoop_EventReasonValuesUpdated(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 
@@ -3232,6 +3317,7 @@ func TestRunLoop_EventReasonValuesUpdated(t *testing.T) {
 }
 
 func TestRunLoop_EventReasonTemplateChanged(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 
@@ -3251,6 +3337,7 @@ func TestRunLoop_EventReasonTemplateChanged(t *testing.T) {
 }
 
 func TestRunLoop_EventReasonMultipleTriggers(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 
@@ -3275,6 +3362,7 @@ func TestRunLoop_EventReasonMultipleTriggers(t *testing.T) {
 }
 
 func TestRunLoop_EventReasonAfterRollback(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	var mgrCalls atomic.Int32
@@ -3304,6 +3392,7 @@ func TestRunLoop_EventReasonAfterRollback(t *testing.T) {
 }
 
 func TestRunLoop_EventReasonAllFourTriggers(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 
@@ -3332,6 +3421,7 @@ func TestRunLoop_EventReasonAllFourTriggers(t *testing.T) {
 }
 
 func TestRunLoop_EventTemplateParseFailed(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.rend.reloadFn = func() error { return errors.New("parse error") }
@@ -3351,6 +3441,7 @@ func TestRunLoop_EventTemplateParseFailed(t *testing.T) {
 }
 
 func TestRunLoop_EventRenderFailed(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
@@ -3373,6 +3464,7 @@ func TestRunLoop_EventRenderFailed(t *testing.T) {
 }
 
 func TestRunLoop_EventRenderFailedRollback(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
@@ -3396,6 +3488,7 @@ func TestRunLoop_EventRenderFailedRollback(t *testing.T) {
 }
 
 func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	var mgrCalls atomic.Int32
@@ -3432,6 +3525,7 @@ func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
 }
 
 func TestRunLoop_EventReloadFailedNoRollback(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.mgr.reloadFn = func(_ string) error {
@@ -3460,6 +3554,7 @@ func TestRunLoop_EventReloadFailedNoRollback(t *testing.T) {
 }
 
 func TestRunLoop_EventReloadFailedAfterRollback(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.mgr.reloadFn = func(_ string) error {
@@ -3482,6 +3577,7 @@ func TestRunLoop_EventReloadFailedAfterRollback(t *testing.T) {
 }
 
 func TestRunLoop_EventVarnishdExited(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.mgr.err = errors.New("crashed")
@@ -3507,6 +3603,7 @@ func TestRunLoop_EventVarnishdExited(t *testing.T) {
 }
 
 func TestRunLoop_EventDrainStartedAndCompleted(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	var sessionCalls atomic.Int32
@@ -3546,6 +3643,7 @@ func TestRunLoop_EventDrainStartedAndCompleted(t *testing.T) {
 }
 
 func TestRunLoop_EventDrainTimeout(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.mgr.activeSessionsFn = func() (int64, error) {
@@ -3581,6 +3679,7 @@ func TestRunLoop_EventDrainTimeout(t *testing.T) {
 }
 
 func TestResetDebounce_FloorWhenDeadlineExceeded(t *testing.T) {
+	t.Parallel()
 	// Set up a state where the debounce-max deadline is already in the past,
 	// causing remaining <= 0. The d <= 0 floor (line 96) sets d = 1.
 	s := debounceState{
@@ -3603,6 +3702,7 @@ func TestResetDebounce_FloorWhenDeadlineExceeded(t *testing.T) {
 }
 
 func TestRunLoop_DrainSecondSignalDuringDelay(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3642,6 +3742,7 @@ func TestRunLoop_DrainSecondSignalDuringDelay(t *testing.T) {
 }
 
 func TestWatchFileContextCancelDuringPoll(t *testing.T) {
+	t.Parallel()
 	// Ensures the ctx.Done() branch inside the polling loop is covered.
 	// Write initial content, start watching, let at least one tick happen,
 	// then cancel.
@@ -3674,6 +3775,7 @@ func TestWatchFileContextCancelDuringPoll(t *testing.T) {
 }
 
 func TestWatchFileNonBlockingSendDefault(t *testing.T) {
+	t.Parallel()
 	// Triggers the default branch of the non-blocking send by writing two
 	// changes without reading from the channel between them.
 	dir := t.TempDir()
@@ -3716,6 +3818,7 @@ func TestWatchFileNonBlockingSendDefault(t *testing.T) {
 // --- Status endpoint tests ---
 
 func TestStatusSnapshot(t *testing.T) {
+	t.Parallel()
 	now := time.Now().Add(-time.Second) // started 1s ago
 	store := &statusStore{
 		version:             "v1.2.3",
@@ -3796,6 +3899,7 @@ func TestStatusSnapshot(t *testing.T) {
 }
 
 func TestStatusHandler(t *testing.T) {
+	t.Parallel()
 	startedAt := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 	store := &statusStore{
 		version:             "v0.1.0",
@@ -3880,6 +3984,7 @@ func TestStatusHandler(t *testing.T) {
 }
 
 func TestStatusHandlerLastReloadAtNull(t *testing.T) {
+	t.Parallel()
 	store := &statusStore{
 		startedAt:     time.Now(),
 		backendCounts: map[string]int{},
@@ -3905,6 +4010,7 @@ func TestStatusHandlerLastReloadAtNull(t *testing.T) {
 }
 
 func TestStatusHandlerMethodNotAllowed(t *testing.T) {
+	t.Parallel()
 	store := &statusStore{
 		startedAt:     time.Now(),
 		backendCounts: map[string]int{},
@@ -3923,6 +4029,7 @@ func TestStatusHandlerMethodNotAllowed(t *testing.T) {
 }
 
 func TestRunLoop_StatusStoreUpdatedOnReload(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	store := &statusStore{
 		startedAt:     time.Now(),
@@ -3971,6 +4078,7 @@ func TestRunLoop_StatusStoreUpdatedOnReload(t *testing.T) {
 }
 
 func TestRunLoop_StatusStoreVarnishdDown(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.err = errors.New("crashed")
 	store := &statusStore{
@@ -4004,6 +4112,7 @@ func TestRunLoop_StatusStoreVarnishdDown(t *testing.T) {
 }
 
 func TestRunLoop_StatusStoreBackendCounts(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	store := &statusStore{
 		startedAt:     time.Now(),
@@ -4053,6 +4162,7 @@ func TestRunLoop_StatusStoreBackendCounts(t *testing.T) {
 }
 
 func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	// First mgr.Reload fails (triggers rollback), second succeeds.
 	var mgrCalls atomic.Int32
@@ -4103,6 +4213,7 @@ func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
 }
 
 func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
@@ -4151,6 +4262,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
 }
 
 func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
+	t.Parallel()
 	h := newTestHarness()
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish reload error")
@@ -4199,6 +4311,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
 }
 
 func TestBackendCountsMap(t *testing.T) {
+	t.Parallel()
 	backends := map[string][]watcher.Endpoint{
 		"api":   {{IP: "10.0.0.1", Port: 80, Name: "a1"}, {IP: "10.0.0.2", Port: 80, Name: "a2"}},
 		"nginx": {{IP: "10.0.1.1", Port: 8080, Name: "n1"}},
@@ -4222,6 +4335,7 @@ func TestBackendCountsMap(t *testing.T) {
 }
 
 func TestAppendUnique(t *testing.T) {
+	t.Parallel()
 	var s []string
 	s = appendUnique(s, "a")
 	s = appendUnique(s, "b")

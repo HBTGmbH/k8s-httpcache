@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -281,10 +282,23 @@ func validationError(cmd *cli.Command, format string, args ...any) error {
 	return err
 }
 
+func init() {
+	cli.VersionPrinter = func(cmd *cli.Command) {
+		_, _ = fmt.Fprintln(cmd.Root().Writer, cmd.Version)
+	}
+}
+
 // Parse parses command-line flags from args and returns a validated Config.
 // The first element of args should be the program name (i.e. os.Args).
 // Returns (nil, ErrHelp) when --help or --version is shown.
 func Parse(version string, args []string) (*Config, error) {
+	return parse(version, args, os.Stdout)
+}
+
+// parse is the internal implementation of Parse that accepts an io.Writer for
+// output (used by --version). This allows tests to capture output without
+// redirecting os.Stdout.
+func parse(version string, args []string, w io.Writer) (*Config, error) {
 	c := &Config{}
 
 	var (
@@ -303,15 +317,12 @@ func Parse(version string, args []string) (*Config, error) {
 		actionErr                 error
 	)
 
-	cli.VersionPrinter = func(cmd *cli.Command) {
-		_, _ = fmt.Fprintln(cmd.Root().Writer, cmd.Version)
-	}
-
 	cmd := &cli.Command{
 		Name:                      "k8s-httpcache",
 		Usage:                     "Kubernetes-native HTTP caching proxy built on Varnish",
 		UsageText:                 "k8s-httpcache [flags] [-- varnishd-args...]",
 		Version:                   version,
+		Writer:                    w,
 		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			// Required

@@ -1,204 +1,257 @@
 package telemetry
 
 import (
-	"os"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
 
-func TestMain(m *testing.M) {
-	RegisterDebounceLatency([]float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10})
-	os.Exit(m.Run())
-}
+var testBuckets = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
 func TestVCLReloadsTotal(t *testing.T) {
-	VCLReloadsTotal.WithLabelValues("success").Inc()
-	VCLReloadsTotal.WithLabelValues("error").Inc()
-	VCLReloadsTotal.WithLabelValues("error").Inc()
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLReloadsTotal.WithLabelValues("success").Inc()
+	m.VCLReloadsTotal.WithLabelValues("error").Inc()
+	m.VCLReloadsTotal.WithLabelValues("error").Inc()
 
-	assertCounterValue(t, VCLReloadsTotal.WithLabelValues("success"), 1)
-	assertCounterValue(t, VCLReloadsTotal.WithLabelValues("error"), 2)
+	assertCounterValue(t, m.VCLReloadsTotal.WithLabelValues("success"), 1)
+	assertCounterValue(t, m.VCLReloadsTotal.WithLabelValues("error"), 2)
 }
 
 func TestVCLRenderErrorsTotal(t *testing.T) {
-	VCLRenderErrorsTotal.Inc()
-	assertCounterValue(t, VCLRenderErrorsTotal, 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLRenderErrorsTotal.Inc()
+	assertCounterValue(t, m.VCLRenderErrorsTotal, 1)
 }
 
 func TestVCLTemplateChangesTotal(t *testing.T) {
-	VCLTemplateChangesTotal.Inc()
-	assertCounterValue(t, VCLTemplateChangesTotal, 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLTemplateChangesTotal.Inc()
+	assertCounterValue(t, m.VCLTemplateChangesTotal, 1)
 }
 
 func TestVCLTemplateParseErrorsTotal(t *testing.T) {
-	VCLTemplateParseErrorsTotal.Inc()
-	assertCounterValue(t, VCLTemplateParseErrorsTotal, 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLTemplateParseErrorsTotal.Inc()
+	assertCounterValue(t, m.VCLTemplateParseErrorsTotal, 1)
 }
 
 func TestVCLRollbacksTotal(t *testing.T) {
-	VCLRollbacksTotal.Inc()
-	assertCounterValue(t, VCLRollbacksTotal, 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLRollbacksTotal.Inc()
+	assertCounterValue(t, m.VCLRollbacksTotal, 1)
 }
 
 func TestEndpointUpdatesTotal(t *testing.T) {
-	EndpointUpdatesTotal.WithLabelValues("frontend", "my-svc").Inc()
-	assertCounterValue(t, EndpointUpdatesTotal.WithLabelValues("frontend", "my-svc"), 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.EndpointUpdatesTotal.WithLabelValues("frontend", "my-svc").Inc()
+	assertCounterValue(t, m.EndpointUpdatesTotal.WithLabelValues("frontend", "my-svc"), 1)
 }
 
 func TestEndpoints(t *testing.T) {
-	Endpoints.WithLabelValues("frontend", "my-svc").Set(5)
-	assertGaugeValue(t, Endpoints.WithLabelValues("frontend", "my-svc"), 5)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.Endpoints.WithLabelValues("frontend", "my-svc").Set(5)
+	assertGaugeValue(t, m.Endpoints.WithLabelValues("frontend", "my-svc"), 5)
 }
 
 func TestVarnishdUp(t *testing.T) {
-	VarnishdUp.Set(1)
-	assertGaugeValue(t, VarnishdUp, 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VarnishdUp.Set(1)
+	assertGaugeValue(t, m.VarnishdUp, 1)
 
-	VarnishdUp.Set(0)
-	assertGaugeValue(t, VarnishdUp, 0)
+	m.VarnishdUp.Set(0)
+	assertGaugeValue(t, m.VarnishdUp, 0)
 }
 
 func TestBroadcastRequestsTotal(t *testing.T) {
-	BroadcastRequestsTotal.WithLabelValues("PURGE", "200").Inc()
-	assertCounterValue(t, BroadcastRequestsTotal.WithLabelValues("PURGE", "200"), 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.BroadcastRequestsTotal.WithLabelValues("PURGE", "200").Inc()
+	assertCounterValue(t, m.BroadcastRequestsTotal.WithLabelValues("PURGE", "200"), 1)
 }
 
 func TestBroadcastFanoutTargets(t *testing.T) {
-	BroadcastFanoutTargets.Set(3)
-	assertGaugeValue(t, BroadcastFanoutTargets, 3)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.BroadcastFanoutTargets.Set(3)
+	assertGaugeValue(t, m.BroadcastFanoutTargets, 3)
 }
 
 func TestBuildInfo(t *testing.T) {
-	BuildInfo.WithLabelValues("v1.0.0", runtime.Version()).Set(1)
-	assertGaugeValue(t, BuildInfo.WithLabelValues("v1.0.0", runtime.Version()), 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.BuildInfo.WithLabelValues("v1.0.0", runtime.Version()).Set(1)
+	assertGaugeValue(t, m.BuildInfo.WithLabelValues("v1.0.0", runtime.Version()), 1)
 }
 
 func TestVCLReloadRetriesTotal(t *testing.T) {
-	VCLReloadRetriesTotal.Inc()
-	assertCounterValue(t, VCLReloadRetriesTotal, 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLReloadRetriesTotal.Inc()
+	assertCounterValue(t, m.VCLReloadRetriesTotal, 1)
 }
 
 func TestValuesUpdatesTotal(t *testing.T) {
-	ValuesUpdatesTotal.WithLabelValues("my-configmap").Inc()
-	assertCounterValue(t, ValuesUpdatesTotal.WithLabelValues("my-configmap"), 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.ValuesUpdatesTotal.WithLabelValues("my-configmap").Inc()
+	assertCounterValue(t, m.ValuesUpdatesTotal.WithLabelValues("my-configmap"), 1)
 }
 
 func TestDebounceEventsTotal(t *testing.T) {
-	DebounceEventsTotal.WithLabelValues("frontend").Inc()
-	DebounceEventsTotal.WithLabelValues("backend").Inc()
-	DebounceEventsTotal.WithLabelValues("backend").Inc()
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.DebounceEventsTotal.WithLabelValues("frontend").Inc()
+	m.DebounceEventsTotal.WithLabelValues("backend").Inc()
+	m.DebounceEventsTotal.WithLabelValues("backend").Inc()
 
-	assertCounterValue(t, DebounceEventsTotal.WithLabelValues("frontend"), 1)
-	assertCounterValue(t, DebounceEventsTotal.WithLabelValues("backend"), 2)
+	assertCounterValue(t, m.DebounceEventsTotal.WithLabelValues("frontend"), 1)
+	assertCounterValue(t, m.DebounceEventsTotal.WithLabelValues("backend"), 2)
 }
 
 func TestDebounceFiresTotal(t *testing.T) {
-	DebounceFiresTotal.WithLabelValues("frontend").Inc()
-	assertCounterValue(t, DebounceFiresTotal.WithLabelValues("frontend"), 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.DebounceFiresTotal.WithLabelValues("frontend").Inc()
+	assertCounterValue(t, m.DebounceFiresTotal.WithLabelValues("frontend"), 1)
 }
 
 func TestDebounceMaxEnforcementsTotal(t *testing.T) {
-	DebounceMaxEnforcementsTotal.WithLabelValues("backend").Inc()
-	assertCounterValue(t, DebounceMaxEnforcementsTotal.WithLabelValues("backend"), 1)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.DebounceMaxEnforcementsTotal.WithLabelValues("backend").Inc()
+	assertCounterValue(t, m.DebounceMaxEnforcementsTotal.WithLabelValues("backend"), 1)
 }
 
 func TestVCLRenderDurationSeconds(t *testing.T) {
-	VCLRenderDurationSeconds.Observe(0.05)
-	VCLRenderDurationSeconds.Observe(0.15)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLRenderDurationSeconds.Observe(0.05)
+	m.VCLRenderDurationSeconds.Observe(0.15)
 
-	var m dto.Metric
-	if err := VCLRenderDurationSeconds.Write(&m); err != nil {
+	var dm dto.Metric
+	if err := m.VCLRenderDurationSeconds.Write(&dm); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.GetHistogram().GetSampleCount(); got < 2 {
-		t.Errorf("histogram sample count = %d, want >= 2", got)
+	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
+		t.Errorf("histogram sample count = %d, want 2", got)
 	}
 }
 
 func TestVCLReloadDurationSeconds(t *testing.T) {
-	VCLReloadDurationSeconds.Observe(0.1)
-	VCLReloadDurationSeconds.Observe(0.2)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.VCLReloadDurationSeconds.Observe(0.1)
+	m.VCLReloadDurationSeconds.Observe(0.2)
 
-	var m dto.Metric
-	if err := VCLReloadDurationSeconds.Write(&m); err != nil {
+	var dm dto.Metric
+	if err := m.VCLReloadDurationSeconds.Write(&dm); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.GetHistogram().GetSampleCount(); got < 2 {
-		t.Errorf("histogram sample count = %d, want >= 2", got)
+	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
+		t.Errorf("histogram sample count = %d, want 2", got)
 	}
 }
 
 func TestBroadcastDurationSeconds(t *testing.T) {
-	BroadcastDurationSeconds.Observe(0.01)
-	BroadcastDurationSeconds.Observe(0.02)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.BroadcastDurationSeconds.Observe(0.01)
+	m.BroadcastDurationSeconds.Observe(0.02)
 
-	var m dto.Metric
-	if err := BroadcastDurationSeconds.Write(&m); err != nil {
+	var dm dto.Metric
+	if err := m.BroadcastDurationSeconds.Write(&dm); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.GetHistogram().GetSampleCount(); got < 2 {
-		t.Errorf("histogram sample count = %d, want >= 2", got)
+	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
+		t.Errorf("histogram sample count = %d, want 2", got)
 	}
 }
 
 func TestDebounceLatencySeconds(t *testing.T) {
-	DebounceLatencySeconds.WithLabelValues("frontend").Observe(0.05)
-	DebounceLatencySeconds.WithLabelValues("frontend").Observe(0.15)
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.DebounceLatencySeconds.WithLabelValues("frontend").Observe(0.05)
+	m.DebounceLatencySeconds.WithLabelValues("frontend").Observe(0.15)
 
-	var m dto.Metric
-	observer := DebounceLatencySeconds.WithLabelValues("frontend")
+	var dm dto.Metric
+	observer := m.DebounceLatencySeconds.WithLabelValues("frontend")
 	pm, ok := observer.(prometheus.Metric)
 	if !ok {
 		t.Fatal("histogram does not implement prometheus.Metric")
 	}
-	if err := pm.Write(&m); err != nil {
+	if err := pm.Write(&dm); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.GetHistogram().GetSampleCount(); got < 2 {
-		t.Errorf("histogram sample count = %d, want >= 2", got)
+	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
+		t.Errorf("histogram sample count = %d, want 2", got)
 	}
 }
 
 func TestMetricsRegistered(t *testing.T) {
-	// Verify all metrics are present in the default registry by gathering them.
-	families, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatal(err)
+	t.Parallel()
+	reg := prometheus.NewRegistry()
+	_ = NewMetrics(reg, testBuckets)
+
+	ch := make(chan *prometheus.Desc, 64)
+	go func() {
+		reg.Describe(ch)
+		close(ch)
+	}()
+
+	found := map[string]bool{}
+	for d := range ch {
+		found[d.String()] = true
 	}
 
-	want := map[string]bool{
-		"k8s_httpcache_vcl_reloads_total":               false,
-		"k8s_httpcache_vcl_render_errors_total":         false,
-		"k8s_httpcache_vcl_template_changes_total":      false,
-		"k8s_httpcache_vcl_template_parse_errors_total": false,
-		"k8s_httpcache_vcl_rollbacks_total":             false,
-		"k8s_httpcache_endpoint_updates_total":          false,
-		"k8s_httpcache_endpoints":                       false,
-		"k8s_httpcache_varnishd_up":                     false,
-		"k8s_httpcache_broadcast_requests_total":        false,
-		"k8s_httpcache_broadcast_fanout_targets":        false,
-		"k8s_httpcache_build_info":                      false,
-		"k8s_httpcache_debounce_events_total":           false,
-		"k8s_httpcache_debounce_fires_total":            false,
-		"k8s_httpcache_debounce_max_enforcements_total": false,
-		"k8s_httpcache_debounce_latency_seconds":        false,
-		"k8s_httpcache_vcl_render_duration_seconds":     false,
-		"k8s_httpcache_vcl_reload_duration_seconds":     false,
-		"k8s_httpcache_broadcast_duration_seconds":      false,
+	want := []string{
+		"k8s_httpcache_vcl_reloads_total",
+		"k8s_httpcache_vcl_render_errors_total",
+		"k8s_httpcache_vcl_reload_retries_total",
+		"k8s_httpcache_vcl_template_changes_total",
+		"k8s_httpcache_vcl_template_parse_errors_total",
+		"k8s_httpcache_vcl_rollbacks_total",
+		"k8s_httpcache_endpoint_updates_total",
+		"k8s_httpcache_endpoints",
+		"k8s_httpcache_varnishd_up",
+		"k8s_httpcache_values_updates_total",
+		"k8s_httpcache_broadcast_requests_total",
+		"k8s_httpcache_broadcast_fanout_targets",
+		"k8s_httpcache_build_info",
+		"k8s_httpcache_debounce_events_total",
+		"k8s_httpcache_debounce_fires_total",
+		"k8s_httpcache_debounce_max_enforcements_total",
+		"k8s_httpcache_debounce_latency_seconds",
+		"k8s_httpcache_vcl_render_duration_seconds",
+		"k8s_httpcache_vcl_reload_duration_seconds",
+		"k8s_httpcache_broadcast_duration_seconds",
 	}
 
-	for _, f := range families {
-		if _, ok := want[f.GetName()]; ok {
-			want[f.GetName()] = true
+	if len(found) != len(want) {
+		t.Errorf("registry has %d metrics, want %d", len(found), len(want))
+	}
+
+	for _, name := range want {
+		seen := false
+		for desc := range found {
+			if strings.Contains(desc, "\""+name+"\"") {
+				seen = true
+				break
+			}
 		}
-	}
-
-	for name, found := range want {
-		if !found {
-			t.Errorf("metric %q not found in default registry", name)
+		if !seen {
+			t.Errorf("metric %q not found in registry", name)
 		}
 	}
 }
@@ -213,8 +266,8 @@ func assertCounterValue(t *testing.T, c prometheus.Counter, expected float64) {
 	if err := pm.Write(&m); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.GetCounter().GetValue(); got < expected {
-		t.Errorf("counter value = %v, want >= %v", got, expected)
+	if got := m.GetCounter().GetValue(); got != expected {
+		t.Errorf("counter value = %v, want %v", got, expected)
 	}
 }
 

@@ -24,6 +24,7 @@ type BackendWatcher struct {
 	namespace    string
 	serviceName  string
 	portOverride string
+	log          *slog.Logger
 	ch           chan []Endpoint
 
 	mu              sync.Mutex // protects fields below
@@ -43,6 +44,7 @@ func NewBackendWatcher(clientset kubernetes.Interface, namespace, serviceName, p
 		namespace:    namespace,
 		serviceName:  serviceName,
 		portOverride: portOverride,
+		log:          slog.Default(),
 		ch:           make(chan []Endpoint, 1),
 	}
 }
@@ -88,7 +90,7 @@ func (bw *BackendWatcher) Run(ctx context.Context) error {
 	// Deliver initial state even if no Service exists.
 	bw.syncService(ctx, lister)
 
-	slog.Info("watching Service for backend", "namespace", bw.namespace, "service", bw.serviceName)
+	bw.log.Info("watching Service for backend", "namespace", bw.namespace, "service", bw.serviceName)
 	<-ctx.Done()
 
 	bw.mu.Lock()
@@ -105,7 +107,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 		bw.mu.Lock()
 		if !bw.serviceNotFound {
 			bw.serviceNotFound = true
-			slog.Warn("backend Service not found, emitting empty endpoints",
+			bw.log.Warn("backend Service not found, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
 		}
 		bw.stopEndpointSliceWatcherLocked()
@@ -125,7 +127,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 		bw.mu.Unlock()
 
 		if svc.Spec.ExternalName == "" {
-			slog.Warn("ExternalName service has empty externalName, emitting empty endpoints",
+			bw.log.Warn("ExternalName service has empty externalName, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName)
 			bw.send(nil)
 			return
@@ -133,7 +135,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 
 		port, err := bw.resolveExternalPort()
 		if err != nil {
-			slog.Error("cannot resolve port for ExternalName service, emitting empty endpoints",
+			bw.log.Error("cannot resolve port for ExternalName service, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
 			bw.send(nil)
 			return
@@ -157,7 +159,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 
 func (bw *BackendWatcher) resolveExternalPort() (int32, error) {
 	if bw.portOverride == "" {
-		slog.Warn("no port specified for ExternalName service, defaulting to 80",
+		bw.log.Warn("no port specified for ExternalName service, defaulting to 80",
 			"namespace", bw.namespace, "service", bw.serviceName)
 		return 80, nil
 	}
@@ -171,12 +173,13 @@ func (bw *BackendWatcher) resolveExternalPort() (int32, error) {
 func (bw *BackendWatcher) startEndpointSliceWatcherLocked(ctx context.Context) {
 	childCtx, cancel := context.WithCancel(ctx)
 	child := New(bw.clientset, bw.namespace, bw.serviceName, bw.portOverride)
+	child.log = bw.log
 	bw.childWatcher = child
 	bw.childCancel = cancel
 
 	go func() {
 		if err := child.Run(childCtx); err != nil {
-			slog.Error("EndpointSlice watcher error", "namespace", bw.namespace,
+			bw.log.Error("EndpointSlice watcher error", "namespace", bw.namespace,
 				"service", bw.serviceName, "error", err)
 		}
 	}()
@@ -216,17 +219,17 @@ func (bw *BackendWatcher) send(endpoints []Endpoint) {
 	if bw.synced {
 		added, removed := diffEndpoints(bw.previous, endpoints)
 		for _, ep := range added {
-			slog.Debug("backend endpoint added", "namespace", bw.namespace, "service", bw.serviceName,
+			bw.log.Debug("backend endpoint added", "namespace", bw.namespace, "service", bw.serviceName,
 				"name", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 		}
 		for _, ep := range removed {
-			slog.Debug("backend endpoint removed", "namespace", bw.namespace, "service", bw.serviceName,
+			bw.log.Debug("backend endpoint removed", "namespace", bw.namespace, "service", bw.serviceName,
 				"name", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
 		}
 	}
 
 	if len(endpoints) == 0 {
-		slog.Warn("backend has no ready endpoints", "namespace", bw.namespace, "service", bw.serviceName)
+		bw.log.Warn("backend has no ready endpoints", "namespace", bw.namespace, "service", bw.serviceName)
 	}
 
 	bw.synced = true

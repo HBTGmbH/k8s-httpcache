@@ -45,6 +45,7 @@ func makeConfigMap(name string, data map[string]string) *corev1.ConfigMap {
 }
 
 func TestConfigMapWatcherInitialSync(t *testing.T) {
+	t.Parallel()
 	cm := makeConfigMap("my-cm", map[string]string{"key": "value"})
 	clientset := fake.NewClientset(cm)
 	w := NewConfigMapWatcher(clientset, "default", "my-cm")
@@ -59,6 +60,7 @@ func TestConfigMapWatcherInitialSync(t *testing.T) {
 }
 
 func TestConfigMapWatcherMissing(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	w := NewConfigMapWatcher(clientset, "default", "missing-cm")
 
@@ -72,6 +74,7 @@ func TestConfigMapWatcherMissing(t *testing.T) {
 }
 
 func TestConfigMapWatcherUpdate(t *testing.T) {
+	t.Parallel()
 	cm := makeConfigMap("my-cm", map[string]string{"key": "v1"})
 	clientset := fake.NewClientset(cm)
 	w := NewConfigMapWatcher(clientset, "default", "my-cm")
@@ -104,6 +107,7 @@ func TestConfigMapWatcherUpdate(t *testing.T) {
 }
 
 func TestConfigMapWatcherDeduplicatesUnchanged(t *testing.T) {
+	t.Parallel()
 	cm := makeConfigMap("my-cm", map[string]string{"key": "value"})
 	clientset := fake.NewClientset(cm)
 	w := NewConfigMapWatcher(clientset, "default", "my-cm")
@@ -131,6 +135,7 @@ func TestConfigMapWatcherDeduplicatesUnchanged(t *testing.T) {
 }
 
 func TestConfigMapWatcherDeleted(t *testing.T) {
+	t.Parallel()
 	cm := makeConfigMap("my-cm", map[string]string{"key": "value"})
 	clientset := fake.NewClientset(cm)
 	w := NewConfigMapWatcher(clientset, "default", "my-cm")
@@ -158,6 +163,7 @@ func TestConfigMapWatcherDeleted(t *testing.T) {
 }
 
 func TestConfigMapWatcherAppearsLate(t *testing.T) {
+	t.Parallel()
 	clientset := fake.NewClientset()
 	w := NewConfigMapWatcher(clientset, "default", "late-cm")
 
@@ -184,6 +190,7 @@ func TestConfigMapWatcherAppearsLate(t *testing.T) {
 }
 
 func TestConfigMapWatcherStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	cm := makeConfigMap("my-cm", map[string]string{"key": "value"})
 	clientset := fake.NewClientset(cm)
 	w := NewConfigMapWatcher(clientset, "default", "my-cm")
@@ -211,6 +218,7 @@ func TestConfigMapWatcherStopsOnContextCancel(t *testing.T) {
 }
 
 func TestConfigMapWatcherYAMLParsing(t *testing.T) {
+	t.Parallel()
 	cm := makeConfigMap("my-cm", map[string]string{
 		"plain":      "hello",
 		"number":     "42",
