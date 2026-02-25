@@ -467,7 +467,7 @@ func (m *Manager) discardOldVCLs(currentName string) {
 		state := fields[0]
 		name := fields[len(fields)-1]
 
-		if state == "available" && name != currentName {
+		if state == "available" && name != currentName && strings.HasPrefix(name, vclReloadPrefix) {
 			available = append(available, name)
 		}
 	}

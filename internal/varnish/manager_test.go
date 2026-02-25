@@ -687,13 +687,13 @@ func TestDiscardOldVCLsListError(t *testing.T) {
 func TestDiscardOldVCLsMalformedLines(t *testing.T) {
 	t.Parallel()
 	vclListOutput := strings.Join([]string{
-		"",                                    // empty line
-		"   ",                                 // whitespace-only
-		"short line",                          // fewer than 4 fields
-		"a b",                                 // only 2 fields
-		"available   0 warm          0 old_1", // valid
-		"active      0 warm          0 boot",  // active, should be skipped
-		"available",                           // single field
+		"",           // empty line
+		"   ",        // whitespace-only
+		"short line", // fewer than 4 fields
+		"a b",        // only 2 fields
+		"available   0 warm          0 kv_reload_1", // valid
+		"active      0 warm          0 kv_reload_2", // active, should be skipped
+		"available", // single field
 	}, "\n")
 
 	var discarded []string
@@ -718,13 +718,13 @@ func TestDiscardOldVCLsMalformedLines(t *testing.T) {
 	m := newTestManager(r)
 
 	// Should not panic despite malformed lines.
-	m.discardOldVCLs("current")
+	m.discardOldVCLs("kv_reload_2")
 
 	if len(discarded) != 1 {
 		t.Fatalf("discarded %d VCLs, want 1: %v", len(discarded), discarded)
 	}
-	if discarded[0] != "old_1" {
-		t.Errorf("discarded %q, want old_1", discarded[0])
+	if discarded[0] != "kv_reload_1" {
+		t.Errorf("discarded %q, want kv_reload_1", discarded[0])
 	}
 }
 
@@ -1007,9 +1007,9 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	vclListOutput := strings.Join([]string{
-		"available   0 warm          0 old_1",
-		"available   0 warm          0 old_2",
-		"active      0 warm          0 boot",
+		"available   0 warm          0 kv_reload_1",
+		"available   0 warm          0 kv_reload_2",
+		"active      0 warm          0 kv_reload_3",
 	}, "\n")
 
 	var discarded []string
@@ -1023,7 +1023,7 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 				if a == "vcl.discard" && i+1 < len(args) {
 					name := args[i+1]
 					discarded = append(discarded, name)
-					if name == "old_1" {
+					if name == "kv_reload_1" {
 						return "", errors.New("discard failed")
 					}
 
@@ -1038,9 +1038,9 @@ func TestDiscardOldVCLsDiscardError(t *testing.T) {
 	m := newTestManager(r)
 	m.log = logger
 
-	m.discardOldVCLs("current")
+	m.discardOldVCLs("kv_reload_3")
 
-	// Should have attempted to discard both old_1 and old_2, not stopping on error.
+	// Should have attempted to discard both kv_reload_1 and kv_reload_2, not stopping on error.
 	if len(discarded) != 2 {
 		t.Fatalf("expected 2 discard attempts, got %d: %v", len(discarded), discarded)
 	}
@@ -1782,7 +1782,7 @@ func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
 				// Return the successful name as active so discardOldVCLs
 				// has something to work with.
 				return "active      0 warm          0 kv_reload_2\n" +
-					"available   0 warm          0 old_1", nil
+					"available   0 warm          0 kv_reload_1", nil
 			}
 			if slices.Contains(args, "vcl.discard") {
 				for i, a := range args {
@@ -1807,9 +1807,9 @@ func TestReloadRetryDiscardCalledOnSuccess(t *testing.T) {
 		t.Fatalf("Reload() error: %v", err)
 	}
 
-	// discardOldVCLs should have discarded "old_1".
-	if discardCurrentName != "old_1" {
-		t.Errorf("discarded %q, want old_1", discardCurrentName)
+	// discardOldVCLs should have discarded "kv_reload_1".
+	if discardCurrentName != "kv_reload_1" {
+		t.Errorf("discarded %q, want kv_reload_1", discardCurrentName)
 	}
 }
 
@@ -2128,10 +2128,11 @@ func TestDiscardOldVCLsKeepZeroDiscardsAll(t *testing.T) {
 	}
 }
 
-func TestDiscardOldVCLsNonKVNames(t *testing.T) {
+func TestDiscardOldVCLsNonKVNamesAreIgnored(t *testing.T) {
 	t.Parallel()
-	// 4 available. Keep 2 newest: kv_reload_3 (suffix 3), kv_reload_2 (suffix 2).
-	// Discard: manual_vcl (suffix -1), old_config (suffix -1) — these sort as oldest.
+	// 4 available, but only 2 have the kv_reload_ prefix.
+	// manual_vcl and old_config must NOT be discarded.
+	// With VCLKept=1, keep kv_reload_3 (newest), discard kv_reload_2.
 	testDiscardOldVCLs(t,
 		strings.Join([]string{
 			"active      0 warm          0 kv_reload_4",
@@ -2140,8 +2141,24 @@ func TestDiscardOldVCLsNonKVNames(t *testing.T) {
 			"available   0 warm          0 manual_vcl",
 			"available   0 warm          0 old_config",
 		}, "\n"),
-		2, "kv_reload_4",
-		[]string{"manual_vcl", "old_config"},
+		1, "kv_reload_4",
+		[]string{"kv_reload_2"},
+	)
+}
+
+func TestDiscardOldVCLsKeepZeroIgnoresNonKVNames(t *testing.T) {
+	t.Parallel()
+	// VCLKept=0 discards all kv_reload_ VCLs but leaves user-created ones alone.
+	testDiscardOldVCLs(t,
+		strings.Join([]string{
+			"active      0 warm          0 kv_reload_3",
+			"available   0 warm          0 kv_reload_1",
+			"available   0 warm          0 kv_reload_2",
+			"available   0 warm          0 manual_vcl",
+			"available   0 warm          0 old_config",
+		}, "\n"),
+		0, "kv_reload_3",
+		[]string{"kv_reload_1", "kv_reload_2"},
 	)
 }
 
