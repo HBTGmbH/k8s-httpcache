@@ -39,8 +39,10 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
 - Automatic Varnish version detection with support for Varnish 6, 7, 8, and trunk builds
 - Structured logging with configurable format (text/json) and log level
 - Kubernetes Events for VCL reloads, template changes, rollbacks, drain lifecycle, and varnishd crashes — visible via `kubectl describe pod` and `kubectl get events`
-- Endpoint change debouncing to avoid rapid VCL reload cycles
+- Discarding old VCL objects after reload and keep the most recent `N` object (`--vcl-kept=N`), to avoid unbounded Varnish memory usage with every successive VCL reload
+- Endpoint change debouncing to avoid rapid VCL reload cycles, with independent timers for frontend and backend changes (`--frontend-debounce`, `--backend-debounce`)
   - https://github.com/mittwald/kube-httpcache/issues/66
+- JSON status endpoint (`/status`) on the metrics server providing runtime state (version, uptime, endpoint counts, reload metrics, varnishd process status)
 
 ## Container image
 
@@ -285,6 +287,21 @@ In a typical Kubernetes deployment, endpoint changes arrive in bursts — for ex
 ```
 
 This gives the backend group a faster 500ms debounce while the frontend group keeps the global 2s/10s settings. The frontend debounce settings must then be synchronized with the preStop / graceful shutdown durations of the k8s-httpcache/Varnish pods, and the backend debounce settings need to fit the backends' preStop / graceful timeouts.
+
+### VCL retention
+
+Every time Varnish reloads, a new VCL object is created (e.g. `kv_reload_1`, `kv_reload_2`, …). The previously active VCL moves to the "available" state. Over time these old objects accumulate and consume memory inside Varnish.
+
+The `--vcl-kept` flag controls how many old VCL objects are retained after each reload:
+
+| Value | Behaviour |
+|-------|-----------|
+| `0` (default) | All old available VCL objects are discarded immediately after reload |
+| `N` (e.g. `3`) | The `N` most recent available VCL objects are kept; older ones are discarded |
+
+Cleanup runs in the background after every successful reload and is best-effort — a failed discard is logged as a warning but does not affect the reload itself.
+
+**When to increase `--vcl-kept`:** Keeping one or more old VCL objects allows Varnish to finish processing in-flight requests that reference the previous VCL before it is discarded. In practice the default of `0` works well because Varnish internally holds a reference to any VCL that has active requests, preventing it from being freed until those requests complete. Increasing `--vcl-kept` can be useful for debugging (e.g. inspecting previous VCL versions via `varnishadm vcl.show`) or as extra safety margin in high-traffic environments.
 
 ### Passing arguments to varnishd
 
