@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +23,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 
 	"k8s-httpcache/internal/config"
@@ -4640,5 +4645,78 @@ func TestAppendUnique(t *testing.T) {
 	}
 	if s[0] != "a" || s[1] != "b" {
 		t.Fatalf("expected [a b], got %v", s)
+	}
+}
+
+func TestDetectLocalZone_NodeNameNotSet(t *testing.T) {
+	t.Parallel()
+	zone := detectLocalZone(slog.New(slog.DiscardHandler), fake.NewClientset(), "")
+	if zone != "" {
+		t.Errorf("expected empty zone when NODE_NAME is unset, got %q", zone)
+	}
+}
+
+func TestDetectLocalZone_NodeWithZoneLabel(t *testing.T) {
+	t.Parallel()
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-1",
+			Labels: map[string]string{"topology.kubernetes.io/zone": "europe-west3-a"},
+		},
+	}
+	cs := fake.NewClientset(node)
+	zone := detectLocalZone(slog.New(slog.DiscardHandler), cs, "node-1")
+	if zone != "europe-west3-a" {
+		t.Errorf("expected zone europe-west3-a, got %q", zone)
+	}
+}
+
+func TestDetectLocalZone_NodeWithoutZoneLabel(t *testing.T) {
+	t.Parallel()
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-2",
+		},
+	}
+	cs := fake.NewClientset(node)
+	zone := detectLocalZone(slog.New(slog.DiscardHandler), cs, "node-2")
+	if zone != "" {
+		t.Errorf("expected empty zone when label is absent, got %q", zone)
+	}
+}
+
+func TestDetectLocalZone_NodeNotFound(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset() // no nodes
+	zone := detectLocalZone(slog.New(slog.DiscardHandler), cs, "nonexistent-node")
+	if zone != "" {
+		t.Errorf("expected empty zone when node is not found, got %q", zone)
+	}
+}
+
+func TestDetectLocalZone_ForbiddenRBAC(t *testing.T) {
+	t.Parallel()
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	cs := fake.NewClientset()
+	cs.PrependReactor("get", "nodes", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(
+			schema.GroupResource{Group: "", Resource: "nodes"},
+			"node-1",
+			errors.New("RBAC: access denied"),
+		)
+	})
+	zone := detectLocalZone(log, cs, "node-1")
+	if zone != "" {
+		t.Errorf("expected empty zone when RBAC forbids node access, got %q", zone)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "could not look up node") {
+		t.Errorf("expected warning about node lookup failure, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "forbidden") {
+		t.Errorf("expected log to mention forbidden error, got: %s", logOutput)
 	}
 }

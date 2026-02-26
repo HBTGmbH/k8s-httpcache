@@ -64,7 +64,7 @@ ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
 - **ServiceAccount** — identity for the k8s-httpcache pod
 - **Role** — permissions to list/watch services and endpointslices
 - **RoleBinding** — binds the Role to the ServiceAccount
-- **ClusterRole** + **ClusterRoleBinding** — permissions to read node objects for [topology zone detection](#topology-aware-routing)
+- **ClusterRole** + **ClusterRoleBinding** — permissions to read node objects for [topology zone detection](#topology-aware-routing) (not needed when using `--zone`)
 - **Deployment** — runs k8s-httpcache with Varnish (3 replicas, graceful connection draining)
 - **Service** — exposes HTTP (port 80) and the broadcast server (port 8088)
 - **ConfigMap** — holds the VCL template
@@ -235,6 +235,7 @@ Events require RBAC permission to `create` and `patch` the `events` resource (se
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--template-delims` | `<< >>` | Template delimiters as a space-separated pair (e.g. `"<< >>"` or `"{{ }}"`) |
+| `--zone` | | Topology zone of this Varnish pod (overrides auto-detection from `NODE_NAME`). See [Topology-aware routing](#topology-aware-routing). |
 
 ### Timing and logging flags
 
@@ -653,6 +654,18 @@ In multi-zone Kubernetes clusters, you may want Varnish to prefer backends in th
 
 ### Setup
 
+There are two ways to set the local topology zone. Choose one:
+
+**Option A: Explicit `--zone` flag** (no extra RBAC needed)
+
+If you deploy one instance per zone and already know the zone, pass it directly:
+
+```yaml
+args: ["--zone", "europe-west3-a", ...]
+```
+
+**Option B: Auto-detect from `NODE_NAME`** (requires node read access)
+
 1. **Set the `NODE_NAME` environment variable** via the downward API so k8s-httpcache can detect the local zone:
 
    ```yaml
@@ -663,33 +676,9 @@ In multi-zone Kubernetes clusters, you may want Varnish to prefer backends in th
          fieldPath: spec.nodeName
    ```
 
-2. **Grant node read access** with a ClusterRole (only needed for zone auto-detection):
+2. **Grant node read access** — see [Node access for zone auto-detection](#node-access-for-zone-auto-detection) in the RBAC section.
 
-   ```yaml
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRole
-   metadata:
-     name: k8s-httpcache-nodes
-   rules:
-   - apiGroups: [""]
-     resources: ["nodes"]
-     verbs: ["get"]
-   ---
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRoleBinding
-   metadata:
-     name: k8s-httpcache-nodes
-   roleRef:
-     apiGroup: rbac.authorization.k8s.io
-     kind: ClusterRole
-     name: k8s-httpcache-nodes
-   subjects:
-   - kind: ServiceAccount
-     name: k8s-httpcache
-     namespace: default
-   ```
-
-   If `NODE_NAME` is not set, the ClusterRole is missing, or the node has no `topology.kubernetes.io/zone` label, zone detection fails gracefully: `.LocalZone` will be empty, `.LocalBackends` and `.RemoteBackends` will both be empty maps, and templates should fall back to `.Backends` (see the `if .LocalZone` guard in the [fallback director example](#example-fallback-director-preferring-same-zone-backends)).
+When `--zone` is set, it takes precedence and `NODE_NAME` / node RBAC are not needed. If neither `--zone` nor `NODE_NAME` is set, the ClusterRole is missing, or the node has no `topology.kubernetes.io/zone` label, zone detection fails gracefully: `.LocalZone` will be empty, `.LocalBackends` and `.RemoteBackends` will both be empty maps, and templates should fall back to `.Backends` (see the `if .LocalZone` guard in the [fallback director example](#example-fallback-director-preferring-same-zone-backends)).
 
    Zone-aware routing also requires that the **backend pods' nodes** have the `topology.kubernetes.io/zone` label. Kubernetes populates `.Zone` on each endpoint from the node hosting that pod. If the backend nodes lack zone labels, all endpoints will have an empty `.Zone` and land in `.RemoteBackends` even when `.LocalZone` is correctly detected — the local director will always be empty and the fallback director will only use the remote round-robin.
 
@@ -701,7 +690,7 @@ Top-level fields:
 
 | Field | Description |
 |-------|-------------|
-| `.LocalZone` | Zone of the Varnish pod (from the node's `topology.kubernetes.io/zone` label) |
+| `.LocalZone` | Zone of the Varnish pod (from `--zone` flag, or auto-detected from the node's `topology.kubernetes.io/zone` label) |
 | `.LocalBackends` | Pre-filtered view of `.Backends` containing only same-zone endpoints (`.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty map when `.LocalZone` is empty. |
 | `.RemoteBackends` | Pre-filtered view of `.Backends` containing all other endpoints. Endpoints with unknown zone and no matching `.ForZones` hint land here. Empty map when `.LocalZone` is empty. |
 
@@ -929,6 +918,36 @@ To enable [Kubernetes Events](#kubernetes-events), add:
 ```
 
 The `pods` `get` permission allows the event recorder to look up the pod UID so that events appear in `kubectl describe pod`. The `events` permissions are needed to actually create the events. Both are optional — if omitted, a single warning is logged and the service continues without event recording.
+
+### Node access for zone auto-detection
+
+To auto-detect the topology zone from `NODE_NAME` (see [Topology-aware routing](#topology-aware-routing)), add a ClusterRole and ClusterRoleBinding with `get` on `nodes`:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-httpcache-nodes
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-httpcache-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-httpcache-nodes
+subjects:
+- kind: ServiceAccount
+  name: k8s-httpcache
+  namespace: default
+```
+
+This is **not needed** when using `--zone` to set the topology zone explicitly.
 
 ### Cross-namespace
 

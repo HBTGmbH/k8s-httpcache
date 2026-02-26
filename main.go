@@ -348,8 +348,14 @@ func main() {
 		slog.Info("POD_NAME not set, kubernetes event recording disabled")
 	}
 
-	// Auto-detect topology zone for zone-aware routing templates.
-	localZone := detectLocalZone(clientset)
+	// Determine topology zone: use explicit --zone flag if set, otherwise auto-detect.
+	var localZone string
+	if cfg.Zone != "" {
+		localZone = cfg.Zone
+		slog.Info("using explicit topology zone from --zone", "zone", localZone) //nolint:gosec // G706: zone from CLI flag, not runtime user input
+	} else {
+		localZone = detectLocalZone(slog.Default(), clientset, os.Getenv("NODE_NAME"))
+	}
 
 	// Create varnish manager and detect version before rendering VCL,
 	// because the renderer needs the version to generate compatible VCL.
@@ -1029,20 +1035,19 @@ func (s *warnOnceEventSink) checkErr(err error) {
 	}
 }
 
-// detectLocalZone reads NODE_NAME from the environment, looks up the node's
-// topology.kubernetes.io/zone label, and returns the zone string.
-// Returns "" if NODE_NAME is not set, the node cannot be fetched, or the label is absent.
-func detectLocalZone(clientset kubernetes.Interface) string {
-	nodeName := os.Getenv("NODE_NAME")
+// detectLocalZone looks up the node's topology.kubernetes.io/zone label and
+// returns the zone string. Returns "" if nodeName is empty, the node cannot
+// be fetched, or the label is absent.
+func detectLocalZone(logger *slog.Logger, clientset kubernetes.Interface, nodeName string) string {
 	if nodeName == "" {
-		slog.Info("NODE_NAME not set, topology zone detection disabled (.LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates)")
+		logger.Info("NODE_NAME not set, topology zone detection disabled (.LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates)")
 
 		return ""
 	}
 
 	node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	if err != nil {
-		slog.Warn("could not look up node for zone detection; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates", //nolint:gosec // G706: nodeName from pod spec env, not runtime user input
+		logger.Warn("could not look up node for zone detection; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates",
 			"node", nodeName, "error", err)
 
 		return ""
@@ -1050,13 +1055,13 @@ func detectLocalZone(clientset kubernetes.Interface) string {
 
 	zone := node.Labels["topology.kubernetes.io/zone"]
 	if zone == "" {
-		slog.Warn("node has no topology.kubernetes.io/zone label; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates", //nolint:gosec // G706: nodeName from pod spec env, not runtime user input
+		logger.Warn("node has no topology.kubernetes.io/zone label; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates",
 			"node", nodeName)
 
 		return ""
 	}
 
-	slog.Info("detected local topology zone", "zone", zone) //nolint:gosec // G706: zone from trusted Kubernetes node label
+	logger.Info("detected local topology zone", "zone", zone)
 
 	return zone
 }

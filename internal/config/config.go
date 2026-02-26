@@ -254,6 +254,7 @@ type Config struct {
 	VCLReloadRetryInterval     time.Duration
 	VCLKept                    int
 	DebounceLatencyBuckets     []float64
+	Zone                       string
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -585,6 +586,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Usage:       `Template delimiters as a space-separated pair (e.g. "<< >>" or "{{ }}")`,
 				Value:       "<< >>",
 				Destination: &templateDelims,
+			},
+			&cli.StringFlag{
+				Name:        "zone",
+				Category:    "Template:",
+				Usage:       "Topology zone of this Varnish pod (overrides auto-detection from NODE_NAME)",
+				Destination: &c.Zone,
 			},
 
 			// Timing and logging

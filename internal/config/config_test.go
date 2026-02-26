@@ -2939,3 +2939,36 @@ func TestParsePerSourceDebounceExplicitZero(t *testing.T) {
 		t.Errorf("BackendDebounce = %v, want 0", cfg.BackendDebounce)
 	}
 }
+
+func TestParseZoneDefault(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Zone != "" {
+		t.Errorf("Zone = %q, want empty", cfg.Zone)
+	}
+}
+
+func TestParseZoneExplicit(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--zone=europe-west3-a",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Zone != "europe-west3-a" {
+		t.Errorf("Zone = %q, want europe-west3-a", cfg.Zone)
+	}
+}
