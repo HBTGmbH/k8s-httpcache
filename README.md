@@ -693,6 +693,8 @@ In multi-zone Kubernetes clusters, you may want Varnish to prefer backends in th
 
    Zone-aware routing also requires that the **backend pods' nodes** have the `topology.kubernetes.io/zone` label. Kubernetes populates `.Zone` on each endpoint from the node hosting that pod. If the backend nodes lack zone labels, all endpoints will have an empty `.Zone` and land in `.RemoteBackends` even when `.LocalZone` is correctly detected — the local director will always be empty and the fallback director will only use the remote round-robin.
 
+   [ExternalName service](#externalname-services) backends resolve to a DNS hostname rather than pod IPs, so their endpoints have no associated node. As a result, `.Zone`, `.NodeName`, and `.ForZones` will always be empty for ExternalName backends. They are included in `.Backends` as usual, but when zone splitting is active they will always land in `.RemoteBackends` (never in `.LocalBackends`).
+
 ### Available template fields
 
 | Field | Description |
