@@ -106,7 +106,13 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    kubectl rollout status deployment/k8s-httpcache --timeout=120s
    ```
 
-4. Run the E2E test scripts:
+4. Run all E2E tests (aborts on first failure):
+
+   ```bash
+   .github/test/test-all.sh
+   ```
+
+   Or run individual tests:
 
    ```bash
    .github/test/smoke-test.sh               # HTTP proxying, shard consistency
