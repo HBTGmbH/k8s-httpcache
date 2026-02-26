@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -4325,6 +4326,132 @@ func TestStatusHandlerMethodNotAllowed(t *testing.T) {
 	}
 	handler := statusHandler(store)
 	req := httptest.NewRequest(http.MethodPost, "/status", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+	if allow := rec.Header().Get("Allow"); allow != "GET" {
+		t.Errorf("Allow = %q, want GET", allow)
+	}
+}
+
+func TestHealthzHandler_VarnishdUp(t *testing.T) {
+	t.Parallel()
+	store := &statusStore{varnishdUp: true}
+	handler := healthzHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "ok\n" {
+		t.Errorf("body = %q, want %q", body, "ok\n")
+	}
+}
+
+func TestHealthzHandler_VarnishdDown(t *testing.T) {
+	t.Parallel()
+	store := &statusStore{varnishdUp: false}
+	handler := healthzHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "varnishd not running") {
+		t.Errorf("body = %q, want it to contain %q", body, "varnishd not running")
+	}
+}
+
+func TestHealthzHandler_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+	store := &statusStore{}
+	handler := healthzHandler(store)
+	req := httptest.NewRequest(http.MethodPost, "/healthz", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+	if allow := rec.Header().Get("Allow"); allow != "GET" {
+		t.Errorf("Allow = %q, want GET", allow)
+	}
+}
+
+func TestReadyzHandler_Ready(t *testing.T) {
+	t.Parallel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	store := &statusStore{varnishdUp: true}
+	handler := readyzHandler(store, ln.Addr().String())
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "ok\n" {
+		t.Errorf("body = %q, want %q", body, "ok\n")
+	}
+}
+
+func TestReadyzHandler_NotReady(t *testing.T) {
+	t.Parallel()
+	store := &statusStore{varnishdUp: false}
+	handler := readyzHandler(store, "127.0.0.1:0")
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "not ready") {
+		t.Errorf("body = %q, want it to contain %q", body, "not ready")
+	}
+}
+
+func TestReadyzHandler_ChildDown(t *testing.T) {
+	t.Parallel()
+	// Use an address where nothing is listening to simulate a crashed child.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	store := &statusStore{varnishdUp: true}
+	handler := readyzHandler(store, addr)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "not accepting connections") {
+		t.Errorf("body = %q, want it to contain %q", body, "not accepting connections")
+	}
+}
+
+func TestReadyzHandler_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+	store := &statusStore{}
+	handler := readyzHandler(store, "127.0.0.1:0")
+	req := httptest.NewRequest(http.MethodPost, "/readyz", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 

@@ -7,14 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -219,6 +222,66 @@ func statusHandler(store *statusStore) http.HandlerFunc {
 	}
 }
 
+// healthzHandler returns an HTTP handler that serves the /healthz liveness endpoint.
+func healthzHandler(store *statusStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
+			return
+		}
+		store.mu.RLock()
+		up := store.varnishdUp
+		store.mu.RUnlock()
+
+		if up {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "ok\n")
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "varnishd not running\n")
+		}
+	}
+}
+
+// readyzHandler returns an HTTP handler that serves the /readyz readiness endpoint.
+// In addition to checking the varnishdUp flag, it performs a TCP dial to listenAddr
+// to verify that the Varnish child process is accepting connections.
+func readyzHandler(store *statusStore, listenAddr string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
+			return
+		}
+		store.mu.RLock()
+		up := store.varnishdUp
+		store.mu.RUnlock()
+
+		if !up {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "not ready\n")
+
+			return
+		}
+
+		dialer := net.Dialer{Timeout: 1 * time.Second}
+		conn, err := dialer.DialContext(r.Context(), "tcp", listenAddr)
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "not ready: varnish not accepting connections\n")
+
+			return
+		}
+		_ = conn.Close()
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok\n")
+	}
+}
+
 // backendCountsMap converts a backend endpoint map to a count map.
 func backendCountsMap(backends map[string][]watcher.Endpoint) map[string]int {
 	m := make(map[string]int, len(backends))
@@ -301,6 +364,9 @@ func main() {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
 		mux.HandleFunc("/status", statusHandler(status))
+		mux.HandleFunc("/healthz", healthzHandler(status))
+		readyzAddr := net.JoinHostPort("localhost", strconv.FormatInt(int64(cfg.ListenAddrs[0].Port), 10))
+		mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
 		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout}
 		go func() {
 			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)

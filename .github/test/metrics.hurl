@@ -8,3 +8,15 @@ body contains "k8s_httpcache_vcl_reloads_total{"
 body contains "k8s_httpcache_endpoint_updates_total{"
 body contains "k8s_httpcache_broadcast_fanout_targets "
 body contains "k8s_httpcache_build_info{"
+
+# Liveness endpoint should return 200 when varnishd is running.
+GET http://localhost:9101/healthz
+HTTP 200
+[Asserts]
+body == "ok\n"
+
+# Readiness endpoint should return 200 when varnishd is running.
+GET http://localhost:9101/readyz
+HTTP 200
+[Asserts]
+body == "ok\n"

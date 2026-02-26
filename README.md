@@ -192,6 +192,36 @@ curl -s http://localhost:9101/status | jq .
 
 `lastReloadAt` is `null` before the first VCL reload. The endpoint only accepts `GET` requests.
 
+#### Health endpoints
+
+The metrics server exposes `/healthz` (liveness) and `/readyz` (readiness) endpoints that report whether varnishd is running. `/healthz` checks that the varnishd master process is alive. `/readyz` additionally verifies that the Varnish listen port is accepting TCP connections, which detects the window where the master is alive but the child worker has crashed and is restarting. Both return `200 ok` when healthy and `503` when not:
+
+```bash
+curl http://localhost:9101/healthz   # ok
+curl http://localhost:9101/readyz    # ok
+```
+
+Use these in your pod spec to let Kubernetes detect and restart a stuck varnishd process (`livenessProbe`) or stop routing traffic before varnishd is ready (`readinessProbe`):
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 9101
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 9101
+  periodSeconds: 5
+  failureThreshold: 1
+```
+
+Note that `/readyz` cannot verify whether the loaded VCL is correct and Varnish would actually serve traffic as expected. If you need that level of confidence, implement custom readiness logic directly in VCL (e.g. handle a health-check path in `vcl_recv`) and point your `readinessProbe` at Varnish itself.
+
+Both endpoints are available whenever the metrics server is enabled (the default). They are disabled when `--metrics-addr=none`.
+
 ### Kubernetes Events
 
 When the `POD_NAME` environment variable is set, k8s-httpcache emits Kubernetes Events visible via `kubectl describe pod` and `kubectl get events`. Set `POD_NAME` using the Downward API:

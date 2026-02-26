@@ -339,6 +339,18 @@ spec:
             port: http
           failureThreshold: 30
           periodSeconds: 1
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http-m
+          periodSeconds: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http-m
+          periodSeconds: 1
+          failureThreshold: 1
         volumeMounts:
         - name: vcl-template
           mountPath: /etc/k8s-httpcache
