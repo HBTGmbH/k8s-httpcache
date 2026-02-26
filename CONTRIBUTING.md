@@ -40,6 +40,12 @@ go test -race ./...
 
 ### Linting
 
+Run all linting checks (aborts on first failure):
+
+```bash
+.github/test/lint-all.sh
+```
+
 The project uses [golangci-lint](https://golangci-lint.run/) with an extensive rule set (see [`.golangci.yml`](.golangci.yml)). Run it locally:
 
 ```bash
