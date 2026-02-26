@@ -362,7 +362,7 @@ func main() {
 	// Start Prometheus metrics server if configured.
 	if cfg.MetricsAddr != "" {
 		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
+		mux.Handle("/metrics", promhttp.HandlerFor(&telemetry.ZeroCounterFilter{Inner: prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
 		mux.HandleFunc("/status", statusHandler(status))
 		mux.HandleFunc("/healthz", healthzHandler(status))
 		readyzAddr := net.JoinHostPort("localhost", strconv.FormatInt(int64(cfg.ListenAddrs[0].Port), 10))
@@ -443,6 +443,13 @@ func main() {
 		log.Fatalf("varnish version: %v", err)
 	}
 	status.varnishMajorVersion = mgr.MajorVersion()
+
+	// Register varnishstat Prometheus exporter if enabled.
+	if cfg.VarnishstatExport {
+		vsc := telemetry.NewVarnishstatCollector(mgr.VarnishstatFunc(), cfg.VarnishstatExportFilter)
+		prometheus.DefaultRegisterer.MustRegister(vsc)
+		slog.Info("varnishstat prometheus exporter enabled", "filter", cfg.VarnishstatExportFilter) //nolint:gosec // G706: filter from CLI flag, not runtime user input
+	}
 
 	// Parse VCL template.
 	rend, err := renderer.New(cfg.VCLTemplate, cfg.TemplateDelimLeft, cfg.TemplateDelimRight)

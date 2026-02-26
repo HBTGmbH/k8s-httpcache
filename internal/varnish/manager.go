@@ -301,6 +301,24 @@ func (m *Manager) ActiveSessions() (uint64, error) {
 	return m.parseActiveSessionsV7(out)
 }
 
+// VarnishstatFunc returns a closure that runs varnishstat -1 -j and returns
+// the raw JSON output along with the detected major version. This is used by
+// the Prometheus varnishstat collector without creating an import cycle.
+func (m *Manager) VarnishstatFunc() func() (string, int, error) {
+	return func() (string, int, error) {
+		args := []string{"-1", "-j"}
+		if m.workDir != "" {
+			args = []string{"-n", m.workDir, "-1", "-j"}
+		}
+		out, err := m.run.Run(m.varnishstatPath, args)
+		if err != nil {
+			return "", 0, fmt.Errorf("varnishstat: %w", err)
+		}
+
+		return out, m.majorVersion, nil
+	}
+}
+
 func (m *Manager) reload(vclPath string) error {
 	maxAttempts := 1 + m.ReloadRetries
 

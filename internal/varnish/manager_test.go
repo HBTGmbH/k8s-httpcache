@@ -1426,6 +1426,108 @@ func TestActiveSessionsWithoutWorkDir(t *testing.T) {
 	}
 }
 
+func TestVarnishstatFuncWithWorkDir(t *testing.T) {
+	t.Parallel()
+	wantJSON := `{"version":1,"counters":{"MAIN.uptime":{"value":42}}}`
+
+	var gotArgs []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, args []string) (string, error) {
+			if name == defaultVarnishstatPath {
+				gotArgs = args
+
+				return wantJSON, nil
+			}
+
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = defaultVarnishstatPath
+	m.majorVersion = 7
+	m.workDir = "/var/lib/varnish/myname"
+
+	fn := m.VarnishstatFunc()
+	out, ver, err := fn()
+	if err != nil {
+		t.Fatalf("VarnishstatFunc() error: %v", err)
+	}
+	if out != wantJSON {
+		t.Errorf("output = %q, want %q", out, wantJSON)
+	}
+	if ver != 7 {
+		t.Errorf("majorVersion = %d, want 7", ver)
+	}
+
+	want := []string{"-n", "/var/lib/varnish/myname", "-1", "-j"}
+	if !slices.Equal(gotArgs, want) {
+		t.Errorf("varnishstat args = %v, want %v", gotArgs, want)
+	}
+}
+
+func TestVarnishstatFuncWithoutWorkDir(t *testing.T) {
+	t.Parallel()
+	wantJSON := `{"version":1,"counters":{}}`
+
+	var gotArgs []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, args []string) (string, error) {
+			if name == defaultVarnishstatPath {
+				gotArgs = args
+
+				return wantJSON, nil
+			}
+
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = defaultVarnishstatPath
+	m.majorVersion = 7
+
+	fn := m.VarnishstatFunc()
+	out, ver, err := fn()
+	if err != nil {
+		t.Fatalf("VarnishstatFunc() error: %v", err)
+	}
+	if out != wantJSON {
+		t.Errorf("output = %q, want %q", out, wantJSON)
+	}
+	if ver != 7 {
+		t.Errorf("majorVersion = %d, want 7", ver)
+	}
+
+	want := []string{"-1", "-j"}
+	if !slices.Equal(gotArgs, want) {
+		t.Errorf("varnishstat args = %v, want %v", gotArgs, want)
+	}
+}
+
+func TestVarnishstatFuncError(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(string, []string) (string, error) {
+			return "", errors.New("exec failed")
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = defaultVarnishstatPath
+	m.majorVersion = 7
+
+	fn := m.VarnishstatFunc()
+	_, _, err := fn()
+	if err == nil {
+		t.Fatal("expected error from VarnishstatFunc, got nil")
+	}
+}
+
 func TestAdmArgsWithWorkDir(t *testing.T) {
 	t.Parallel()
 	var gotArgs []string

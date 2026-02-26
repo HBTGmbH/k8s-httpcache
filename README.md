@@ -130,6 +130,8 @@ k8s-httpcache [flags] [-- varnishd-args...]
 |------|---------|-------------|
 | `--metrics-addr` | `:9101` | Listen address for Prometheus metrics (`none` to disable) |
 | `--metrics-read-header-timeout` | `10s` | Max time to read request headers on the metrics server |
+| `--varnishstat-export` | `false` | Enable varnishstat Prometheus exporter on `/metrics` |
+| `--varnishstat-export-filter` | *(all)* | Counter groups to export (e.g. `MAIN,SMA,VBE`); empty exports all |
 
 The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`, `process_*`) plus the following application metrics, all prefixed with `k8s_httpcache_`:
 
@@ -158,6 +160,39 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `broadcast_duration_seconds` | Histogram | | Total wall-clock time for broadcast fan-out to all frontend pods |
 
 The `group` label is either `frontend` (`--service-name` endpoint changes) or `backend` (`--backend`, `--values`, `--secrets`, `--values-dir`, and VCL template changes).
+
+#### Varnishstat exporter
+
+When `--varnishstat-export` is enabled, native Varnish counters from `varnishstat` are exported as `varnish_*` Prometheus metrics on the same `/metrics` endpoint. Use `--varnishstat-export-filter` to limit which counter groups are exported.
+
+The exporter always registers these meta-metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `varnish_up` | Gauge | Whether the last varnishstat scrape succeeded (1/0) |
+| `varnish_scrape_duration_seconds` | Gauge | Duration of the varnishstat scrape |
+| `varnish_exporter_total_scrapes` | Counter | Cumulative varnishstat scrape count |
+| `varnish_exporter_json_parse_failures_total` | Counter | JSON parse failures during scrapes |
+
+Each varnishstat counter group maps to a metric prefix:
+
+| Group | Metric prefix | Labels | Notes |
+|-------|--------------|--------|-------|
+| `MAIN` | `varnish_main_*` | | Core cache, session, and worker stats |
+| `VBE` | `varnish_backend_*` | `backend`, `server` | Only the newest VCL reload is exported |
+| `SMA` | `varnish_sma_*` | `type` | Storage memory allocator |
+| `SMF` | `varnish_smf_*` | `type` | Storage memory file |
+| `LCK` | `varnish_lock_*` | `target` | Renamed from `lck_*` for readability |
+| `MEMPOOL` | `varnish_mempool_*` | `id` | Per-pool memory statistics |
+| `MGT` | `varnish_mgt_*` | | Management process stats |
+
+Special behaviors:
+
+- `varnish_backend_up` (0/1 gauge) is derived from the `happy` health-probe bitmap
+- Zero-value counters are omitted to reduce scrape size
+- When multiple VCL reloads exist, only backends from the newest reload are exported
+- `MAIN.fetch_*` → `varnish_main_fetch{type=...}` with a `_total` rollup; same pattern for sessions and worker threads
+- `LCK` counters are renamed: `colls` → `lock_collisions`, `creat` → `lock_created`, `destroy` → `lock_destroyed`, `locks` → `lock_operations`
 
 #### Status endpoint
 

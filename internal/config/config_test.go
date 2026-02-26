@@ -2972,3 +2972,59 @@ func TestParseZoneExplicit(t *testing.T) {
 		t.Errorf("Zone = %q, want europe-west3-a", cfg.Zone)
 	}
 }
+
+func TestParseVarnishstatExportDefault(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VarnishstatExport {
+		t.Error("VarnishstatExport = true, want false (default)")
+	}
+	if len(cfg.VarnishstatExportFilter) != 0 {
+		t.Errorf("VarnishstatExportFilter = %v, want empty", cfg.VarnishstatExportFilter)
+	}
+}
+
+func TestParseVarnishstatExportEnabled(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--varnishstat-export",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.VarnishstatExport {
+		t.Error("VarnishstatExport = false, want true")
+	}
+}
+
+func TestParseVarnishstatExportFilter(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--varnishstat-export",
+		"--varnishstat-export-filter=MAIN",
+		"--varnishstat-export-filter=SMA",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"MAIN", "SMA"}
+	if !slices.Equal(cfg.VarnishstatExportFilter, want) {
+		t.Errorf("VarnishstatExportFilter = %v, want %v", cfg.VarnishstatExportFilter, want)
+	}
+}

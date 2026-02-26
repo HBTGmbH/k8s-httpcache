@@ -255,6 +255,8 @@ type Config struct {
 	VCLKept                    int
 	DebounceLatencyBuckets     []float64
 	Zone                       string
+	VarnishstatExport          bool
+	VarnishstatExportFilter    []string
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -549,6 +551,18 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Usage:       "Max time to read request headers on the metrics server",
 				Value:       10 * time.Second,
 				Destination: &c.MetricsReadHeaderTimeout,
+			},
+			&cli.BoolFlag{
+				Name:        "varnishstat-export",
+				Category:    "Metrics:",
+				Usage:       "Enable varnishstat Prometheus exporter (exports all varnishstat counters on /metrics)",
+				Destination: &c.VarnishstatExport,
+			},
+			&cli.StringSliceFlag{
+				Name:        "varnishstat-export-filter",
+				Category:    "Metrics:",
+				Usage:       "Counter groups to export (e.g. MAIN,SMA,VBE); empty exports all (only effective when --varnishstat-export is enabled)",
+				Destination: &c.VarnishstatExportFilter,
 			},
 
 			// Drain
