@@ -43,6 +43,8 @@ kind: Service
 metadata:
   name: backend-xns
   namespace: test-ns
+  annotations:
+    service.kubernetes.io/topology-mode: "Auto"
 spec:
   selector:
     app: backend-xns
@@ -132,6 +134,8 @@ kind: Service
 metadata:
   name: backend
   namespace: default
+  annotations:
+    service.kubernetes.io/topology-mode: "Auto"
 spec:
   selector:
     app: backend
