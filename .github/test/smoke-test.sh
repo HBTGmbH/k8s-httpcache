@@ -8,4 +8,9 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
+for _ in $(seq 1 30); do
+  curl -sf http://localhost:8080/backend-xns/ > /dev/null 2>&1 && break
+  sleep 2
+done
+
 hurl --test "$@" .github/test/smoke.hurl

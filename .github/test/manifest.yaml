@@ -25,8 +25,14 @@ spec:
     spec:
       containers:
       - name: backend
-        image: hashicorp/http-echo
-        args: ["-listen=:8080", "-text=ok-xns"]
+        image: node:alpine
+        command: ["node", "-e"]
+        args:
+        - |
+          require("http").createServer((req, res) => {
+            res.writeHead(200, {"Content-Type": "text/plain"});
+            res.end(process.env.HOSTNAME + "\n");
+          }).listen(8080);
         ports:
         - name: http
           containerPort: 8080
@@ -85,7 +91,7 @@ metadata:
   name: backend
   namespace: default
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: backend
@@ -99,10 +105,23 @@ spec:
       labels:
         app: backend
     spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: backend
       containers:
       - name: backend
-        image: hashicorp/http-echo
-        args: ["-listen=:8080", "-text=ok"]
+        image: node:alpine
+        command: ["node", "-e"]
+        args:
+        - |
+          require("http").createServer((req, res) => {
+            res.writeHead(200, {"Content-Type": "text/plain"});
+            res.end(process.env.HOSTNAME + "\n");
+          }).listen(8080);
         ports:
         - name: http
           containerPort: 8080
@@ -428,9 +447,29 @@ data:
       <<- end >>
 
       <<- range $name, $eps := .Backends >>
+      <<- if $.LocalZone >>
+
+      new local_<< $name >> = directors.round_robin();
+      <<- range index $.LocalBackends $name >>
+      local_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+      <<- end >>
+
+      new remote_<< $name >> = directors.round_robin();
+      <<- range index $.RemoteBackends $name >>
+      remote_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+      <<- end >>
+
+      new backend_<< $name >> = directors.fallback();
+      backend_<< $name >>.add_backend(local_<< $name >>.backend());
+      backend_<< $name >>.add_backend(remote_<< $name >>.backend());
+
+      <<- else >>
+
       new backend_<< $name >> = directors.round_robin();
       <<- range $eps >>
       backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+      <<- end >>
+
       <<- end >>
       <<- end >>
     }
@@ -452,7 +491,7 @@ data:
       }
 
       <<- if .Frontends >>
-      if (!req.http.X-Shard-Routed) {
+      if (!req.http.X-Shard-Routed && !req.http.X-No-Shard) {
         set req.backend_hint = cluster.backend(by=URL);
         set req.http.x-shard = req.backend_hint;
         if (req.http.x-shard != server.identity) {

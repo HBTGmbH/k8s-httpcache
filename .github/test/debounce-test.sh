@@ -9,13 +9,13 @@ set -eu
 pf_pids=""
 cleanup() {
   kill "$pf_pids" 2>/dev/null || true
-  # Restore backend to 1 replica regardless of test outcome.
-  kubectl scale deployment/backend --replicas=1 2>/dev/null || true
+  # Restore backend to 3 replicas regardless of test outcome.
+  kubectl scale deployment/backend --replicas=3 2>/dev/null || true
 }
 trap cleanup EXIT
 
 pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
-kubectl port-forward "$pod" 9102:9101 &
+kubectl port-forward "$pod" 9102:9101 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do
@@ -41,7 +41,7 @@ assert_gt() {
 }
 
 # --- Part 1: Debounce coalescing test ---------------------------------------
-# Scale backend 1 -> 3. This produces a burst of EndpointSlice events that
+# Scale backend 3 -> 5. This produces a burst of EndpointSlice events that
 # should be coalesced by the 2s debounce window into fewer reloads.
 
 echo "--- Part 1: debounce coalescing ---"
@@ -53,7 +53,7 @@ before_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}
 
 echo "Before: events=$before_events fires=$before_fires latency_count=$before_latency reloads=$before_reloads"
 
-kubectl scale deployment/backend --replicas=3
+kubectl scale deployment/backend --replicas=5
 kubectl rollout status deployment/backend --timeout=60s
 
 # Wait for debounce timer to fire and reload to complete.
@@ -138,12 +138,12 @@ if [ "$max_delta" -le 0 ]; then
 fi
 echo "PASS: debounce_max_enforcements_total increased (delta=$max_delta)"
 
-# --- Cleanup: remove test key and scale backend back to 1 -------------------
+# --- Cleanup: remove test key and scale backend back to 3 -------------------
 
 echo ""
 echo "--- Cleanup ---"
 kubectl patch configmap k8s-httpcache-values-test \
   --type json -p '[{"op":"remove","path":"/data/debounce-test"}]' > /dev/null
-kubectl scale deployment/backend --replicas=1
+kubectl scale deployment/backend --replicas=3
 kubectl rollout status deployment/backend --timeout=60s
 echo "PASS: cleanup complete"

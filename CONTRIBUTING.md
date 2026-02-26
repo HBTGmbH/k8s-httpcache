@@ -125,6 +125,7 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    .github/test/file-watch-disable-test.sh  # file-watch disable verification
    .github/test/drain-sessions-test.sh      # drain timing verification
    .github/test/drain-test.sh               # connection draining
+   .github/test/topology-test.sh            # topology-aware routing
    .github/test/rollout-test.sh             # zero-downtime rollout (requires oha)
    ```
 

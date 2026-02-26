@@ -17,7 +17,7 @@ trap cleanup EXIT
 if ! curl -sf http://localhost:9101/metrics > /dev/null 2>&1 \
   || ! curl -sf http://localhost:8088/backend/ > /dev/null 2>&1; then
   pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
-  kubectl port-forward "$pod" 9101:9101 8088:8088 &
+  kubectl port-forward "$pod" 9101:9101 8088:8088 >/dev/null &
   pf_pids="$pf_pids $!"
 fi
 

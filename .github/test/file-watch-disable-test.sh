@@ -40,7 +40,7 @@ kubectl rollout status deployment/k8s-httpcache --timeout=120s
 # --- Port-forward setup -----------------------------------------------------
 
 pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
-kubectl port-forward "$pod" 9106:9101 2>/dev/null &
+kubectl port-forward "$pod" 9106:9101 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do
@@ -165,6 +165,18 @@ if [ "$found" != "true" ]; then
   echo "FAIL: X-Values-Test did not update within 15s"
   exit 1
 fi
+
+# Wait for the monitored pod's debounce timer to fire and reload to complete.
+# The header check may have been served by a different pod via ingress.
+echo "--- Waiting for reload on monitored pod (up to 10s) ---"
+for i in $(seq 1 10); do
+  after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
+  if [ "$after_reloads" -gt "$before_reloads" ]; then
+    echo "  Reload detected after ${i}s"
+    break
+  fi
+  sleep 1
+done
 
 # Assert metrics increased.
 after_api_updates=$(metric_value 'k8s_httpcache_values_updates_total{configmap="test"}')

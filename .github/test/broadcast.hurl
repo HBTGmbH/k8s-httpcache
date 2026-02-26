@@ -4,4 +4,4 @@ HTTP 200
 [Asserts]
 header "Content-Type" contains "application/json"
 jsonpath "$.*" count == 3
-jsonpath "$.*.body" contains "ok\n"
+jsonpath "$.*.status" includes 200

@@ -12,7 +12,7 @@ cleanup() { kill "$pf_pids" 2>/dev/null || true; }
 trap cleanup EXIT
 
 pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
-kubectl port-forward "$pod" 8081:8080 &
+kubectl port-forward "$pod" 8081:8080 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do

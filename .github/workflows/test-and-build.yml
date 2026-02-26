@@ -364,6 +364,8 @@ jobs:
       run: .github/test/drain-sessions-test.sh
     - name: Graceful drain test
       run: .github/test/drain-test.sh
+    - name: Topology-aware routing test
+      run: .github/test/topology-test.sh
     - name: Zero-downtime rollout restart
       run: .github/test/rollout-test.sh
     - name: Upload E2E test results

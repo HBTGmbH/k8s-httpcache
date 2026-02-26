@@ -2,13 +2,13 @@
 GET http://localhost:8080/ready
 HTTP 200
 
-# Backend request via /backend/ should return 200 with body "ok".
+# Backend request via /backend/ should return 200 with the pod hostname.
 # Also verify that values from both --values (ConfigMap) and --values-dir (mounted directory)
 # are available in the VCL template.
 GET http://localhost:8080/backend/
 HTTP 200
 [Asserts]
-body == "ok\n"
+body matches "^backend-[a-z0-9]+-[a-z0-9]+\n$"
 header "X-Values-Test" == "hello-from-values"
 header "X-Values-Nested" == "example.com"
 header "X-ValuesDir-Test" == "hello-from-dir"
@@ -18,25 +18,25 @@ header "X-ValuesDir-Nested" == "dir.example.com"
 GET http://localhost:8080/backend-port/
 HTTP 200
 [Asserts]
-body == "ok\n"
+body matches "^backend-[a-z0-9]+-[a-z0-9]+\n$"
 
 # Backend with named port.
 GET http://localhost:8080/backend-named/
 HTTP 200
 [Asserts]
-body == "ok\n"
+body matches "^backend-[a-z0-9]+-[a-z0-9]+\n$"
 
 # Backend in a different namespace.
 GET http://localhost:8080/backend-xns/
 HTTP 200
 [Asserts]
-body == "ok-xns\n"
+body matches "^backend-xns-[a-z0-9]+-[a-z0-9]+\n$"
 
 # ExternalName backend.
 GET http://localhost:8080/backend-ext/
 HTTP 200
 [Asserts]
-body == "ok\n"
+body matches "^backend-[a-z0-9]+-[a-z0-9]+\n$"
 
 # Shard consistency: the same URL should always be routed to the same Varnish pod.
 # X-Shard-Owner is set from req.http.x-shard (the shard-selected backend) in vcl_deliver,

@@ -15,6 +15,7 @@ tests=(
   file-watch-disable-test.sh
   drain-sessions-test.sh
   drain-test.sh
+  topology-test.sh
   rollout-test.sh
 )
 
