@@ -697,13 +697,20 @@ In multi-zone Kubernetes clusters, you may want Varnish to prefer backends in th
 
 ### Available template fields
 
+Top-level fields:
+
 | Field | Description |
 |-------|-------------|
 | `.LocalZone` | Zone of the Varnish pod (from the node's `topology.kubernetes.io/zone` label) |
 | `.LocalBackends` | Pre-filtered view of `.Backends` containing only same-zone endpoints (`.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty map when `.LocalZone` is empty. |
 | `.RemoteBackends` | Pre-filtered view of `.Backends` containing all other endpoints. Endpoints with unknown zone and no matching `.ForZones` hint land here. Empty map when `.LocalZone` is empty. |
-| `.Zone` | Zone of each endpoint (on `Frontend` / `Endpoint` objects) |
-| `.NodeName` | Node hosting each endpoint |
+
+Per-endpoint fields (on each `Frontend` / `Endpoint`):
+
+| Field | Description |
+|-------|-------------|
+| `.Zone` | Topology zone from `topology.kubernetes.io/zone` (EndpointSlice) |
+| `.NodeName` | Node hosting the endpoint |
 | `.ForZones` | Zone hints from Kubernetes Topology Aware Routing (`service.kubernetes.io/topology-mode: Auto`) |
 
 ### Example: weighted director preferring same-zone backends
