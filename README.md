@@ -27,23 +27,23 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
   - https://github.com/mittwald/kube-httpcache/issues/206
 - Uses `<< ... >>` as default template delimiters to not clash with Helm templating (configurable via `--template-delims`)
 - Graceful connection draining on shutdown with active session polling via varnishstat
-- Broadcast server that fans out requests (e.g. PURGE) to all Varnish frontend pods
+- [Broadcast server](#broadcast-server) that fans out requests (e.g. PURGE) to all Varnish frontend pods
 - Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more
-- ExternalName service support for hostname-based backends
+- [ExternalName service](#externalname-services) support for hostname-based backends
   - https://github.com/mittwald/kube-httpcache/issues/39
-- Template values from Kubernetes ConfigMaps (`--values`), Secrets (`--secrets`), or mounted directories (`--values-dir`), dynamically reloaded on changes
-- Secret values are automatically redacted from varnishd process output, varnishadm responses, and error logs
+- Template values from Kubernetes ConfigMaps ([`--values`](#values-specification)), Secrets ([`--secrets`](#secrets-specification)), or mounted directories ([`--values-dir`](#values-from-directories)), dynamically reloaded on changes
+- Secret values are automatically [redacted](#security-considerations) from varnishd process output, varnishadm responses, and error logs
 - Cross-namespace backends and values via `namespace/service` syntax
 - All [Sprig](http://masterminds.github.io/sprig/) template functions available in VCL templates (including [`env`](http://masterminds.github.io/sprig/os.html) for environment variables)
   - https://github.com/mittwald/kube-httpcache/issues/53
 - Automatic Varnish version detection with support for Varnish 6, 7, 8, and trunk builds
 - Structured logging with configurable format (text/json) and log level
-- Kubernetes Events for VCL reloads, template changes, rollbacks, drain lifecycle, and varnishd crashes — visible via `kubectl describe pod` and `kubectl get events`
-- Discarding old VCL objects after reload and keep the most recent `N` object (`--vcl-kept=N`), to avoid unbounded Varnish memory usage with every successive VCL reload
-- Endpoint change debouncing to avoid rapid VCL reload cycles, with independent timers for frontend and backend changes (`--frontend-debounce`, `--backend-debounce`)
+- [Kubernetes Events](#kubernetes-events) for VCL reloads, template changes, rollbacks, drain lifecycle, and varnishd crashes — visible via `kubectl describe pod` and `kubectl get events`
+- [Discarding old VCL objects](#vcl-retention) after reload and keep the most recent `N` object (`--vcl-kept=N`), to avoid unbounded Varnish memory usage with every successive VCL reload
+- [Endpoint change debouncing](#tuning-debounce) to avoid rapid VCL reload cycles, with independent timers for frontend and backend changes (`--frontend-debounce`, `--backend-debounce`)
   - https://github.com/mittwald/kube-httpcache/issues/66
-- JSON status endpoint (`/status`) on the metrics server providing runtime state (version, uptime, endpoint counts, reload metrics, varnishd process status)
-- Topology-aware routing: endpoint zone, node name, and routing hints are exposed in templates, allowing weighted directors that prefer same-zone backends
+- JSON [status endpoint](#status-endpoint) (`/status`) on the metrics server providing runtime state (version, uptime, endpoint counts, reload metrics, varnishd process status)
+- [Topology-aware routing](#topology-aware-routing): endpoint zone, node name, and routing hints are exposed in templates, allowing weighted directors that prefer same-zone backends
 
 ## Container image
 
