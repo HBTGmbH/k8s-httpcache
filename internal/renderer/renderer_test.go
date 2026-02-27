@@ -1127,10 +1127,14 @@ sub vcl_recv {
 		t.Fatalf("render error: %v", err)
 	}
 
-	// "import std" should appear exactly once (user's copy stripped, ours injected).
-	count := strings.Count(out, "import std")
+	// User's import std is before the drain insertion point, so it should
+	// be preserved as-is (not commented out) and no extra import injected.
+	count := strings.Count(out, "\nimport std")
 	if count != 1 {
-		t.Errorf("expected import std exactly once, got %d occurrences", count)
+		t.Errorf("expected import std exactly once, got %d occurrences\noutput:\n%s", count, out)
+	}
+	if strings.Contains(out, "// Commented out by k8s-httpcache") {
+		t.Error("user import std should be preserved, not commented out")
 	}
 }
 
@@ -1240,6 +1244,117 @@ sub vcl_deliver {
 	}
 	if drainBackendPos <= userBackendPos {
 		t.Error("drain backend should appear after user-defined backends")
+	}
+}
+
+// TestRender_DrainVCLImportStdBeforeBackend verifies that a user "import std;"
+// before the last backend is preserved as-is and no extra import is injected.
+func TestRender_DrainVCLImportStdBeforeBackend(t *testing.T) {
+	t.Parallel()
+	tmpl := `vcl 4.1;
+
+import std;
+
+backend origin {
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+sub vcl_deliver {
+  # USER_DELIVER
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// User's import std should be preserved (before backends), no extra injected.
+	count := strings.Count(out, "\nimport std")
+	if count != 1 {
+		t.Errorf("expected import std exactly once, got %d\noutput:\n%s", count, out)
+	}
+	if strings.Contains(out, "// Commented out by k8s-httpcache") {
+		t.Errorf("user import std should be preserved, not commented out\noutput:\n%s", out)
+	}
+
+	// Drain vcl_deliver should still appear before user vcl_deliver.
+	drainPos := strings.Index(out, `resp.http.Connection = "close"`)
+	userDeliverPos := strings.Index(out, `# USER_DELIVER`)
+	if drainPos < 0 || userDeliverPos < 0 {
+		t.Fatalf("could not find drain or user deliver markers\noutput:\n%s", out)
+	}
+	if drainPos >= userDeliverPos {
+		t.Error("drain vcl_deliver should appear before user vcl_deliver")
+	}
+}
+
+// TestRender_DrainVCLImportStdAfterBackend verifies that when the user has
+// "import std;" only after their backends, it is commented out and a new
+// import is injected at the top.
+func TestRender_DrainVCLImportStdAfterBackend(t *testing.T) {
+	t.Parallel()
+	tmpl := `vcl 4.1;
+
+backend origin {
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+import std;
+
+sub vcl_deliver {
+  # USER_DELIVER
+  set resp.http.X-Test = "1";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// User's late import should be commented out, ours injected at top.
+	count := strings.Count(out, "\nimport std")
+	if count != 1 {
+		t.Errorf("expected uncommented import std exactly once, got %d\noutput:\n%s", count, out)
+	}
+	if !strings.Contains(out, "// Commented out by k8s-httpcache") {
+		t.Errorf("expected the late import std to be commented out\noutput:\n%s", out)
+	}
+
+	// Our injected import std should appear before the user backend.
+	importPos := strings.Index(out, "\nimport std")
+	userBackendPos := strings.Index(out, "backend origin")
+	if importPos < 0 || userBackendPos < 0 {
+		t.Fatalf("could not find import or backend markers\noutput:\n%s", out)
+	}
+	if importPos >= userBackendPos {
+		t.Error("injected import std should appear before user backend")
+	}
+
+	// Drain vcl_deliver should appear before user vcl_deliver.
+	drainPos := strings.Index(out, `resp.http.Connection = "close"`)
+	userDeliverPos := strings.Index(out, `# USER_DELIVER`)
+	if drainPos < 0 || userDeliverPos < 0 {
+		t.Fatalf("could not find drain or user deliver markers\noutput:\n%s", out)
+	}
+	if drainPos >= userDeliverPos {
+		t.Error("drain vcl_deliver should appear before user vcl_deliver")
 	}
 }
 
@@ -1703,10 +1818,13 @@ func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
 				t.Fatalf("render error: %v", err)
 			}
 
-			// User's import std should be stripped; only ours should remain.
-			count := strings.Count(out, "import std")
-			if count != 1 {
-				t.Errorf("expected import std exactly once, got %d occurrences\noutput:\n%s", count, out)
+			// User's import std is before the drain insertion point, so it should
+			// be preserved as-is (not commented out) and no extra import injected.
+			if !strings.Contains(out, "import std") {
+				t.Errorf("expected import std to be present\noutput:\n%s", out)
+			}
+			if strings.Contains(out, "// Commented out by k8s-httpcache") {
+				t.Errorf("user import std should be preserved, not commented out\noutput:\n%s", out)
 			}
 		})
 	}

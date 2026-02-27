@@ -202,26 +202,45 @@ func vclVersionEnd(vcl string) int {
 }
 
 // importStdRe matches an "import std;" line (with optional leading whitespace
-// and trailing newline) so it can be stripped from user VCL before re-injection.
+// and trailing newline) so it can be identified in user VCL.
 var importStdRe = regexp.MustCompile(`(?m)^[\t ]*import\s+std\s*;\s*\n?`)
 
-// stripImportStd removes top-level "import std;" lines from VCL while
-// preserving any occurrences inside /* */ block comments.
-func stripImportStd(vcl string) string {
+// importStdPositions returns the [start, end) byte offsets of all top-level
+// "import std;" occurrences in vcl (skipping those inside /* */ block comments).
+func importStdPositions(vcl string) [][2]int {
 	locs := importStdRe.FindAllStringIndex(vcl, -1)
-	if len(locs) == 0 {
-		return vcl
-	}
-
-	var b strings.Builder
-	prev := 0
+	var result [][2]int
 	for _, loc := range locs {
 		before := vcl[:loc[0]]
 		if strings.Count(before, "/*")-strings.Count(before, "*/") > 0 {
 			continue // inside a block comment — keep it
 		}
-		b.WriteString(vcl[prev:loc[0]])
-		prev = loc[1]
+		result = append(result, [2]int{loc[0], loc[1]})
+	}
+
+	return result
+}
+
+// commentOutImportStdFrom comments out top-level "import std;" lines that
+// start at or after byte offset from, preserving those inside /* */ block
+// comments and those before from.
+func commentOutImportStdFrom(vcl string, from int) string {
+	positions := importStdPositions(vcl)
+
+	var b strings.Builder
+	prev := 0
+	for _, pos := range positions {
+		if pos[0] < from {
+			continue // before threshold — leave it
+		}
+		b.WriteString(vcl[prev:pos[0]])
+		matched := vcl[pos[0]:pos[1]]
+		b.WriteString("// Commented out by k8s-httpcache; moved to the top of the VCL.\n")
+		b.WriteString("// " + strings.TrimRight(matched, "\n") + "\n")
+		prev = pos[1]
+	}
+	if prev == 0 {
+		return vcl // nothing was commented out
 	}
 	b.WriteString(vcl[prev:])
 
@@ -304,48 +323,76 @@ func backendBlocksEnd(vcl string) int {
 
 // injectDrainVCL injects drain VCL into the user template output.
 //
-// "import std;" is injected right after the version line (and stripped from the
-// user VCL to avoid duplicates) because it must appear before any subroutine
-// that uses it.
-//
 // The drain backend declaration and drain sub vcl_deliver are injected right
 // after the last user-declared backend block, so the drain backend is never
 // the first (default) backend and is declared before the sub that references
 // it (avoiding forward-reference errors on Varnish 6). If no user backends
-// are found, the drain VCL is inserted right after the import std line.
+// are found, the drain VCL is inserted right after the user's "import std;"
+// line (if present) or after the version line.
+//
+// "import std;" is only injected (at the top) when the user VCL does not
+// already provide one before the drain insertion point. User "import std;"
+// lines that would end up after the injected vcl_deliver are commented out.
 func injectDrainVCL(vcl, backendName string) string {
-	// Strip any existing "import std;" from user VCL — we re-inject it
-	// at the top so it appears before the drain subroutine.
-	vcl = stripImportStd(vcl)
-
 	versionEnd := vclVersionEnd(vcl)
+	backendsEnd := backendBlocksEnd(vcl)
+	imports := importStdPositions(vcl)
 
-	importStd := "\nimport std;\n"
-
-	drainVCL := fmt.Sprintf("\nbackend %s {\n  .host = \"127.0.0.1\";\n  .port = \"9\";\n}\n", backendName)
+	drainVCL := fmt.Sprintf("\n// Begin k8s-httpcache connection draining.\nbackend %s {\n  .host = \"127.0.0.1\";\n  .port = \"9\";\n}\n// End k8s-httpcache connection draining.\n", backendName)
 	drainVCL += fmt.Sprintf(`
+// Begin k8s-httpcache connection draining.
 sub vcl_deliver {
   if (!std.healthy(%s)) {
     set resp.http.Connection = "close";
   }
 }
+// End k8s-httpcache connection draining.
 `, backendName)
 
-	// Insert import std right after the version line.
-	result := vcl[:versionEnd] + importStd + vcl[versionEnd:]
+	if backendsEnd > 0 {
+		// Has user backends — drain VCL goes after the last backend.
+		hasEarlyImport := false
+		for _, pos := range imports {
+			if pos[0] < backendsEnd {
+				hasEarlyImport = true
 
-	// Find insertion point for drain backend + sub: after the last user
-	// backend block, or right after import std if no backends exist.
-	// The offset is computed on the result string (which now includes
-	// the injected import std).
-	backendsEnd := backendBlocksEnd(result)
-	if backendsEnd == 0 {
-		// No user backends — insert right after import std.
-		insertPos := versionEnd + len(importStd)
-		result = result[:insertPos] + drainVCL + result[insertPos:]
-	} else {
-		result = result[:backendsEnd] + drainVCL + result[backendsEnd:]
+				break
+			}
+		}
+
+		// Comment out any "import std;" at or after backendsEnd — those
+		// would appear after our vcl_deliver.
+		vcl = commentOutImportStdFrom(vcl, backendsEnd)
+
+		if hasEarlyImport {
+			// User already has import std before the drain VCL.
+			return vcl[:backendsEnd] + drainVCL + vcl[backendsEnd:]
+		}
+
+		// No early import — inject ours right after the version line.
+		importStd := "\n// Begin k8s-httpcache connection draining.\nimport std;\n// End k8s-httpcache connection draining.\n"
+		result := vcl[:versionEnd] + importStd + vcl[versionEnd:]
+		// backendsEnd shifted by the inserted text.
+		return result[:backendsEnd+len(importStd)] + drainVCL + result[backendsEnd+len(importStd):]
 	}
 
-	return result
+	// No user backends. Look for the first user "import std;" after the
+	// version line — if present, insert drain VCL right after it so the
+	// user's import is preserved and appears before our vcl_deliver.
+	for _, pos := range imports {
+		if pos[0] >= versionEnd {
+			// Comment out any later duplicates.
+			vcl = commentOutImportStdFrom(vcl, pos[1])
+
+			return vcl[:pos[1]] + drainVCL + vcl[pos[1]:]
+		}
+	}
+
+	// No user import std at all — inject ours + drain VCL after the
+	// version line.
+	importStd := "\n// Begin k8s-httpcache connection draining.\nimport std;\n// End k8s-httpcache connection draining.\n"
+	result := vcl[:versionEnd] + importStd + vcl[versionEnd:]
+	insertPos := versionEnd + len(importStd)
+
+	return result[:insertPos] + drainVCL + result[insertPos:]
 }
