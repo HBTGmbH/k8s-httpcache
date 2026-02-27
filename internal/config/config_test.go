@@ -3103,3 +3103,369 @@ func TestParseVarnishncsaAllFlags(t *testing.T) {
 		t.Errorf("VarnishncsaPrefix = %q, want %q", cfg.VarnishncsaPrefix, "[ncsa] ")
 	}
 }
+
+func TestParseBackendSelectorSimple(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=app=myapp",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app=myapp" {
+		t.Errorf("Selector = %q, want app=myapp", bs.Selector)
+	}
+	if bs.Namespace != "default" {
+		t.Errorf("Namespace = %q, want default", bs.Namespace)
+	}
+	if bs.AllNamespaces {
+		t.Error("AllNamespaces = true, want false")
+	}
+	if bs.Port != "" {
+		t.Errorf("Port = %q, want empty", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorWithNamespaceAndPort(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=myns//app=myapp:8080",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app=myapp" {
+		t.Errorf("Selector = %q, want app=myapp", bs.Selector)
+	}
+	if bs.Namespace != "myns" {
+		t.Errorf("Namespace = %q, want myns", bs.Namespace)
+	}
+	if bs.AllNamespaces {
+		t.Error("AllNamespaces = true, want false")
+	}
+	if bs.Port != "8080" {
+		t.Errorf("Port = %q, want 8080", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorAllNamespaces(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=*//app=myapp",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app=myapp" {
+		t.Errorf("Selector = %q, want app=myapp", bs.Selector)
+	}
+	if !bs.AllNamespaces {
+		t.Error("AllNamespaces = false, want true")
+	}
+	if bs.Namespace != "" {
+		t.Errorf("Namespace = %q, want empty", bs.Namespace)
+	}
+}
+
+func TestParseBackendSelectorInvalidSelector(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=!!!invalid",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid selector")
+	}
+}
+
+func TestParseBackendSelectorMultiple(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=app=web",
+		"--backend-selector=*//tier=api:9090",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 2 {
+		t.Fatalf("expected 2 backend selectors, got %d", len(cfg.BackendSelectors))
+	}
+	if cfg.BackendSelectors[0].Selector != "app=web" {
+		t.Errorf("[0].Selector = %q, want app=web", cfg.BackendSelectors[0].Selector)
+	}
+	if cfg.BackendSelectors[1].AllNamespaces != true {
+		t.Error("[1].AllNamespaces = false, want true")
+	}
+	if cfg.BackendSelectors[1].Port != "9090" {
+		t.Errorf("[1].Port = %q, want 9090", cfg.BackendSelectors[1].Port)
+	}
+}
+
+func TestParseBackendSelectorEmpty(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty selector")
+	}
+}
+
+func TestParseBackendSelectorInvalidNamespace(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=INVALID//app=myapp",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid namespace")
+	}
+}
+
+func TestParseBackendSelectorNamedPort(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=app=myapp:http",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app=myapp" {
+		t.Errorf("Selector = %q, want app=myapp", bs.Selector)
+	}
+	if bs.Port != "http" {
+		t.Errorf("Port = %q, want http", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorNamedPortWithNamespace(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=myns//app=myapp:grpc",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Namespace != "myns" {
+		t.Errorf("Namespace = %q, want myns", bs.Namespace)
+	}
+	if bs.Selector != "app=myapp" {
+		t.Errorf("Selector = %q, want app=myapp", bs.Selector)
+	}
+	if bs.Port != "grpc" {
+		t.Errorf("Port = %q, want grpc", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorDomainPrefixedLabel(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=app.kubernetes.io/name=myapp",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app.kubernetes.io/name=myapp" {
+		t.Errorf("Selector = %q, want app.kubernetes.io/name=myapp", bs.Selector)
+	}
+	if bs.Namespace != "default" {
+		t.Errorf("Namespace = %q, want default", bs.Namespace)
+	}
+	if bs.AllNamespaces {
+		t.Error("AllNamespaces = true, want false")
+	}
+	if bs.Port != "" {
+		t.Errorf("Port = %q, want empty", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorDomainPrefixedLabelWithNamespace(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=myns//app.kubernetes.io/name=myapp:8080",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app.kubernetes.io/name=myapp" {
+		t.Errorf("Selector = %q, want app.kubernetes.io/name=myapp", bs.Selector)
+	}
+	if bs.Namespace != "myns" {
+		t.Errorf("Namespace = %q, want myns", bs.Namespace)
+	}
+	if bs.AllNamespaces {
+		t.Error("AllNamespaces = true, want false")
+	}
+	if bs.Port != "8080" {
+		t.Errorf("Port = %q, want 8080", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorDomainPrefixedLabelAllNamespaces(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=*//app.kubernetes.io/name=myapp",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app.kubernetes.io/name=myapp" {
+		t.Errorf("Selector = %q, want app.kubernetes.io/name=myapp", bs.Selector)
+	}
+	if !bs.AllNamespaces {
+		t.Error("AllNamespaces = false, want true")
+	}
+	if bs.Namespace != "" {
+		t.Errorf("Namespace = %q, want empty", bs.Namespace)
+	}
+	if bs.Port != "" {
+		t.Errorf("Port = %q, want empty", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorDomainPrefixedLabelAllNamespacesWithPort(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=*//app.kubernetes.io/name=myapp:8080",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.BackendSelectors) != 1 {
+		t.Fatalf("expected 1 backend selector, got %d", len(cfg.BackendSelectors))
+	}
+	bs := cfg.BackendSelectors[0]
+	if bs.Selector != "app.kubernetes.io/name=myapp" {
+		t.Errorf("Selector = %q, want app.kubernetes.io/name=myapp", bs.Selector)
+	}
+	if !bs.AllNamespaces {
+		t.Error("AllNamespaces = false, want true")
+	}
+	if bs.Port != "8080" {
+		t.Errorf("Port = %q, want 8080", bs.Port)
+	}
+}
+
+func TestParseBackendSelectorEmptyNamespacePrefix(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=//app=myapp",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty namespace prefix")
+	}
+}
+
+func TestParseBackendSelectorEmptyPort(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=app=myapp:",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty port suffix")
+	}
+}
+
+func TestParseBackendSelectorPortOutOfRange(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=app=myapp:99999",
+	})
+	if err == nil {
+		t.Fatal("expected error for port out of range")
+	}
+}

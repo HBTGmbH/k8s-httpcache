@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -55,8 +57,10 @@ const drainBackendName = "drain_flag"
 // vclRenderer abstracts VCL template operations (satisfied by *renderer.Renderer).
 type vclRenderer interface {
 	Reload() error
+	Render(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error)
 	RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error)
 	Rollback()
+	SetBackendLabels(labels map[string]map[string]string)
 }
 
 // varnishProcess abstracts varnishd lifecycle (satisfied by *varnish.Manager).
@@ -327,10 +331,13 @@ type loopConfig struct {
 	drainPollInterval time.Duration
 	drainTimeout      time.Duration
 
-	latestFrontends []watcher.Frontend
-	latestBackends  map[string][]watcher.Endpoint
-	latestValues    map[string]map[string]any
-	latestSecrets   map[string]map[string]any
+	latestFrontends     []watcher.Frontend
+	latestBackends      map[string][]watcher.Endpoint
+	latestBackendLabels map[string]map[string]string
+	latestValues        map[string]map[string]any
+	latestSecrets       map[string]map[string]any
+
+	lastVCLHash [sha256.Size]byte
 }
 
 func main() {
@@ -496,6 +503,24 @@ func main() {
 		bwWatchers = append(bwWatchers, bw)
 	}
 
+	// Start discovery watchers for --backend-selector.
+	explicitNames := make(map[string]bool, len(cfg.Backends))
+	for _, b := range cfg.Backends {
+		explicitNames[b.Name] = true
+	}
+	discoveryWatchers := make([]*watcher.BackendDiscoveryWatcher, 0, len(cfg.BackendSelectors))
+	for _, bs := range cfg.BackendSelectors {
+		sel, _ := labels.Parse(bs.Selector) // already validated in config
+		dw := watcher.NewBackendDiscoveryWatcher(clientset, bs.Namespace, bs.AllNamespaces, sel, bs.Port, explicitNames)
+		go func() {
+			runErr := dw.Run(ctx)
+			if runErr != nil {
+				slog.Error("discovery watcher error", "selector", bs.Selector, "error", runErr)
+			}
+		}()
+		discoveryWatchers = append(discoveryWatchers, dw)
+	}
+
 	// Start ConfigMap watchers for --values.
 	var (
 		vwNames    = make([]string, 0, len(cfg.Values))
@@ -567,8 +592,15 @@ func main() {
 			"namespace", cfg.ServiceNamespace, "service", cfg.ServiceName)
 	}
 	latestBackends := make(map[string][]watcher.Endpoint)
+	latestBackendLabels := make(map[string]map[string]string)
 	for i, bw := range bwWatchers {
 		latestBackends[bwNames[i]] = <-bw.Changes()
+		latestBackendLabels[bwNames[i]] = bw.Labels()
+	}
+	for _, dw := range discoveryWatchers {
+		<-dw.Initial()
+		maps.Copy(latestBackends, dw.InitialState())
+		maps.Copy(latestBackendLabels, dw.InitialLabels())
 	}
 	latestValues := make(map[string]map[string]any)
 	for i, vw := range vwWatchers {
@@ -618,11 +650,27 @@ func main() {
 	}
 
 	// Render VCL with real endpoint data and start varnishd.
+	rend.SetBackendLabels(latestBackendLabels)
 	renderStart := time.Now()
-	initialVCL, err := rend.RenderToFile(latestFrontends, latestBackends, latestValues, latestSecrets)
+	initialVCLStr, err := rend.Render(latestFrontends, latestBackends, latestValues, latestSecrets)
 	metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
 		log.Fatalf("initial render: %v", err) //nolint:gocritic // fatal before Start is intentional; deferred cancel is harmless to skip
+	}
+	initialVCLHash := sha256.Sum256([]byte(initialVCLStr))
+	initialVCLFile, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
+	if err != nil {
+		log.Fatalf("creating initial VCL temp file: %v", err)
+	}
+	initialVCL := initialVCLFile.Name()
+	_, err = initialVCLFile.WriteString(initialVCLStr)
+	if err != nil {
+		_ = initialVCLFile.Close()
+		log.Fatalf("writing initial VCL temp file: %v", err)
+	}
+	err = initialVCLFile.Close()
+	if err != nil {
+		log.Fatalf("closing initial VCL temp file: %v", err)
 	}
 	defer func() { _ = os.Remove(initialVCL) }()
 
@@ -652,13 +700,25 @@ func main() {
 
 	// Fan-in backend watcher updates to a single channel.
 	var backendCh chan backendChange
-	if len(bwWatchers) > 0 {
-		backendCh = make(chan backendChange, len(bwWatchers))
+	if len(bwWatchers) > 0 || len(discoveryWatchers) > 0 {
+		backendCh = make(chan backendChange, len(bwWatchers)+len(discoveryWatchers)*8)
 		for i, bw := range bwWatchers {
 			name := bwNames[i]
 			go func() {
 				for eps := range bw.Changes() {
-					backendCh <- backendChange{name: name, endpoints: eps}
+					backendCh <- backendChange{name: name, endpoints: eps, labels: bw.Labels()}
+				}
+			}()
+		}
+		for _, dw := range discoveryWatchers {
+			go func() {
+				for update := range dw.Changes() {
+					backendCh <- backendChange{
+						name:      update.Name,
+						endpoints: update.Endpoints,
+						labels:    update.Labels,
+						removed:   update.Endpoints == nil,
+					}
 				}
 			}()
 		}
@@ -748,10 +808,13 @@ func main() {
 		drainPollInterval: cfg.DrainPollInterval,
 		drainTimeout:      cfg.DrainTimeout,
 
-		latestFrontends: latestFrontends,
-		latestBackends:  latestBackends,
-		latestValues:    latestValues,
-		latestSecrets:   latestSecrets,
+		latestFrontends:     latestFrontends,
+		latestBackends:      latestBackends,
+		latestBackendLabels: latestBackendLabels,
+		latestValues:        latestValues,
+		latestSecrets:       latestSecrets,
+
+		lastVCLHash: initialVCLHash,
 	}))
 }
 
@@ -759,13 +822,30 @@ func main() {
 // rollbackReload re-renders VCL with the rolled-back template and reloads
 // Varnish. Called after the primary reload fails on a new template.
 func rollbackReload(lc *loopConfig, reasons string) {
+	lc.rend.SetBackendLabels(lc.latestBackendLabels)
 	renderStart := time.Now()
-	vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
+	vclStr, err := lc.rend.Render(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 	lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
 		lc.metrics.VCLRenderErrorsTotal.Inc()
 		slog.Error("render error after rollback", "error", err)
 		emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error after rollback: %v", err))
+
+		return
+	}
+
+	f, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
+	if err != nil {
+		slog.Error("creating temp VCL file after rollback", "error", err)
+
+		return
+	}
+	vclPath := f.Name()
+	_, err = f.WriteString(vclStr)
+	_ = f.Close()
+	if err != nil {
+		slog.Error("writing temp VCL file after rollback", "error", err)
+		_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
 
 		return
 	}
@@ -779,6 +859,7 @@ func rollbackReload(lc *loopConfig, reasons string) {
 
 		return
 	}
+	lc.lastVCLHash = sha256.Sum256([]byte(vclStr))
 	lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
 	emitEvent(lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully after rollback (%s)", reasons))
 	if lc.status != nil {
@@ -902,8 +983,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		templateChanged = false
 
+		lc.rend.SetBackendLabels(lc.latestBackendLabels)
 		renderStart := time.Now()
-		vclPath, err := lc.rend.RenderToFile(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
+		vclStr, err := lc.rend.Render(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 		lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 		if err != nil {
 			lc.metrics.VCLRenderErrorsTotal.Inc()
@@ -918,12 +1000,36 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			return
 		}
 
+		vclHash := sha256.Sum256([]byte(vclStr))
+		if vclHash == lc.lastVCLHash {
+			slog.Info("VCL unchanged, skipping reload", "reasons", reasons)
+			lc.metrics.VCLReloadsTotal.WithLabelValues("skipped").Inc()
+
+			return
+		}
+
+		f, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
+		if err != nil {
+			slog.Error("creating temp VCL file", "error", err)
+
+			return
+		}
+		vclPath := f.Name()
+		_, err = f.WriteString(vclStr)
+		_ = f.Close()
+		if err != nil {
+			slog.Error("writing temp VCL file", "error", err)
+			_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
+
+			return
+		}
+
 		err = lc.mgr.Reload(vclPath)
 		if err != nil {
 			lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
 			slog.Error("reload error", "error", err)
 			emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
-			_ = os.Remove(vclPath)
+			_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
 
 			if !reloadedTemplate {
 				return
@@ -942,13 +1048,14 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			return
 		}
 
+		lc.lastVCLHash = vclHash
 		lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
 		emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully (%s)", reasons))
 		if lc.status != nil {
 			lc.status.recordReload()
 			lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
 		}
-		_ = os.Remove(vclPath)
+		_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
 	}
 
 	for {
@@ -976,12 +1083,24 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			resetDebounce(&frontend, lc.frontendDebounce, lc.frontendDebounceMax)
 
 		case bc := <-backendChan(lc.backendCh):
-			lc.latestBackends[bc.name] = bc.endpoints
+			epsChanged := !watcher.EndpointsEqual(lc.latestBackends[bc.name], bc.endpoints)
+			if bc.removed {
+				delete(lc.latestBackends, bc.name)
+				delete(lc.latestBackendLabels, bc.name)
+				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
+			} else {
+				lc.latestBackends[bc.name] = bc.endpoints
+				lc.latestBackendLabels[bc.name] = bc.labels
+				lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
+			}
 			lc.metrics.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
-			lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			pendingReload = true
-			pendingReasons = appendUnique(pendingReasons, "backend endpoints changed")
+			if epsChanged {
+				pendingReasons = appendUnique(pendingReasons, "backend endpoints changed")
+			} else {
+				pendingReasons = appendUnique(pendingReasons, "backend labels changed")
+			}
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case vc := <-valuesChan(lc.valuesCh):
@@ -1197,6 +1316,8 @@ func buildClientset() (kubernetes.Interface, error) {
 type backendChange struct {
 	name      string
 	endpoints []watcher.Endpoint
+	labels    map[string]string
+	removed   bool // true when a discovered service disappears
 }
 
 type valuesChange struct {

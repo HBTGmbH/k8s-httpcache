@@ -53,6 +53,17 @@ backends: []
 #   service: my-app
 #   port: ""         # omit or empty to use service default
 
+# -- Backend service discovery by label selector (repeatable).
+# Each entry: { selector (map), port (optional), namespace (optional), allNamespaces (optional) }
+# Services matching the selector are automatically added as backends.
+# The backend name in .Backends is the Service name.
+backendDiscovery: []
+# - selector:
+#     app: myapp
+#   port: ""
+#   namespace: ""        # defaults to release namespace
+#   allNamespaces: false # set true to discover across all namespaces
+
 # -- ConfigMaps to watch for template values (repeatable).
 # Each entry: { name, configmap }
 # Generates --values=name:configmap

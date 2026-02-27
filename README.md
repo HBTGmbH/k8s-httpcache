@@ -44,6 +44,7 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
   - https://github.com/mittwald/kube-httpcache/issues/66
 - JSON [status endpoint](#status-endpoint) (`/status`) on the metrics server providing runtime state (version, uptime, endpoint counts, reload metrics, varnishd process status)
 - [Topology-aware routing](#topology-aware-routing): endpoint zone, node name, and routing hints are exposed in templates, allowing weighted directors that prefer same-zone backends
+- [Dynamic backend discovery](#dynamic-backend-discovery) via label selectors (`--backend-selector`), automatically adding and removing backends as matching Services appear or disappear
 - Optional [access logging](#access-logging) via a managed `varnishncsa` subprocess with auto-restart, configurable log format, VSL query filtering, and stdout line prefixing
 
 ## Container image
@@ -459,6 +460,64 @@ This requires a Role and RoleBinding in the target namespace granting list/watch
 
 When a backend points to an ExternalName service, the hostname from the `externalName` field is used directly as the endpoint. Named ports are not supported for ExternalName services (there is no EndpointSlice to resolve them from). A numeric port is required; if omitted, port 80 is used with a warning.
 
+## Dynamic backend discovery
+
+The `--backend-selector` flag enables automatic backend discovery using Kubernetes label selectors. Instead of listing each backend explicitly with `--backend`, you specify a label selector and k8s-httpcache watches for matching Services, automatically adding and removing backends as Services appear or disappear.
+
+Format: `[namespace//]selector[:port]`
+
+| Part | Required | Description |
+|------|----------|-------------|
+| `namespace//` | no | Kubernetes namespace to watch. Use `*//` to watch all namespaces. Defaults to `--namespace` when omitted. |
+| `selector` | yes | Kubernetes label selector (e.g. `app=myapp`, `tier=backend,env=prod`). Standard `key=value` and set-based syntax are supported. |
+| `:port` | no | Port override applied to all discovered Services: numeric (e.g. `8080`) or named (e.g. `http`). When omitted, the first EndpointSlice port is used. |
+
+### How discovery works
+
+Discovered Services are merged into `.Backends` keyed by their Service name. For example, a Service named `api-v2` matching the selector appears in templates as `.Backends.api-v2`, exactly like an explicit `--backend=api-v2:api-v2` would.
+
+Explicit `--backend` names take priority — if a discovered Service has the same name as an explicit backend, the discovered Service is skipped. This lets you pin specific backends while still discovering the rest dynamically.
+
+Service labels are exposed in `.BackendLabels`, keyed by backend name. This enables conditional VCL logic based on Service metadata:
+
+```vcl
+<< range $name, $eps := .Backends >>
+  << if hasKey $.BackendLabels $name >>
+    << $labels := index $.BackendLabels $name >>
+    << if eq (index $labels "tier") "premium" >>
+      # premium backend logic
+    << end >>
+  << end >>
+<< end >>
+```
+
+Note: Only discovered backends (from `--backend-selector`) have labels in `.BackendLabels`. Explicit `--backend` entries do not, so use `hasKey` to guard against missing entries when mixing both in a single template.
+
+### Lifecycle
+
+- **Startup**: All Services matching the selector at startup are discovered during the initial reconciliation and included in the first VCL render.
+- **New Services**: When a new matching Service appears, a child EndpointSlice watcher is spawned and a VCL reload is triggered once its endpoints are known.
+- **Removed Services**: When a matching Service is deleted or its labels no longer match the selector, its endpoints are removed from `.Backends` and `.BackendLabels`, and a VCL reload is triggered.
+- **Label changes**: When a Service's labels change (but still match the selector), `.BackendLabels` is updated and a VCL reload is triggered.
+
+ExternalName services discovered via `--backend-selector` follow the same rules as explicit ExternalName backends: the `externalName` hostname is used directly, and a numeric `--backend-selector` port override is required (otherwise port 80 is used with a warning).
+
+### Examples
+
+```
+# Discover backends in the default namespace matching app=myapp
+--backend-selector=app=myapp
+
+# Discover backends in a specific namespace with a port override
+--backend-selector=staging//tier=backend:8080
+
+# Discover backends across all namespaces
+--backend-selector=*//app.kubernetes.io/part-of=my-system
+
+# Multiple selectors can be combined
+--backend-selector=app=api --backend-selector=app=worker
+```
+
 ## Listen address specification
 
 Format: `[name=][host]:port[,proto...]`
@@ -612,12 +671,13 @@ The template receives the following data:
 | Field | Type | Description |
 |-------|------|-------------|
 | `.Frontends` | `[]Frontend` | Varnish peer pods from the watched service EndpointSlice |
-| `.Backends` | `map[string][]Endpoint` | Named backend groups keyed by the `name` from `--backend` |
+| `.Backends` | `map[string][]Endpoint` | Named backend groups keyed by the `name` from `--backend` or by Service name for `--backend-selector` discovered backends |
 | `.LocalBackends` | `map[string][]Endpoint` | Same-zone backends (endpoints where `.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty map when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
 | `.RemoteBackends` | `map[string][]Endpoint` | Other-zone backends (all remaining endpoints). Endpoints with an unknown zone and no matching `ForZones` hint are included here. Empty map when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
 | `.Values` | `map[string]map[string]any` | Template values keyed by the `name` from `--values` or `--values-dir`. Each value is YAML-parsed, so structured data (maps, lists, numbers) is accessible. |
 | `.Secrets` | `map[string]map[string]any` | Secret values keyed by the `name` from `--secrets`. Each value is YAML-parsed like `.Values`. |
 | `.LocalZone` | `string` | Topology zone of the Varnish pod (empty if `NODE_NAME` is not set or zone detection fails). See [Topology-aware routing](#topology-aware-routing). |
+| `.BackendLabels` | `map[string]map[string]string` | Kubernetes Service labels keyed by backend name. Updated dynamically when Service labels change. Useful for conditional VCL logic based on Service metadata. See [Dynamic backend discovery](#dynamic-backend-discovery). |
 
 Each `Frontend` / `Endpoint` has:
 
@@ -643,8 +703,16 @@ All [Sprig](https://masterminds.github.io/sprig/) template functions are availab
 | `default` | `default "fallback" .Val` — use a default when a value is empty |
 | `join` | `join ", " .List` — join a list with a separator |
 | `quote` / `squote` | Wrap in double/single quotes |
+| `keys` | `keys .Backends` — list of map keys |
+| `hasKey` | `hasKey .BackendLabels "api"` — check if a key exists |
+| `get` | `get .BackendLabels "api"` — get a value by key (`""` if missing) |
+| `values` | `values .Backends` — list of map values |
+| `pick` | `pick .BackendLabels "api" "worker"` — subset of a map by key names |
+| `omit` | `omit .BackendLabels "internal"` — map without the named keys |
 
 See the [full Sprig function reference](https://masterminds.github.io/sprig/) for the complete list.
+
+**Sprig overrides:** The six dict functions listed above (`keys`, `hasKey`, `get`, `values`, `pick`, `omit`) are overridden with reflect-based versions. Sprig's originals have a `map[string]interface{}` parameter type, and Go's type system does not consider typed maps like `map[string][]Endpoint` or `map[string]map[string]string` assignable to `map[string]interface{}`, so the template engine rejects the call before the function is even invoked. The overrides accept any map type.
 
 ### Runtime reload and rollback
 

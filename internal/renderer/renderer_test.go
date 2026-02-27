@@ -4,7 +4,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"text/template"
 
+	"github.com/Masterminds/sprig/v3"
 	"k8s-httpcache/internal/watcher"
 )
 
@@ -525,6 +527,348 @@ func TestRender_SprigFunctions(t *testing.T) {
 			}
 			if !strings.Contains(out, tt.expected) {
 				t.Errorf("expected %q in output, got: %s", tt.expected, out)
+			}
+		})
+	}
+}
+
+func TestRender_BackendLabels(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $labels := index $.BackendLabels $name >>` +
+		`<< $name >>:version=<< index $labels "version" >>,tier=<< index $labels "tier" >>
+<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	}
+	r.SetBackendLabels(map[string]map[string]string{
+		"api": {"version": "v2", "tier": "backend"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:version=v2,tier=backend") {
+		t.Errorf("expected labels in output, got: %s", out)
+	}
+}
+
+func TestRender_BackendLabelsMultipleBackends(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $labels := index $.BackendLabels $name >>` +
+		`<< $name >>:tier=<< index $labels "tier" >>
+<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	}
+	r.SetBackendLabels(map[string]map[string]string{
+		"api":    {"tier": "frontend"},
+		"worker": {"tier": "backend"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:tier=frontend") {
+		t.Errorf("expected api labels in output, got: %s", out)
+	}
+	if !strings.Contains(out, "worker:tier=backend") {
+		t.Errorf("expected worker labels in output, got: %s", out)
+	}
+}
+
+func TestRender_BackendLabelsConditional(t *testing.T) {
+	t.Parallel()
+	// Mirrors the documented README pattern: conditional logic based on labels.
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $labels := index $.BackendLabels $name >>` +
+		`<< if eq (index $labels "tier") "premium" >>` +
+		`<< $name >>:PREMIUM
+<< else >>` +
+		`<< $name >>:STANDARD
+<< end >>` +
+		`<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	}
+	r.SetBackendLabels(map[string]map[string]string{
+		"api":    {"tier": "premium"},
+		"worker": {"tier": "basic"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:PREMIUM") {
+		t.Errorf("expected api:PREMIUM, got: %s", out)
+	}
+	if !strings.Contains(out, "worker:STANDARD") {
+		t.Errorf("expected worker:STANDARD, got: %s", out)
+	}
+}
+
+func TestRender_BackendLabelsUpdate(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $labels := index $.BackendLabels $name >>` +
+		`<< $name >>:version=<< index $labels "version" >>
+<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	}
+
+	// First render with v1.
+	r.SetBackendLabels(map[string]map[string]string{
+		"api": {"version": "v1"},
+	})
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:version=v1") {
+		t.Errorf("expected v1, got: %s", out)
+	}
+
+	// Second render with updated labels.
+	r.SetBackendLabels(map[string]map[string]string{
+		"api": {"version": "v2"},
+	})
+	out, err = r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:version=v2") {
+		t.Errorf("expected v2 after update, got: %s", out)
+	}
+}
+
+func TestRender_BackendLabelsMissingBackend(t *testing.T) {
+	t.Parallel()
+	// A backend in .Backends has no entry in .BackendLabels (e.g. an
+	// explicit --backend has no Service labels). Templates can guard
+	// against this using hasKey.
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< if hasKey $.BackendLabels $name >>` +
+		`<< $name >>:HAS_LABELS
+<< else >>` +
+		`<< $name >>:NO_LABELS
+<< end >>` +
+		`<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+		"static": {{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+	}
+	// Only "api" has labels; "static" (explicit --backend) does not.
+	r.SetBackendLabels(map[string]map[string]string{
+		"api": {"tier": "backend"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:HAS_LABELS") {
+		t.Errorf("expected api:HAS_LABELS, got: %s", out)
+	}
+	if !strings.Contains(out, "static:NO_LABELS") {
+		t.Errorf("expected static:NO_LABELS, got: %s", out)
+	}
+}
+
+func TestRender_BackendLabelsEmpty(t *testing.T) {
+	t.Parallel()
+	// BackendLabels should default to an empty map when not set.
+	tmpl := `labels_len=<< len .BackendLabels >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "labels_len=0") {
+		t.Errorf("expected labels_len=0, got: %s", out)
+	}
+}
+
+func TestRender_SprigGetOverride(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< get .BackendLabels "api" >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetBackendLabels(map[string]map[string]string{
+		"api": {"tier": "backend"},
+	})
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "tier:backend") {
+		t.Errorf("expected label map in output, got: %s", out)
+	}
+}
+
+func TestRender_SprigGetOverrideMissing(t *testing.T) {
+	t.Parallel()
+	tmpl := `[<< get .BackendLabels "missing" >>]`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetBackendLabels(map[string]map[string]string{
+		"api": {"tier": "backend"},
+	})
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "[]" {
+		t.Errorf("expected empty string for missing key, got: %s", out)
+	}
+}
+
+func TestRender_SprigValuesOverride(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $v := values .Backends >><< range $ep := $v >><< $ep.IP >>,<< end >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	backends := map[string][]watcher.Endpoint{
+		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "10.0.0.1") {
+		t.Errorf("expected IP in output, got: %s", out)
+	}
+}
+
+func TestRender_SprigPickOverride(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $k, $v := pick .BackendLabels "api" >><< $k >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetBackendLabels(map[string]map[string]string{
+		"api":    {"tier": "backend"},
+		"worker": {"tier": "queue"},
+	})
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "api" {
+		t.Errorf("expected only 'api', got: %s", out)
+	}
+}
+
+func TestRender_SprigOmitOverride(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $k, $v := omit .BackendLabels "worker" >><< $k >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetBackendLabels(map[string]map[string]string{
+		"api":    {"tier": "backend"},
+		"worker": {"tier": "queue"},
+	})
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "api" {
+		t.Errorf("expected only 'api', got: %s", out)
+	}
+}
+
+// TestRender_SprigOriginalsDictFunctionsFailOnTypedMaps verifies that the
+// original Sprig dict functions fail when called with typed maps, confirming
+// that our reflect-based overrides are necessary.
+func TestRender_SprigOriginalsDictFunctionsFailOnTypedMaps(t *testing.T) {
+	t.Parallel()
+
+	typedMap := map[string]map[string]string{
+		"api": {"tier": "backend"},
+	}
+	data := map[string]any{"M": typedMap}
+
+	for _, fn := range []string{"keys", "hasKey", "get", "values", "pick", "omit"} {
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			var expr string
+			switch fn {
+			case "keys", "values":
+				expr = "{{ " + fn + " .M }}"
+			case "hasKey", "get":
+				expr = "{{ " + fn + " .M \"api\" }}"
+			case "pick", "omit":
+				expr = "{{ " + fn + " .M \"api\" }}"
+			}
+
+			// Build a template with the original Sprig function (no override).
+			sprigFuncs := sprig.TxtFuncMap()
+			tmpl, err := template.New("test").Funcs(sprigFuncs).Parse(expr)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			var buf strings.Builder
+			err = tmpl.Execute(&buf, data)
+			if err == nil {
+				t.Fatalf("expected error from original Sprig %s on typed map, but got: %s", fn, buf.String())
+			}
+			if !strings.Contains(err.Error(), "wrong type") {
+				t.Fatalf("expected 'wrong type' error, got: %v", err)
 			}
 		})
 	}

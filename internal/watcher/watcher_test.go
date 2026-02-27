@@ -189,9 +189,9 @@ func TestFrontendsEqual(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := endpointsEqual(tt.a, tt.b)
+			got := EndpointsEqual(tt.a, tt.b)
 			if got != tt.want {
-				t.Errorf("endpointsEqual(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+				t.Errorf("EndpointsEqual(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
 			}
 		})
 	}
@@ -246,10 +246,10 @@ func TestDiffEndpoints(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			added, removed := diffEndpoints(tt.old, tt.new)
-			if !endpointsEqual(added, tt.wantAdded) {
+			if !EndpointsEqual(added, tt.wantAdded) {
 				t.Errorf("added = %v, want %v", added, tt.wantAdded)
 			}
-			if !endpointsEqual(removed, tt.wantRemoved) {
+			if !EndpointsEqual(removed, tt.wantRemoved) {
 				t.Errorf("removed = %v, want %v", removed, tt.wantRemoved)
 			}
 		})
@@ -825,4 +825,332 @@ func TestRunDeduplicatesUnchangedEndpoints(t *testing.T) {
 
 	// Should NOT deliver a duplicate change.
 	assertNoChanges(t, w, 500*time.Millisecond)
+}
+
+func TestRunMultipleEndpointSlices(t *testing.T) {
+	t.Parallel()
+	slice1 := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-b"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	slice2 := makeEndpointSlice("svc-def",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(slice1, slice2)
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 endpoints from 2 slices, got %d: %v", len(eps), eps)
+	}
+	// Endpoints should be sorted by IP.
+	if eps[0].IP != "10.0.0.1" {
+		t.Errorf("eps[0].IP = %q, want 10.0.0.1", eps[0].IP)
+	}
+	if eps[1].IP != "10.0.0.2" {
+		t.Errorf("eps[1].IP = %q, want 10.0.0.2", eps[1].IP)
+	}
+}
+
+func TestRunDeleteOneOfMultipleSlices(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	// Consume initial empty state.
+	readChanges(t, w)
+
+	// Create two slices.
+	slice1 := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice1, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating slice1: %v", err)
+	}
+	readChanges(t, w)
+
+	slice2 := makeEndpointSlice("svc-def",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-b"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	_, err = clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating slice2: %v", err)
+	}
+
+	eps := readChanges(t, w)
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 endpoints, got %d", len(eps))
+	}
+
+	// Delete the first slice — remaining slice's endpoints should still be delivered.
+	err = clientset.DiscoveryV1().EndpointSlices("default").Delete(ctx, "svc-abc", metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("deleting slice1: %v", err)
+	}
+
+	eps = readChanges(t, w)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint after deleting one slice, got %d: %v", len(eps), eps)
+	}
+	if eps[0].IP != "10.0.0.2" {
+		t.Errorf("IP = %q, want 10.0.0.2", eps[0].IP)
+	}
+}
+
+func TestRunReadyStateTransition(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	// Consume initial empty state.
+	readChanges(t, w)
+
+	// Create a slice with a not-ready endpoint.
+	notReady := false
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: &notReady},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating EndpointSlice: %v", err)
+	}
+
+	// Not-ready endpoint should not appear — no change from empty.
+	assertNoChanges(t, w, 500*time.Millisecond)
+
+	// Transition to Ready=true.
+	current, err := clientset.DiscoveryV1().EndpointSlices("default").Get(ctx, "svc-abc", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting EndpointSlice: %v", err)
+	}
+	ready := true
+	current.Endpoints[0].Conditions.Ready = &ready
+	_, err = clientset.DiscoveryV1().EndpointSlices("default").Update(ctx, current, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating EndpointSlice: %v", err)
+	}
+
+	eps := readChanges(t, w)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint after ready transition, got %d", len(eps))
+	}
+	if eps[0].IP != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	}
+}
+
+func TestRunPortChangeOnExistingSlice(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	// Consume initial empty state.
+	readChanges(t, w)
+
+	// Create a slice with port 8080.
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating EndpointSlice: %v", err)
+	}
+
+	eps := readChanges(t, w)
+	if len(eps) != 1 || eps[0].Port != 8080 {
+		t.Fatalf("expected port 8080, got %v", eps)
+	}
+
+	// Change the port to 9090.
+	current, err := clientset.DiscoveryV1().EndpointSlices("default").Get(ctx, "svc-abc", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting EndpointSlice: %v", err)
+	}
+	current.Ports[0].Port = new(int32(9090))
+	_, err = clientset.DiscoveryV1().EndpointSlices("default").Update(ctx, current, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating EndpointSlice: %v", err)
+	}
+
+	eps = readChanges(t, w)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(eps))
+	}
+	if eps[0].Port != 9090 {
+		t.Errorf("Port = %d, want 9090 after port change", eps[0].Port)
+	}
+}
+
+func TestRunNamedPortDisappears(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	w := New(clientset, "default", "svc", "http")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	// Consume initial empty state.
+	readChanges(t, w)
+
+	// Create a slice with named port "http" on 8080.
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+			{Name: new("metrics"), Port: new(int32(9090))},
+		},
+	)
+	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating EndpointSlice: %v", err)
+	}
+
+	eps := readChanges(t, w)
+	if len(eps) != 1 || eps[0].Port != 8080 {
+		t.Fatalf("expected port 8080, got %v", eps)
+	}
+
+	// Remove the "http" port, leaving only "metrics".
+	current, err := clientset.DiscoveryV1().EndpointSlices("default").Get(ctx, "svc-abc", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting EndpointSlice: %v", err)
+	}
+	current.Ports = []discoveryv1.EndpointPort{
+		{Name: new("metrics"), Port: new(int32(9090))},
+	}
+	_, err = clientset.DiscoveryV1().EndpointSlices("default").Update(ctx, current, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating EndpointSlice: %v", err)
+	}
+
+	eps = readChanges(t, w)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(eps))
+	}
+	if eps[0].Port != 0 {
+		t.Errorf("Port = %d, want 0 when named port disappears", eps[0].Port)
+	}
+}
+
+func TestRunIPv4AndIPv6SlicesCoexist(t *testing.T) {
+	t.Parallel()
+	ipv4Slice := makeEndpointSlice("svc-ipv4",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	ipv6Slice := makeEndpointSlice("svc-ipv6",
+		discoveryv1.AddressTypeIPv6,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"fd00::1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a-v6"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(ipv4Slice, ipv6Slice)
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 endpoints (IPv4 + IPv6), got %d: %v", len(eps), eps)
+	}
+
+	// Endpoints are sorted by IP; "10.0.0.1" < "fd00::1".
+	if eps[0].IP != "10.0.0.1" {
+		t.Errorf("eps[0].IP = %q, want 10.0.0.1", eps[0].IP)
+	}
+	if eps[1].IP != "fd00::1" {
+		t.Errorf("eps[1].IP = %q, want fd00::1", eps[1].IP)
+	}
 }

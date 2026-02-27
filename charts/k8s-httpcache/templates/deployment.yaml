@@ -113,6 +113,15 @@ spec:
             {{- range .Values.backends }}
             - --backend={{ .name }}:{{ .service }}{{ if .port }}:{{ .port }}{{ end }}
             {{- end }}
+            {{- /* --- Backend discovery (repeatable) --- */}}
+            {{- range .Values.backendDiscovery }}
+            {{- $parts := list }}
+            {{- range $k, $v := .selector }}
+            {{- $parts = append $parts (printf "%s=%s" $k $v) }}
+            {{- end }}
+            {{- $sel := join "," $parts }}
+            - --backend-selector={{ if .allNamespaces }}*//{{ else if .namespace }}{{ .namespace }}//{{ end }}{{ $sel }}{{ if .port }}:{{ .port }}{{ end }}
+            {{- end }}
             {{- /* --- Values (repeatable) --- */}}
             {{- range .Values.values }}
             - --values={{ .name }}:{{ .configmap }}

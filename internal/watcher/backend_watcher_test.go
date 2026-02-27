@@ -815,3 +815,239 @@ func TestBackendWatcherWarnReappearsAndDisappears(t *testing.T) {
 		t.Errorf("expected 'backend has no ready endpoints' warning after second disappearance, got:\n%s", output)
 	}
 }
+
+func TestBackendWatcher_Labels(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Labels = map[string]string{"version": "v1", "tier": "backend"}
+	clientset := fake.NewClientset(svc)
+
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Read initial endpoints.
+	_ = readBackendChanges(t, bw)
+
+	// Labels() should return the Service labels.
+	labels := bw.Labels()
+	if labels == nil {
+		t.Fatal("expected non-nil labels")
+	}
+	if labels["version"] != "v1" {
+		t.Errorf("expected version=v1, got %q", labels["version"])
+	}
+	if labels["tier"] != "backend" {
+		t.Errorf("expected tier=backend, got %q", labels["tier"])
+	}
+
+	// Mutating the returned map should not affect internal state.
+	labels["version"] = "mutated"
+	labels2 := bw.Labels()
+	if labels2["version"] != "v1" {
+		t.Errorf("Labels() returned shared map; expected v1 after mutation, got %q", labels2["version"])
+	}
+
+	waitForWatch()
+
+	// Update Service labels — should trigger a resend even though endpoints haven't changed.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Labels = map[string]string{"version": "v2", "tier": "backend"}
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Should receive a resend with the same endpoints.
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+		t.Errorf("unexpected endpoints after label change: %v", eps)
+	}
+
+	// Labels should now reflect the update.
+	labels3 := bw.Labels()
+	if labels3["version"] != "v2" {
+		t.Errorf("expected version=v2 after update, got %q", labels3["version"])
+	}
+}
+
+func TestBackendWatcherClusterIPNoEndpointSlice(t *testing.T) {
+	t.Parallel()
+	// ClusterIP Service exists at startup, but no EndpointSlice yet.
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
+	clientset := fake.NewClientset(svc)
+	bw := NewBackendWatcher(clientset, "default", "svc", "")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initial: ClusterIP but no EndpointSlice → empty endpoints.
+	waitForWatch()
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints initially (no EndpointSlice), got %d: %v", len(eps), eps)
+	}
+
+	// Now create an EndpointSlice for the service.
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	_, err := clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating EndpointSlice: %v", err)
+	}
+
+	eps = readBackendChanges(t, bw)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint after EndpointSlice appears, got %d", len(eps))
+	}
+	if eps[0].IP != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	}
+	if eps[0].Port != 8080 {
+		t.Errorf("Port = %d, want 8080", eps[0].Port)
+	}
+}
+
+func TestBackendWatcherNumericPortOverrideClusterIP(t *testing.T) {
+	t.Parallel()
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+			{Name: new("metrics"), Port: new(int32(9090))},
+		},
+	)
+
+	clientset := fake.NewClientset(svc, slice)
+	// Numeric port override "3000" — should use 3000 regardless of slice ports.
+	bw := NewBackendWatcher(clientset, "default", "svc", "3000")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(eps))
+	}
+	if eps[0].Port != 3000 {
+		t.Errorf("Port = %d, want 3000 (numeric port override)", eps[0].Port)
+	}
+}
+
+func TestBackendWatcherNamedPortOverrideClusterIP(t *testing.T) {
+	t.Parallel()
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+			{Name: new("metrics"), Port: new(int32(9090))},
+		},
+	)
+
+	clientset := fake.NewClientset(svc, slice)
+	// Named port override "metrics" — should resolve to 9090.
+	bw := NewBackendWatcher(clientset, "default", "svc", "metrics")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(eps))
+	}
+	if eps[0].Port != 9090 {
+		t.Errorf("Port = %d, want 9090 (named port 'metrics')", eps[0].Port)
+	}
+}
+
+func TestBackendWatcherServiceDeletedRecreatedDifferentType(t *testing.T) {
+	t.Parallel()
+	// Start with a ClusterIP service + EndpointSlice.
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(svc, slice)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initial: ClusterIP endpoint.
+	waitForWatch()
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 || eps[0].IP != "10.0.0.1" {
+		t.Fatalf("expected ClusterIP endpoint 10.0.0.1, got %v", eps)
+	}
+
+	// Delete the service.
+	err := clientset.CoreV1().Services("default").Delete(ctx, "svc", metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("deleting Service: %v", err)
+	}
+
+	eps = readBackendChanges(t, bw)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints after delete, got %d: %v", len(eps), eps)
+	}
+
+	// Recreate as ExternalName.
+	svc2 := makeService(corev1.ServiceTypeExternalName, "cdn.example.com")
+	_, err = clientset.CoreV1().Services("default").Create(ctx, svc2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("re-creating Service as ExternalName: %v", err)
+	}
+
+	eps = readBackendChanges(t, bw)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint after recreate as ExternalName, got %d", len(eps))
+	}
+	if eps[0].IP != "cdn.example.com" {
+		t.Errorf("IP = %q, want cdn.example.com", eps[0].IP)
+	}
+	if eps[0].Port != 8080 {
+		t.Errorf("Port = %d, want 8080", eps[0].Port)
+	}
+	if eps[0].Name != "external" {
+		t.Errorf("Name = %q, want external", eps[0].Name)
+	}
+}

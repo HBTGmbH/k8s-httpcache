@@ -134,6 +134,20 @@ Usage: {{ include "k8s-httpcache.foreignNamespaces" . }}
     {{- end }}
   {{- end }}
 {{- end }}
+{{- range .Values.backendDiscovery }}
+  {{- if and .namespace (not .allNamespaces) }}
+    {{- $ns := .namespace }}
+    {{- if ne $ns $releaseNs }}
+      {{- $existing := dict }}
+      {{- if hasKey $foreign $ns }}
+        {{- $existing = get $foreign $ns }}
+      {{- end }}
+      {{- $_ := set $existing "services" true }}
+      {{- $_ := set $existing "endpointslices" true }}
+      {{- $_ := set $foreign $ns $existing }}
+    {{- end }}
+  {{- end }}
+{{- end }}
 {{- $foreign | toJson }}
 {{- end }}
 
@@ -143,6 +157,17 @@ Whether the ClusterRole for node access should be created.
 {{- define "k8s-httpcache.createClusterRole" -}}
 {{- if and .Values.rbac.create (not (eq (toString .Values.rbac.createClusterRole) "false")) }}
   {{- if or (eq (toString .Values.rbac.createClusterRole) "true") (and (eq (toString .Values.rbac.createClusterRole) "auto") (not .Values.template.zone)) }}
+    {{- true }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Whether any backendDiscovery entry uses allNamespaces mode.
+*/}}
+{{- define "k8s-httpcache.discoveryAllNamespaces" -}}
+{{- range .Values.backendDiscovery }}
+  {{- if .allNamespaces }}
     {{- true }}
   {{- end }}
 {{- end }}

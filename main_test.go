@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,13 +187,16 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 // --- Mock types for runLoop tests ---
 
 type mockRenderer struct {
-	mu             sync.Mutex
-	reloadFn       func() error
-	renderToFileFn func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any, map[string]map[string]any) (string, error)
-	rollbackFn     func()
-	reloadCount    int
-	renderCount    int
-	rollbackCount  int
+	mu                  sync.Mutex
+	reloadFn            func() error
+	renderFn            func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any, map[string]map[string]any) (string, error)
+	renderToFileFn      func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any, map[string]map[string]any) (string, error)
+	rollbackFn          func()
+	reloadCount         int
+	renderCount         int
+	rollbackCount       int
+	lastBackends        map[string][]watcher.Endpoint
+	latestBackendLabels map[string]map[string]string
 }
 
 func (m *mockRenderer) Reload() error {
@@ -207,9 +211,24 @@ func (m *mockRenderer) Reload() error {
 	return nil
 }
 
+func (m *mockRenderer) Render(fe []watcher.Frontend, be map[string][]watcher.Endpoint, vals, secrets map[string]map[string]any) (string, error) {
+	m.mu.Lock()
+	m.renderCount++
+	rc := m.renderCount
+	m.lastBackends = maps.Clone(be)
+	fn := m.renderFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(fe, be, vals, secrets)
+	}
+
+	return fmt.Sprintf("vcl 4.1; /* render %d */", rc), nil
+}
+
 func (m *mockRenderer) RenderToFile(fe []watcher.Frontend, be map[string][]watcher.Endpoint, vals, secrets map[string]map[string]any) (string, error) {
 	m.mu.Lock()
 	m.renderCount++
+	m.lastBackends = maps.Clone(be)
 	fn := m.renderToFileFn
 	m.mu.Unlock()
 	if fn != nil {
@@ -227,6 +246,12 @@ func (m *mockRenderer) Rollback() {
 	if fn != nil {
 		fn()
 	}
+}
+
+func (m *mockRenderer) SetBackendLabels(labels map[string]map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.latestBackendLabels = maps.Clone(labels)
 }
 
 func (m *mockRenderer) counts() (int, int, int) {
@@ -421,10 +446,11 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 
 		drainPollInterval: 1 * time.Second,
 
-		latestFrontends: nil,
-		latestBackends:  make(map[string][]watcher.Endpoint),
-		latestValues:    make(map[string]map[string]any),
-		latestSecrets:   make(map[string]map[string]any),
+		latestFrontends:     nil,
+		latestBackends:      make(map[string][]watcher.Endpoint),
+		latestBackendLabels: make(map[string]map[string]string),
+		latestValues:        make(map[string]map[string]any),
+		latestSecrets:       make(map[string]map[string]any),
 
 		recorder: h.recorder,
 		podRef:   h.podRef,
@@ -515,12 +541,12 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 	h := newTestHarness()
 	var mu sync.Mutex
 	var gotFrontends []watcher.Frontend
-	h.rend.renderToFileFn = func(fe []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(fe []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		mu.Lock()
 		gotFrontends = fe
 		mu.Unlock()
 
-		return "test.vcl", nil
+		return "vcl 4.1; /* frontends */", nil
 	}
 
 	euBefore := getCounter2Value(t, "frontend", h.serviceName, h.metrics.EndpointUpdatesTotal)
@@ -887,19 +913,19 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	var renderCalls atomic.Int32
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		if renderCalls.Add(1) == 1 {
 			return "", errors.New("render error")
 		}
 
-		return "test.vcl", nil
+		return "vcl 4.1; /* rollback */", nil
 	}
 	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
 	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
 
 	wait := h.runAndWait(h.bcast)
 
-	// Template change → Reload succeeds → RenderToFile fails → Rollback
+	// Template change → Reload succeeds → Render fails → Rollback
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool {
 		_, _, rc := h.rend.counts()
@@ -973,7 +999,7 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 func TestRunLoop_RollbackRenderError(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render always fails")
 	}
 	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
@@ -981,7 +1007,7 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 
 	wait := h.runAndWait(h.bcast)
 
-	// Template change → rend.Reload ok → RenderToFile fails → Rollback →
+	// Template change → rend.Reload ok → Render fails → Rollback →
 	// (no retry render path in this case, since the first render failed)
 	// Actually the first render error with reloadedTemplate → Rollback, continue.
 	// The loop continues without crashing.
@@ -1111,14 +1137,14 @@ func TestRunLoop_VarnishdUnexpectedExit(t *testing.T) {
 func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
 	}
 	renderErrBefore := getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)
 
 	wait := h.runAndWait(h.bcast)
 
-	// Frontend update (not a template change) → RenderToFile fails → no Rollback.
+	// Frontend update (not a template change) → Render fails → no Rollback.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool {
 		return getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)-renderErrBefore >= 1
@@ -1180,12 +1206,12 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	var renderCalls atomic.Int32
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		if renderCalls.Add(1) == 2 {
 			return "", errors.New("render error after rollback")
 		}
 
-		return "test.vcl", nil
+		return "vcl 4.1; /* retry */", nil
 	}
 	h.mgr.reloadFn = func(_ string) error {
 		return errors.New("varnish reload error")
@@ -1196,18 +1222,18 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 
 	wait := h.runAndWait(h.bcast)
 
-	// Template change → rend.Reload ok → RenderToFile ok (1st) →
-	// mgr.Reload fails → Rollback → retry RenderToFile fails (2nd) → continue
+	// Template change → rend.Reload ok → Render ok (1st) →
+	// mgr.Reload fails → Rollback → retry Render fails (2nd) → continue
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
 
 		return rc >= 2
-	}, "2 RenderToFile calls")
+	}, "2 Render calls")
 
 	_, renderCount, rollbackCount := h.rend.counts()
 	if renderCount < 2 {
-		t.Fatalf("expected at least 2 RenderToFile calls, got %d", renderCount)
+		t.Fatalf("expected at least 2 Render calls, got %d", renderCount)
 	}
 	if rollbackCount < 1 {
 		t.Fatal("expected Rollback")
@@ -1365,7 +1391,7 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 
 	h := newTestHarness()
 	h.valuesCh = valuesCh
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, vals map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, vals map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		// Deep-copy the values map to capture the state at render time.
 		copied := make(map[string]map[string]any, len(vals))
 		for k, v := range vals {
@@ -1375,9 +1401,10 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 		}
 		renderMu.Lock()
 		renderedVals = append(renderedVals, copied)
+		n := len(renderedVals)
 		renderMu.Unlock()
 
-		return "test.vcl", nil
+		return fmt.Sprintf("vcl 4.1; /* vals %d */", n), nil
 	}
 
 	wait := h.runAndWait(h.bcast)
@@ -2015,7 +2042,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 	)
 
 	h := newTestHarness()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, vals map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, vals map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		copied := make(map[string]map[string]any, len(vals))
 		for k, v := range vals {
 			inner := make(map[string]any, len(v))
@@ -2026,7 +2053,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 		renderedVals = copied
 		renderMu.Unlock()
 
-		return "test.vcl", nil
+		return "vcl 4.1; /* filewatch disabled */", nil
 	}
 
 	// Do NOT wire fvw.Changes() into valuesCh — simulates --file-watch=false.
@@ -3562,6 +3589,40 @@ func TestRunLoop_EventReasonBackendEndpoints(t *testing.T) {
 	}
 }
 
+func TestRunLoop_EventReasonBackendLabelsChanged(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	eps := []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}
+
+	// First send: new endpoints → "backend endpoints changed".
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: eps,
+		labels:    map[string]string{"version": "v1"},
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload")
+	_ = collectEvents(rec, 1) // drain
+
+	// Second send: same endpoints, different labels → "backend labels changed".
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: eps,
+		labels:    map[string]string{"version": "v2"},
+	}
+
+	events := collectEvents(rec, 1)
+	requireEvent(t, events, "VCLReloaded", "backend labels changed")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
 func TestRunLoop_EventReasonValuesUpdated(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
@@ -3704,7 +3765,7 @@ func TestRunLoop_EventRenderFailed(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
 	}
 
@@ -3726,7 +3787,7 @@ func TestRunLoop_EventRenderFailedRollback(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
 	}
 
@@ -3758,13 +3819,13 @@ func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
 		return nil
 	}
 	var renderCalls atomic.Int32
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		// First render succeeds, second (after rollback) fails.
 		if renderCalls.Add(1) == 2 {
 			return "", errors.New("render error after rollback")
 		}
 
-		return "test.vcl", nil
+		return "vcl 4.1; /* event test */", nil
 	}
 
 	wait := h.runAndWait(h.bcast)
@@ -4684,7 +4745,7 @@ func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
 func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	h.rend.renderToFileFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
 		return "", errors.New("render error")
 	}
 	store := &statusStore{
@@ -5108,5 +5169,140 @@ func TestBuildNCSAArgs(t *testing.T) {
 				t.Errorf("buildNCSAArgs() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunLoop_BackendRemovedDeletesFromLatest(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	wait := h.runAndWait(h.bcast)
+
+	// First add a backend.
+	h.backendCh <- backendChange{
+		name:      "discovered-svc",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload after add")
+
+	// Now remove it.
+	h.backendCh <- backendChange{
+		name:    "discovered-svc",
+		removed: true,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "second reload after removal")
+
+	// Verify the backend was removed by inspecting the last RenderToFile call.
+	h.rend.mu.Lock()
+	lastBackends := h.rend.lastBackends
+	h.rend.mu.Unlock()
+
+	if lastBackends != nil {
+		if _, exists := lastBackends["discovered-svc"]; exists {
+			t.Error("expected 'discovered-svc' to be deleted from latestBackends after removal")
+		}
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_BackendLabelsPassedToRenderer(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	wait := h.runAndWait(h.bcast)
+
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		labels:    map[string]string{"version": "v2", "tier": "backend"},
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
+
+	h.rend.mu.Lock()
+	gotLabels := h.rend.latestBackendLabels
+	h.rend.mu.Unlock()
+
+	if gotLabels == nil {
+		t.Fatal("expected latestBackendLabels to be set")
+	}
+	apiLabels, ok := gotLabels["api"]
+	if !ok {
+		t.Fatal("expected 'api' in latestBackendLabels")
+	}
+	if apiLabels["version"] != "v2" {
+		t.Errorf("expected version=v2, got %q", apiLabels["version"])
+	}
+	if apiLabels["tier"] != "backend" {
+		t.Errorf("expected tier=backend, got %q", apiLabels["tier"])
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_SkipsReloadWhenVCLUnchanged(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	// renderFn always returns the same VCL — simulates a label-only change
+	// that doesn't affect the rendered output.
+	const fixedVCL = "vcl 4.1; /* unchanged */"
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+		return fixedVCL, nil
+	}
+
+	skippedBefore := getCounterValue(t, "skipped", h.metrics.VCLReloadsTotal)
+
+	// Pre-populate lastVCLHash so the first render matches.
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.lastVCLHash = sha256.Sum256([]byte(fixedVCL))
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Send a backend change — should render but skip reload.
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+	}
+
+	// Wait for the skipped counter to increment.
+	waitFor(t, func() bool {
+		return getCounterValue(t, "skipped", h.metrics.VCLReloadsTotal)-skippedBefore >= 1
+	}, "VCL reload skipped")
+
+	// Verify mgr.Reload was NOT called.
+	if h.mgr.getReloadCount() != 0 {
+		t.Fatalf("expected 0 mgr.Reload calls, got %d", h.mgr.getReloadCount())
+	}
+
+	// Verify Render was called (the template was still rendered).
+	_, renderCount, _ := h.rend.counts()
+	if renderCount < 1 {
+		t.Fatal("expected Render to be called")
+	}
+
+	// Verify skipped metric.
+	if delta := getCounterValue(t, "skipped", h.metrics.VCLReloadsTotal) - skippedBefore; delta < 1 {
+		t.Errorf("vcl_reloads_total(skipped) delta = %v, want >= 1", delta)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+
+	if int(code.Load()) != 0 {
+		t.Fatalf("expected exit 0, got %d", code.Load())
 	}
 }

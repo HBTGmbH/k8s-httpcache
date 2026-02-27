@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strconv"
 	"sync"
 
@@ -29,6 +30,7 @@ type BackendWatcher struct {
 
 	mu              sync.Mutex // protects fields below
 	previous        []Endpoint
+	labels          map[string]string
 	synced          bool
 	serviceNotFound bool
 
@@ -52,6 +54,14 @@ func NewBackendWatcher(clientset kubernetes.Interface, namespace, serviceName, p
 // Changes returns the channel on which endpoint updates are delivered.
 func (bw *BackendWatcher) Changes() <-chan []Endpoint {
 	return bw.ch
+}
+
+// Labels returns a copy of the most recently observed Service labels.
+func (bw *BackendWatcher) Labels() map[string]string {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+
+	return maps.Clone(bw.labels)
 }
 
 // Run starts watching the Service object and blocks until ctx is cancelled.
@@ -111,6 +121,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 			bw.log.Warn("backend Service not found, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
 		}
+		bw.labels = nil
 		bw.stopEndpointSliceWatcherLocked()
 		bw.mu.Unlock()
 		bw.send(nil)
@@ -121,7 +132,19 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 	// Service exists — reset the warning flag so we warn again if it disappears.
 	bw.mu.Lock()
 	bw.serviceNotFound = false
+
+	// Track Service labels; trigger a resend when only labels changed so
+	// downstream consumers (e.g. VCL templates using .BackendLabels) pick
+	// up the new metadata even if endpoints remain identical.
+	newLabels := maps.Clone(svc.Labels)
+	labelsChanged := !maps.Equal(bw.labels, newLabels)
+	bw.labels = newLabels
+	synced := bw.synced
 	bw.mu.Unlock()
+
+	if labelsChanged && synced {
+		bw.resend()
+	}
 
 	if svc.Spec.Type == corev1.ServiceTypeExternalName {
 		bw.mu.Lock()
@@ -217,11 +240,27 @@ func (bw *BackendWatcher) stopEndpointSliceWatcherLocked() {
 	bw.childWatcher = nil
 }
 
+// resend re-sends the last known endpoints to the channel, bypassing
+// the endpoint-equality dedup in send(). This is used when Service
+// metadata (labels) changes without an endpoint change.
+func (bw *BackendWatcher) resend() {
+	bw.mu.Lock()
+	eps := bw.previous
+	bw.mu.Unlock()
+
+	// Non-blocking send: drain then send.
+	select {
+	case <-bw.ch:
+	default:
+	}
+	bw.ch <- eps
+}
+
 func (bw *BackendWatcher) send(endpoints []Endpoint) {
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
 
-	if bw.synced && endpointsEqual(endpoints, bw.previous) {
+	if bw.synced && EndpointsEqual(endpoints, bw.previous) {
 		return
 	}
 

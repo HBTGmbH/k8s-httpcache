@@ -16,6 +16,7 @@ import (
 	"time"
 
 	cli "github.com/urfave/cli/v3"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // DefaultDebounceLatencyBuckets are the default histogram bucket boundaries
@@ -48,6 +49,14 @@ type SecretsSpec struct {
 type ValuesDirSpec struct {
 	Name string // template key, accessible as .Values.<Name>.<key>
 	Path string // filesystem directory path
+}
+
+// BackendSelectorSpec describes a label selector for automatic backend service discovery.
+type BackendSelectorSpec struct {
+	Selector      string // Kubernetes label selector (e.g. "app=myapp,tier=backend")
+	Port          string // optional port override for all discovered services
+	Namespace     string // resolved namespace (empty = all namespaces when AllNamespaces is true)
+	AllNamespaces bool   // true = watch all namespaces
 }
 
 // ListenAddrSpec describes a Varnish listen address parsed from the
@@ -231,6 +240,7 @@ type Config struct {
 	BackendDebounceMax         time.Duration
 	ShutdownTimeout            time.Duration
 	Backends                   []BackendSpec
+	BackendSelectors           []BackendSelectorSpec
 	Values                     []ValuesSpec
 	Secrets                    []SecretsSpec
 	ValuesDirs                 []ValuesDirSpec
@@ -372,6 +382,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 	var (
 		rawBackends               []string
+		rawBackendSelectors       []string
 		rawListenAddrs            []string
 		rawValues                 []string
 		rawSecrets                []string
@@ -430,6 +441,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    "Listen, backend, and values:",
 				Usage:       "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)",
 				Destination: &rawBackends,
+			},
+			&cli.StringSliceFlag{
+				Name:        "backend-selector",
+				Category:    "Listen, backend, and values:",
+				Usage:       "Label selector for backend service discovery: [namespace//]selector[:port|:port-name] (repeatable). Use '*//' prefix for all-namespace discovery.",
+				Destination: &rawBackendSelectors,
 			},
 			&cli.StringSliceFlag{
 				Name:        "values",
@@ -1002,6 +1019,17 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 			c.Backends = []BackendSpec(backends)
 
+			// Parse and validate backend selectors.
+			for _, raw := range rawBackendSelectors {
+				spec, err := parseBackendSelector(raw, c.Namespace)
+				if err != nil {
+					actionErr = validationError(cmd, "--backend-selector %q: %v", raw, err)
+
+					return nil
+				}
+				c.BackendSelectors = append(c.BackendSelectors, spec)
+			}
+
 			// Parse and validate values.
 			var values valuesFlags
 			for _, raw := range rawValues {
@@ -1113,4 +1141,68 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 	}
 
 	return c, nil
+}
+
+// parseBackendSelector parses a --backend-selector value of the form
+// [namespace//]selector[:port] and returns a validated BackendSelectorSpec.
+// Use "*//" as the namespace prefix for all-namespace discovery.
+// The "//" separator is used instead of "/" because Kubernetes label keys
+// may contain a single "/" for domain-prefixed keys (e.g. app.kubernetes.io/name).
+func parseBackendSelector(raw, defaultNS string) (BackendSelectorSpec, error) {
+	if raw == "" {
+		return BackendSelectorSpec{}, errors.New("empty selector")
+	}
+
+	spec := BackendSelectorSpec{}
+	rest := raw
+
+	// Check for namespace prefix (separated by "//").
+	if strings.HasPrefix(rest, "*//") {
+		spec.AllNamespaces = true
+		rest = rest[3:]
+	} else if idx := strings.Index(rest, "//"); idx >= 0 {
+		ns := rest[:idx]
+		if ns == "" {
+			return BackendSelectorSpec{}, errors.New("empty namespace prefix")
+		}
+		if !isValidDNSLabel(ns) {
+			return BackendSelectorSpec{}, fmt.Errorf("invalid namespace %q: must be a valid RFC 1123 DNS label", ns)
+		}
+		spec.Namespace = ns
+		rest = rest[idx+2:]
+	} else {
+		spec.Namespace = defaultNS
+	}
+
+	// Parse optional port suffix: scan from right for last ':' and treat
+	// the suffix as a port (numeric or named). Colons are always invalid
+	// in Kubernetes label selectors, so any :suffix is unambiguously a port.
+	if idx := strings.LastIndex(rest, ":"); idx >= 0 {
+		portStr := rest[idx+1:]
+		if portStr == "" {
+			return BackendSelectorSpec{}, errors.New("empty port suffix")
+		}
+		p, parseErr := strconv.ParseInt(portStr, 10, 32)
+		if parseErr == nil {
+			if p < 1 || p > 65535 {
+				return BackendSelectorSpec{}, fmt.Errorf("port out of range: %s", portStr)
+			}
+		}
+		spec.Port = portStr
+		rest = rest[:idx]
+	}
+
+	if rest == "" {
+		return BackendSelectorSpec{}, errors.New("empty selector expression")
+	}
+
+	// Validate selector string.
+	_, err := labels.Parse(rest)
+	if err != nil {
+		return BackendSelectorSpec{}, fmt.Errorf("invalid label selector: %w", err)
+	}
+
+	spec.Selector = rest
+
+	return spec, nil
 }

@@ -19,6 +19,7 @@ import (
 type templateData struct {
 	Frontends      []watcher.Frontend
 	Backends       map[string][]watcher.Endpoint
+	BackendLabels  map[string]map[string]string  // Service labels keyed by backend name
 	LocalBackends  map[string][]watcher.Endpoint // same-zone backends
 	RemoteBackends map[string][]watcher.Endpoint // other-zone backends
 	Values         map[string]map[string]any
@@ -50,14 +51,15 @@ func splitBackendsByZone(backends map[string][]watcher.Endpoint, zone string) (m
 
 // Renderer renders VCL from a Go template and a list of frontends.
 type Renderer struct {
-	tmpl         *template.Template
-	prev         *template.Template
-	templatePath string
-	funcMap      template.FuncMap
-	drainBackend string
-	delimLeft    string
-	delimRight   string
-	localZone    string
+	tmpl          *template.Template
+	prev          *template.Template
+	templatePath  string
+	funcMap       template.FuncMap
+	drainBackend  string
+	delimLeft     string
+	delimRight    string
+	localZone     string
+	backendLabels map[string]map[string]string
 }
 
 // SetDrainBackend configures the renderer to auto-inject drain VCL using the
@@ -72,12 +74,21 @@ func (r *Renderer) SetLocalZone(zone string) {
 	r.localZone = zone
 }
 
+// SetBackendLabels sets the Service labels map made available as
+// .BackendLabels in templates.
+func (r *Renderer) SetBackendLabels(labels map[string]map[string]string) {
+	r.backendLabels = labels
+}
+
 // New parses the template file and returns a Renderer.
 func New(templatePath, delimLeft, delimRight string) (*Renderer, error) {
 	funcMap := sprig.TxtFuncMap()
 
-	// Override Sprig's "keys" with a reflect-based version that handles
-	// typed maps like map[string][]watcher.Endpoint, not only map[string]interface{}.
+	// Override Sprig dict functions with reflect-based versions that handle
+	// typed maps like map[string][]watcher.Endpoint and
+	// map[string]map[string]string. Sprig's originals only accept
+	// map[string]interface{}, and Go's type system does not consider typed
+	// maps assignable to that type.
 	funcMap["keys"] = func(v any) []string {
 		rv := reflect.ValueOf(v)
 		if rv.Kind() != reflect.Map {
@@ -89,6 +100,71 @@ func New(templatePath, delimLeft, delimRight string) (*Renderer, error) {
 		}
 
 		return out
+	}
+	funcMap["hasKey"] = func(v any, key string) bool {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Map {
+			return false
+		}
+
+		return rv.MapIndex(reflect.ValueOf(key)).IsValid()
+	}
+	funcMap["get"] = func(v any, key string) any {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Map {
+			return ""
+		}
+		val := rv.MapIndex(reflect.ValueOf(key))
+		if !val.IsValid() {
+			return ""
+		}
+
+		return val.Interface()
+	}
+	funcMap["values"] = func(v any) []any {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Map {
+			return nil
+		}
+		out := make([]any, 0, rv.Len())
+		for _, k := range rv.MapKeys() {
+			out = append(out, rv.MapIndex(k).Interface())
+		}
+
+		return out
+	}
+	funcMap["pick"] = func(v any, ks ...string) map[string]any {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Map {
+			return map[string]any{}
+		}
+		res := make(map[string]any, len(ks))
+		for _, k := range ks {
+			val := rv.MapIndex(reflect.ValueOf(k))
+			if val.IsValid() {
+				res[k] = val.Interface()
+			}
+		}
+
+		return res
+	}
+	funcMap["omit"] = func(v any, ks ...string) map[string]any {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Map {
+			return map[string]any{}
+		}
+		omitSet := make(map[string]bool, len(ks))
+		for _, k := range ks {
+			omitSet[k] = true
+		}
+		res := make(map[string]any, rv.Len())
+		for _, k := range rv.MapKeys() {
+			if !omitSet[k.String()] {
+				res[k.String()] = rv.MapIndex(k).Interface()
+			}
+		}
+
+		return res
 	}
 
 	raw, err := os.ReadFile(templatePath)
@@ -150,11 +226,17 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]wa
 		remoteBackends = make(map[string][]watcher.Endpoint)
 	}
 
+	backendLabels := r.backendLabels
+	if backendLabels == nil {
+		backendLabels = make(map[string]map[string]string)
+	}
+
 	var buf bytes.Buffer
 
 	err := r.tmpl.Execute(&buf, templateData{
 		Frontends:      frontends,
 		Backends:       backends,
+		BackendLabels:  backendLabels,
 		LocalBackends:  localBackends,
 		RemoteBackends: remoteBackends,
 		Values:         values,

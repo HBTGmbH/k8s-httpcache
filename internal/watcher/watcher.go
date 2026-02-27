@@ -176,7 +176,7 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.synced && endpointsEqual(endpoints, w.previous) {
+	if w.synced && EndpointsEqual(endpoints, w.previous) {
 		return
 	}
 
@@ -266,7 +266,8 @@ func endpointEqual(a, b *Endpoint) bool {
 		slices.Equal(a.ForZones, b.ForZones)
 }
 
-func endpointsEqual(a, b []Endpoint) bool {
+// EndpointsEqual reports whether two endpoint slices are identical.
+func EndpointsEqual(a, b []Endpoint) bool {
 	if len(a) != len(b) {
 		return false
 	}
