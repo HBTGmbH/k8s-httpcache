@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}-test-connection
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: wget
+      image: busybox:stable
+      command: ["wget"]
+      args:
+        - --quiet
+        - --output-document=-
+        - --timeout=5
+        - http://{{ include "k8s-httpcache.fullname" . }}:{{ .Values.service.httpPort }}/ready

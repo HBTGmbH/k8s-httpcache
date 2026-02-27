@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.service.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "k8s-httpcache.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+    {{- if .Values.broadcast.enabled }}
+    - name: http-b
+      protocol: TCP
+      port: 8088
+      targetPort: http-b
+    {{- end }}
+    {{- if .Values.metrics.enabled }}
+    - name: http-m
+      protocol: TCP
+      port: 9101
+      targetPort: http-m
+    {{- end }}

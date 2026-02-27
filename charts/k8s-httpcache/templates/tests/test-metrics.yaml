@@ -1,0 +1,32 @@
+{{- if .Values.metrics.enabled -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}-test-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: metrics
+      image: busybox:stable
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          echo "Testing /healthz..."
+          wget --quiet --output-document=- --timeout=5 \
+            http://{{ include "k8s-httpcache.fullname" . }}:9101/healthz
+          echo "Testing /readyz..."
+          wget --quiet --output-document=- --timeout=5 \
+            http://{{ include "k8s-httpcache.fullname" . }}:9101/readyz
+          echo "Testing /metrics contains k8s_httpcache_varnishd_up..."
+          wget --quiet --output-document=- --timeout=5 \
+            http://{{ include "k8s-httpcache.fullname" . }}:9101/metrics \
+          | grep -q 'k8s_httpcache_varnishd_up'
+          echo "All metrics checks passed."
+{{- end }}

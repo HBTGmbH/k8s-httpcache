@@ -1,0 +1,368 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  {{- with .Values.revisionHistoryLimit }}
+  revisionHistoryLimit: {{ . }}
+  {{- end }}
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/vcl: {{ .Values.vclTemplateContent | sha256sum }}
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "k8s-httpcache.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "k8s-httpcache.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
+      {{- with .Values.dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "k8s-httpcache.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            {{- /* --- Required flags --- */}}
+            - --service-name={{ default (include "k8s-httpcache.fullname" .) .Values.serviceName }}
+            - --namespace={{ default "$(NAMESPACE)" .Values.namespace }}
+            - --vcl-template={{ .Values.vclTemplate }}
+            {{- /* --- Varnish paths --- */}}
+            {{- with .Values.varnish.varnishdPath }}
+            - --varnishd-path={{ . }}
+            {{- end }}
+            {{- with .Values.varnish.varnishadmPath }}
+            - --varnishadm-path={{ . }}
+            {{- end }}
+            {{- with .Values.varnish.varnishstatPath }}
+            - --varnishstat-path={{ . }}
+            {{- end }}
+            {{- with .Values.varnish.adminTimeout }}
+            - --admin-timeout={{ . }}
+            {{- end }}
+            {{- /* --- Listen addresses (repeatable) --- */}}
+            {{- range .Values.listenAddrs }}
+            - --listen-addr={{ . }}
+            {{- end }}
+            {{- /* --- Backends (repeatable) --- */}}
+            {{- range .Values.backends }}
+            - --backend={{ .name }}:{{ .service }}{{ if .port }}:{{ .port }}{{ end }}
+            {{- end }}
+            {{- /* --- Values (repeatable) --- */}}
+            {{- range .Values.values }}
+            - --values={{ .name }}:{{ .configmap }}
+            {{- end }}
+            {{- /* --- Secrets (repeatable) --- */}}
+            {{- range .Values.secrets }}
+            - --secrets={{ .name }}:{{ .secret }}
+            {{- end }}
+            {{- /* --- Values dirs (repeatable) --- */}}
+            {{- range .Values.valuesDirs }}
+            - --values-dir={{ .name }}:{{ .path }}
+            {{- end }}
+            {{- with .Values.valuesDirPollInterval }}
+            - --values-dir-poll-interval={{ . }}
+            {{- end }}
+            {{- /* --- Broadcast --- */}}
+            {{- if .Values.broadcast.enabled }}
+            {{- with .Values.broadcast.addr }}
+            - --broadcast-addr={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.targetListenAddr }}
+            - --broadcast-target-listen-addr={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.drainTimeout }}
+            - --broadcast-drain-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.shutdownTimeout }}
+            - --broadcast-shutdown-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.serverIdleTimeout }}
+            - --broadcast-server-idle-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.readHeaderTimeout }}
+            - --broadcast-read-header-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.clientIdleTimeout }}
+            - --broadcast-client-idle-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.clientTimeout }}
+            - --broadcast-client-timeout={{ . }}
+            {{- end }}
+            {{- else }}
+            - --broadcast-addr=none
+            {{- end }}
+            {{- /* --- Metrics --- */}}
+            {{- if .Values.metrics.enabled }}
+            {{- with .Values.metrics.addr }}
+            - --metrics-addr={{ . }}
+            {{- end }}
+            {{- with .Values.metrics.readHeaderTimeout }}
+            - --metrics-read-header-timeout={{ . }}
+            {{- end }}
+            {{- if .Values.metrics.varnishstatExport }}
+            - --varnishstat-export
+            {{- with .Values.metrics.varnishstatExportFilter }}
+            - --varnishstat-export-filter={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- else }}
+            - --metrics-addr=none
+            {{- end }}
+            {{- /* --- Varnishncsa --- */}}
+            {{- if .Values.varnishncsa.enabled }}
+            - --varnishncsa-enabled
+            {{- with .Values.varnishncsa.path }}
+            - --varnishncsa-path={{ . }}
+            {{- end }}
+            {{- with .Values.varnishncsa.format }}
+            - --varnishncsa-format={{ . }}
+            {{- end }}
+            {{- with .Values.varnishncsa.query }}
+            - --varnishncsa-query={{ . }}
+            {{- end }}
+            {{- if .Values.varnishncsa.backend }}
+            - --varnishncsa-backend
+            {{- end }}
+            {{- with .Values.varnishncsa.output }}
+            - --varnishncsa-output={{ . }}
+            {{- end }}
+            {{- with .Values.varnishncsa.prefix }}
+            - --varnishncsa-prefix={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- /* --- Drain --- */}}
+            {{- if .Values.drain.enabled }}
+            - --drain
+            {{- with .Values.drain.delay }}
+            - --drain-delay={{ . }}
+            {{- end }}
+            {{- with .Values.drain.pollInterval }}
+            - --drain-poll-interval={{ . }}
+            {{- end }}
+            {{- with .Values.drain.timeout }}
+            - --drain-timeout={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- /* --- Template --- */}}
+            {{- with .Values.template.delims }}
+            - --template-delims={{ . }}
+            {{- end }}
+            {{- with .Values.template.zone }}
+            - --zone={{ . }}
+            {{- end }}
+            {{- /* --- Debounce --- */}}
+            {{- with .Values.debounce.duration }}
+            - --debounce={{ . }}
+            {{- end }}
+            {{- with .Values.debounce.max }}
+            - --debounce-max={{ . }}
+            {{- end }}
+            {{- with .Values.debounce.frontendDuration }}
+            - --frontend-debounce={{ . }}
+            {{- end }}
+            {{- with .Values.debounce.frontendMax }}
+            - --frontend-debounce-max={{ . }}
+            {{- end }}
+            {{- with .Values.debounce.backendDuration }}
+            - --backend-debounce={{ . }}
+            {{- end }}
+            {{- with .Values.debounce.backendMax }}
+            - --backend-debounce-max={{ . }}
+            {{- end }}
+            {{- with .Values.debounce.latencyBuckets }}
+            - --debounce-latency-buckets={{ . }}
+            {{- end }}
+            {{- /* --- Logging --- */}}
+            {{- with .Values.logging.level }}
+            - --log-level={{ . }}
+            {{- end }}
+            {{- with .Values.logging.format }}
+            - --log-format={{ . }}
+            {{- end }}
+            {{- /* --- VCL settings --- */}}
+            {{- with .Values.vcl.shutdownTimeout }}
+            - --shutdown-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.vcl.templateWatchInterval }}
+            - --vcl-template-watch-interval={{ . }}
+            {{- end }}
+            {{- if ne (toString .Values.vcl.fileWatch) "" }}
+            - --file-watch={{ .Values.vcl.fileWatch }}
+            {{- end }}
+            {{- with .Values.vcl.reloadRetries }}
+            - --vcl-reload-retries={{ . }}
+            {{- end }}
+            {{- with .Values.vcl.reloadRetryInterval }}
+            - --vcl-reload-retry-interval={{ . }}
+            {{- end }}
+            {{- with .Values.vcl.kept }}
+            - --vcl-kept={{ . }}
+            {{- end }}
+            {{- /* --- Extra args (before --) --- */}}
+            {{- range .Values.extraArgs }}
+            - {{ . }}
+            {{- end }}
+            {{- /* --- Varnishd extra args (after --) --- */}}
+            {{- if .Values.varnishdExtraArgs }}
+            - --
+            {{- range .Values.varnishdExtraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.broadcast.enabled }}
+            - name: http-b
+              containerPort: 8088
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: http-m
+              containerPort: 9101
+              protocol: TCP
+            {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.metrics.enabled }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          {{- with .Values.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: vcl-template
+              mountPath: /etc/k8s-httpcache
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: varnish-workdir
+              mountPath: /var/lib/varnish
+            {{- range .Values.valuesDirs }}
+            - name: values-dir-{{ .name }}
+              mountPath: {{ .path }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: vcl-template
+          configMap:
+            name: {{ include "k8s-httpcache.fullname" . }}-vcl
+        - name: tmp
+          emptyDir:
+            medium: Memory
+        - name: varnish-workdir
+          emptyDir:
+            medium: Memory
+        {{- range .Values.valuesDirs }}
+        {{- if .configMap }}
+        - name: values-dir-{{ .name }}
+          configMap:
+            name: {{ .configMap }}
+        {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

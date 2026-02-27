@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -74,6 +75,21 @@ func (r *Renderer) SetLocalZone(zone string) {
 // New parses the template file and returns a Renderer.
 func New(templatePath, delimLeft, delimRight string) (*Renderer, error) {
 	funcMap := sprig.TxtFuncMap()
+
+	// Override Sprig's "keys" with a reflect-based version that handles
+	// typed maps like map[string][]watcher.Endpoint, not only map[string]interface{}.
+	funcMap["keys"] = func(v any) []string {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Map {
+			return nil
+		}
+		out := make([]string, 0, rv.Len())
+		for _, k := range rv.MapKeys() {
+			out = append(out, k.String())
+		}
+
+		return out
+	}
 
 	raw, err := os.ReadFile(templatePath)
 	if err != nil {

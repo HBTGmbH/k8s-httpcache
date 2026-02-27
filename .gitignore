@@ -1,6 +1,6 @@
 # Binary
-k8s-httpcache
-k8s-httpcache.exe
+/k8s-httpcache
+/k8s-httpcache.exe
 
 # IDE
 .idea/

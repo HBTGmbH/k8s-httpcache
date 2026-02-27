@@ -1,0 +1,29 @@
+{{- if .Values.rbac.create -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}-test-rbac
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "k8s-httpcache.serviceAccountName" . }}
+  containers:
+    - name: auth-check
+      image: bitnami/kubectl:latest
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          echo "Testing: can list services..."
+          kubectl auth can-i list services --namespace {{ .Release.Namespace }}
+          echo "Testing: can list endpointslices..."
+          kubectl auth can-i list endpointslices.discovery.k8s.io --namespace {{ .Release.Namespace }}
+          echo "Testing: can get pods..."
+          kubectl auth can-i get pods --namespace {{ .Release.Namespace }}
+          echo "RBAC checks passed."
+{{- end }}

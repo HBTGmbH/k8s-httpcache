@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}-vcl
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+data:
+  vcl.tmpl: |
+    {{- .Values.vclTemplateContent | nindent 4 }}

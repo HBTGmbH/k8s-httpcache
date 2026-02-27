@@ -1,0 +1,505 @@
+# -- Number of replicas (ignored when autoscaling.enabled is true)
+replicaCount: 1
+
+image:
+  # -- Container image registry (e.g. "docker.io", "registry.example.com/proxy").
+  # When set, the image reference becomes registry/repository:tag.
+  registry: ""
+  # -- Container image repository
+  repository: ""
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag (defaults to appVersion)
+  tag: ""
+
+# -- Image pull secrets
+imagePullSecrets: []
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# -- Labels to add to all resources
+commonLabels: {}
+# -- Annotations to add to all resources
+commonAnnotations: {}
+# -- Extra labels added to selector matchLabels (and thus to pod labels and all label selectors).
+# WARNING: changing these on an existing release will cause a new Deployment to be
+# created and the old ReplicaSet to be orphaned.
+selectorLabels: {}
+
+# ---------------------------------------------------------------------------
+# CLI flag groups
+# ---------------------------------------------------------------------------
+
+# -- Service name passed to --service-name (defaults to chart fullname)
+serviceName: ""
+# -- Namespace passed to --namespace (defaults to Release.Namespace)
+namespace: ""
+# -- Path to the VCL template inside the container
+vclTemplate: /etc/k8s-httpcache/vcl.tmpl
+
+# -- Varnish listen addresses (repeatable).
+# Each entry is passed as --listen-addr value.
+# Example: ["http=:8080,HTTP", "https=:8443,PROXY"]
+# Default (empty list): the application default "http=:8080,HTTP" is used.
+listenAddrs: []
+
+# -- Backend services (repeatable).
+# Each entry: { name, service, port (optional) }
+# Generates --backend=name:service or --backend=name:service:port
+backends: []
+# - name: origin
+#   service: my-app
+#   port: ""         # omit or empty to use service default
+
+# -- ConfigMaps to watch for template values (repeatable).
+# Each entry: { name, configmap }
+# Generates --values=name:configmap
+values: []
+# - name: myvals
+#   configmap: my-configmap
+
+# -- Secrets to watch for template values (repeatable).
+# Each entry: { name, secret }
+# Generates --secrets=name:secret
+secrets: []
+# - name: mysecrets
+#   secret: my-secret
+
+# -- Directories to poll for YAML template values (repeatable).
+# Each entry: { name, path, configMap (optional — creates a volume from this ConfigMap) }
+# Generates --values-dir=name:path
+valuesDirs: []
+# - name: mydir
+#   path: /etc/values-dir
+#   configMap: my-dir-configmap
+
+# -- Poll interval for --values-dir directories (empty = app default 5s)
+valuesDirPollInterval: ""
+
+# ---------------------------------------------------------------------------
+# Varnish binary paths
+# ---------------------------------------------------------------------------
+varnish:
+  # -- Path to varnishd binary (empty = app default "varnishd")
+  varnishdPath: ""
+  # -- Path to varnishadm binary (empty = app default "varnishadm")
+  varnishadmPath: ""
+  # -- Path to varnishstat binary (empty = app default "varnishstat")
+  varnishstatPath: ""
+  # -- Max time to wait for the varnish admin CLI to become ready (empty = app default 30s)
+  adminTimeout: ""
+
+# ---------------------------------------------------------------------------
+# Broadcast settings
+# ---------------------------------------------------------------------------
+broadcast:
+  # -- Enable the broadcast HTTP server (false sets --broadcast-addr=none)
+  enabled: true
+  # -- Listen address for the broadcast server (empty = app default ":8088")
+  addr: ""
+  # -- Name of the --listen-addr to target for fan-out (empty = first listen addr)
+  targetListenAddr: ""
+  # -- Time to wait for broadcast connections to drain (empty = app default 30s)
+  drainTimeout: ""
+  # -- Time to wait for in-flight requests after draining (empty = app default 5s)
+  shutdownTimeout: ""
+  # -- Max idle time for client keep-alive connections (empty = app default 120s)
+  serverIdleTimeout: ""
+  # -- Max time to read request headers on broadcast server (empty = app default 10s)
+  readHeaderTimeout: ""
+  # -- Max idle time for connections to Varnish pods (empty = app default 4s)
+  clientIdleTimeout: ""
+  # -- Timeout for each fan-out request (empty = app default 3s)
+  clientTimeout: ""
+
+# ---------------------------------------------------------------------------
+# Metrics / Prometheus
+# ---------------------------------------------------------------------------
+metrics:
+  # -- Enable the metrics HTTP server (false sets --metrics-addr=none)
+  enabled: true
+  # -- Listen address for the metrics server (empty = app default ":9101")
+  addr: ""
+  # -- Max time to read request headers on metrics server (empty = app default 10s)
+  readHeaderTimeout: ""
+  # -- Enable varnishstat Prometheus exporter
+  varnishstatExport: false
+  # -- Counter groups to export (empty = all). Only effective when varnishstatExport is true.
+  varnishstatExportFilter: ""
+
+# ---------------------------------------------------------------------------
+# Access logging (varnishncsa)
+# ---------------------------------------------------------------------------
+varnishncsa:
+  # -- Enable varnishncsa access logging subprocess
+  enabled: false
+  # -- Path to varnishncsa binary (empty = app default "varnishncsa")
+  path: ""
+  # -- Custom log format string (empty = app default)
+  format: ""
+  # -- VSL query expression (empty = none)
+  query: ""
+  # -- Log backend requests instead of client requests
+  backend: false
+  # -- Output file path (empty = stdout)
+  output: ""
+  # -- Prefix for each access log line on stdout (empty = app default "[access] ")
+  prefix: ""
+
+# ---------------------------------------------------------------------------
+# Drain (graceful connection draining)
+# ---------------------------------------------------------------------------
+drain:
+  # -- Enable graceful connection draining on shutdown
+  enabled: false
+  # -- Delay before polling for active sessions (empty = app default 15s)
+  delay: ""
+  # -- Poll interval for active sessions (empty = app default 1s)
+  pollInterval: ""
+  # -- Max time to wait for sessions to reach 0 (empty = app default 0s)
+  timeout: ""
+
+# ---------------------------------------------------------------------------
+# Template settings
+# ---------------------------------------------------------------------------
+template:
+  # -- Template delimiters (empty = app default "<< >>")
+  delims: ""
+  # -- Topology zone override (empty = auto-detect from NODE_NAME)
+  zone: ""
+
+# ---------------------------------------------------------------------------
+# Debounce settings
+# ---------------------------------------------------------------------------
+debounce:
+  # -- Debounce duration for endpoint changes (empty = app default 2s)
+  duration: ""
+  # -- Maximum debounce duration before forced reload (empty = app default 0s)
+  max: ""
+  # -- Debounce duration for frontend changes (empty = inherits duration)
+  frontendDuration: ""
+  # -- Max debounce duration for frontend changes (empty = inherits max)
+  frontendMax: ""
+  # -- Debounce duration for backend changes (empty = inherits duration)
+  backendDuration: ""
+  # -- Max debounce duration for backend changes (empty = inherits max)
+  backendMax: ""
+  # -- Histogram bucket boundaries for debounce_latency_seconds metric (empty = app default)
+  latencyBuckets: ""
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  # -- Log level: DEBUG, INFO, WARN, ERROR (empty = app default INFO)
+  level: ""
+  # -- Log format: text, json (empty = app default text)
+  format: ""
+
+# ---------------------------------------------------------------------------
+# VCL settings
+# ---------------------------------------------------------------------------
+vcl:
+  # -- Time to wait for varnishd to exit before SIGKILL (empty = app default 30s)
+  shutdownTimeout: ""
+  # -- Poll interval for VCL template file changes (empty = app default 5s)
+  templateWatchInterval: ""
+  # -- Watch VCL template and values-dir paths for changes.
+  # Empty string = omit flag (app default true). Set to true or false explicitly to emit the flag.
+  fileWatch: ""
+  # -- Max retry attempts for vcl.load failures (empty = app default 3)
+  reloadRetries: ""
+  # -- Wait between vcl.load retry attempts (empty = app default 2s)
+  reloadRetryInterval: ""
+  # -- Number of old VCL objects to retain after reload (empty = app default 0)
+  kept: ""
+
+# ---------------------------------------------------------------------------
+# Extra varnishd arguments (passed after --)
+# ---------------------------------------------------------------------------
+# -- Extra arguments passed to varnishd after the -- separator
+# Example: ["-s", "default,1M", "-p", "default_grace=0"]
+varnishdExtraArgs: []
+
+# ---------------------------------------------------------------------------
+# VCL template content
+# ---------------------------------------------------------------------------
+# -- VCL template rendered into the ConfigMap.
+# This default provides a simple round-robin setup that works out of the box.
+vclTemplateContent: |
+  vcl 4.1;
+
+  import directors;
+  import std;
+
+  <<- range $name, $eps := .Backends >>
+  <<- range $eps >>
+  backend << .Name >>_<< $name >> {
+    .host = "<< .IP >>";
+    .port = "<< .Port >>";
+  }
+  <<- end >>
+  <<- end >>
+
+  acl purge {
+    "127.0.0.0/8";
+  }
+
+  sub vcl_init {
+    <<- range $name, $eps := .Backends >>
+    new backend_<< $name >> = directors.round_robin();
+    <<- range $eps >>
+    backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+    <<- end >>
+    <<- end >>
+  }
+
+  sub handle_readiness {
+    if (req.url == "/ready") {
+      return (synth(200));
+    }
+  }
+
+  sub vcl_recv {
+    call handle_readiness;
+
+    if (req.method == "PURGE") {
+      if (!client.ip ~ purge) {
+        return (synth(405, "Not allowed"));
+      }
+      return (purge);
+    }
+
+    <<- $backendNames := keys .Backends >>
+    <<- if eq (len $backendNames) 1 >>
+    <<- range $name, $_ := .Backends >>
+    set req.backend_hint = backend_<< $name >>.backend();
+    <<- end >>
+    <<- else >>
+    <<- range $name, $_ := .Backends >>
+    if (req.url ~ "^/<< $name >>/") {
+      set req.backend_hint = backend_<< $name >>.backend();
+    }
+    <<- end >>
+    <<- end >>
+  }
+
+  sub vcl_purge {
+    return (synth(200, "Purged"));
+  }
+
+# ---------------------------------------------------------------------------
+# Kubernetes resources
+# ---------------------------------------------------------------------------
+
+serviceAccount:
+  # -- Create a ServiceAccount
+  create: true
+  # -- Annotations for the ServiceAccount
+  annotations: {}
+  # -- ServiceAccount name (defaults to chart fullname)
+  name: ""
+  # -- Automount API credentials
+  automountServiceAccountToken: true
+
+rbac:
+  # -- Create RBAC resources (Role, RoleBinding)
+  create: true
+  # -- Create ClusterRole for node access (zone auto-detection).
+  # "auto" creates it when template.zone is empty; set true/false to override.
+  createClusterRole: auto
+
+# -- Annotations to add to pods
+podAnnotations: {}
+# -- Labels to add to pods
+podLabels: {}
+
+# -- Pod-level security context
+podSecurityContext: {}
+
+# -- Container-level security context
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- HTTP port exposed by the Service
+  httpPort: 80
+  # -- Annotations for the Service
+  annotations: {}
+
+# -- Deployment strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# -- Resource requests and limits
+resources: {}
+# requests:
+#   cpu: 10m
+#   memory: 8Mi
+# limits:
+#   memory: 128Mi
+
+# -- Node selector
+nodeSelector: {}
+# -- Tolerations
+tolerations: []
+# -- Affinity rules
+affinity: {}
+# -- Topology spread constraints
+topologySpreadConstraints: []
+# -- Termination grace period in seconds
+terminationGracePeriodSeconds: 90
+# -- Priority class name for pod scheduling priority
+priorityClassName: ""
+# -- Runtime class name (e.g. gVisor, Kata Containers)
+runtimeClassName: ""
+# -- DNS policy (ClusterFirst, Default, None, ClusterFirstWithHostNet)
+dnsPolicy: ""
+# -- Custom DNS configuration
+dnsConfig: {}
+# -- Number of old ReplicaSets to retain for rollback
+revisionHistoryLimit: ""
+
+# -- Startup probe configuration
+startupProbe:
+  httpGet:
+    path: /ready
+    port: http
+  failureThreshold: 30
+  periodSeconds: 1
+# -- Liveness probe configuration (only used when metrics.enabled is true)
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http-m
+  periodSeconds: 1
+  failureThreshold: 3
+# -- Readiness probe configuration (only used when metrics.enabled is true)
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http-m
+  periodSeconds: 1
+  failureThreshold: 1
+
+# -- Container lifecycle hooks (e.g. preStop, postStart)
+lifecycle: {}
+# preStop:
+#   exec:
+#     command: ["/bin/sh", "-c", "sleep 10"]
+
+# -- Extra init containers to add to the pod
+extraInitContainers: []
+# -- Extra containers (sidecars) to add to the pod
+extraContainers: []
+# -- Extra volumes to add to the pod
+extraVolumes: []
+# -- Extra volume mounts to add to the container
+extraVolumeMounts: []
+# -- Extra environment variables to add to the container
+extraEnv: []
+# -- Extra arguments appended before the -- separator
+extraArgs: []
+
+# ---------------------------------------------------------------------------
+# Ingress (optional)
+# ---------------------------------------------------------------------------
+ingress:
+  # -- Enable Ingress
+  enabled: false
+  # -- Ingress class name
+  className: ""
+  # -- Annotations for the Ingress
+  annotations: {}
+  # -- Ingress hosts
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
+
+# ---------------------------------------------------------------------------
+# Gateway API HTTPRoute (optional, requires Gateway API CRDs)
+# ---------------------------------------------------------------------------
+httpRoute:
+  # -- Enable HTTPRoute (Gateway API)
+  enabled: false
+  # -- Annotations for the HTTPRoute
+  annotations: {}
+  # -- Parent gateway references
+  parentRefs: []
+  #  - name: my-gateway
+  #    namespace: gateway-ns
+  #    sectionName: https
+  # -- Hostnames to match
+  hostnames: []
+  #  - chart-example.local
+  # -- Routing rules
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+
+# ---------------------------------------------------------------------------
+# ServiceMonitor (optional, requires Prometheus Operator)
+# ---------------------------------------------------------------------------
+serviceMonitor:
+  # -- Enable Prometheus ServiceMonitor
+  enabled: false
+  # -- Namespace for the ServiceMonitor (defaults to release namespace)
+  namespace: ""
+  # -- Additional labels for the ServiceMonitor
+  labels: {}
+  # -- Scrape interval
+  interval: ""
+  # -- Scrape timeout
+  scrapeTimeout: ""
+  # -- Relabelings
+  relabelings: []
+
+# ---------------------------------------------------------------------------
+# PodDisruptionBudget (optional)
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  # -- Enable PDB
+  enabled: false
+  # -- Minimum available pods
+  minAvailable: ""
+  # -- Maximum unavailable pods
+  maxUnavailable: ""
+
+# ---------------------------------------------------------------------------
+# HorizontalPodAutoscaler (optional)
+# ---------------------------------------------------------------------------
+autoscaling:
+  # -- Enable HPA
+  enabled: false
+  # -- Minimum replicas
+  minReplicas: 1
+  # -- Maximum replicas
+  maxReplicas: 10
+  # -- Target CPU utilization percentage
+  targetCPU: ""
+  # -- Target memory utilization percentage
+  targetMemory: ""

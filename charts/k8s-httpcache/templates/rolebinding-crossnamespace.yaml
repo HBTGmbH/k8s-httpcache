@@ -1,0 +1,30 @@
+{{- if .Values.rbac.create -}}
+{{- $foreign := include "k8s-httpcache.foreignNamespaces" . | fromJson }}
+{{- $fullname := include "k8s-httpcache.fullname" . }}
+{{- $labels := include "k8s-httpcache.labels" . }}
+{{- $annotations := include "k8s-httpcache.annotations" (dict "root" .) }}
+{{- $saName := include "k8s-httpcache.serviceAccountName" . }}
+{{- $releaseNs := .Release.Namespace }}
+{{- range $ns, $_ := $foreign }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+  {{- with $annotations }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $saName }}
+    namespace: {{ $releaseNs }}
+{{- end }}
+{{- end }}

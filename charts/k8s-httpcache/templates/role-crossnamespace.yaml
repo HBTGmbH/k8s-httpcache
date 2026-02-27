@@ -1,0 +1,42 @@
+{{- if .Values.rbac.create -}}
+{{- $foreign := include "k8s-httpcache.foreignNamespaces" . | fromJson }}
+{{- $fullname := include "k8s-httpcache.fullname" . }}
+{{- $labels := include "k8s-httpcache.labels" . }}
+{{- $annotations := include "k8s-httpcache.annotations" (dict "root" .) }}
+{{- range $ns, $resources := $foreign }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+  {{- with $annotations }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+rules:
+  {{- if or (hasKey $resources "services") (hasKey $resources "endpointslices") }}
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+  {{- end }}
+  {{- if hasKey $resources "configmaps" }}
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["list", "watch"]
+  {{- end }}
+  {{- if hasKey $resources "secrets" }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list", "watch"]
+  {{- end }}
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+{{- end }}
+{{- end }}

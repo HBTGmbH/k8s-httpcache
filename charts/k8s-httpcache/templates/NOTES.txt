@@ -1,0 +1,39 @@
+k8s-httpcache has been deployed!
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+{{- if .Values.backends }}
+Backends:
+{{- range .Values.backends }}
+  - {{ .name }}: {{ .service }}{{ if .port }}:{{ .port }}{{ end }}
+{{- end }}
+{{- else }}
+
+WARNING: No backends configured. Add at least one backend:
+  --set "backends[0].name=origin" --set "backends[0].service=my-app"
+{{- end }}
+
+Service: {{ include "k8s-httpcache.fullname" . }}:{{ .Values.service.httpPort }}
+
+{{- if .Values.ingress.enabled }}
+Ingress:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.metrics.enabled }}
+Metrics: port 9101 (/metrics)
+{{- end }}
+
+{{- if .Values.serviceMonitor.enabled }}
+ServiceMonitor: enabled (Prometheus Operator)
+{{- end }}
+
+{{- if .Values.drain.enabled }}
+Drain: enabled (graceful connection draining on shutdown)
+{{- end }}
+
+To verify the deployment:
+  kubectl get pods -l "{{ include "k8s-httpcache.selectorLabels" . | replace ": " "=" | replace "\n" "," }}" -n {{ .Release.Namespace }}

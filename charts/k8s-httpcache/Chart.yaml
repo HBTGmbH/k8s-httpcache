@@ -1,0 +1,18 @@
+apiVersion: v2
+name: k8s-httpcache
+description: Running the Varnish/Vinyl HTTP cache on Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - varnish
+  - cache
+  - http-cache
+  - reverse-proxy
+  - kubernetes
+home: https://github.com/hbt/k8s-httpcache
+sources:
+  - https://github.com/hbt/k8s-httpcache
+maintainers:
+  - name: HBT Hamburger Berater Team GmbH
+    url: https://www.hbt.de/
