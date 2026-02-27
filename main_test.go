@@ -469,10 +469,17 @@ func (h *testHarness) runAndWait(bcast broadcaster) func() int {
 
 	return func() int {
 		h.sigCh <- syscall.SIGTERM
-		// Give the loop time to enter the signal handler before closing
-		// done, so the outer select picks the signal case, not the
-		// unexpected-exit case.
-		time.Sleep(20 * time.Millisecond)
+		// Wait for the loop to enter the signal handler (ForwardSignal
+		// called) before closing done, so the outer select picks the
+		// signal case, not the unexpected-exit case.
+		deadline := time.After(2 * time.Second)
+		for len(h.mgr.getForwardedSigs()) == 0 {
+			select {
+			case <-deadline:
+				break
+			case <-time.After(1 * time.Millisecond):
+			}
+		}
 		close(h.mgr.done) // simulate varnishd exiting after signal
 		<-done
 
@@ -828,7 +835,10 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		_, rc, _ := h.rend.counts()
+		return rc >= 1
+	}, "RenderToFile called")
 
 	reloadCount, renderCount, _ := h.rend.counts()
 	if reloadCount < 1 {
@@ -861,7 +871,10 @@ func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		_, rc, _ := h.rend.counts()
+		return rc >= 1
+	}, "RenderToFile called")
 
 	_, renderCount, rollbackCount := h.rend.counts()
 	if renderCount < 1 {
@@ -985,7 +998,10 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 	// Actually the first render error with reloadedTemplate → Rollback, continue.
 	// The loop continues without crashing.
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		_, _, rc := h.rend.counts()
+		return rc >= 1
+	}, "Rollback called")
 
 	_, _, rollbackCount := h.rend.counts()
 	if rollbackCount < 1 {
@@ -1051,8 +1067,8 @@ func TestRunLoop_SignalShutdown(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	// Let the loop enter the signal handler before closing done.
-	time.Sleep(20 * time.Millisecond)
+	// Wait for the loop to enter the signal handler (ForwardSignal called).
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done) // varnishd exits cleanly
 	<-done
 
@@ -1148,7 +1164,7 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 
 	// Frontend update → RenderToFile ok → mgr.Reload fails → no Rollback.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	if h.mgr.getReloadCount() < 1 {
 		t.Fatal("expected mgr.Reload to be called")
@@ -1192,7 +1208,10 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	// Template change → rend.Reload ok → RenderToFile ok (1st) →
 	// mgr.Reload fails → Rollback → retry RenderToFile fails (2nd) → continue
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		_, rc, _ := h.rend.counts()
+		return rc >= 2
+	}, "2 RenderToFile calls")
 
 	_, renderCount, rollbackCount := h.rend.counts()
 	if renderCount < 2 {
@@ -3458,6 +3477,39 @@ func drainEvents(rec *record.FakeRecorder) []string {
 	}
 }
 
+// collectEvents waits for at least n events from the FakeRecorder,
+// returning all collected events once n are received or the timeout expires.
+func collectEvents(rec *record.FakeRecorder, n int, timeout time.Duration) []string {
+	var events []string
+	deadline := time.After(timeout)
+	for len(events) < n {
+		select {
+		case e := <-rec.Events:
+			events = append(events, e)
+		case <-deadline:
+			return events
+		}
+	}
+
+	return events
+}
+
+// waitFor polls cond every 1ms until it returns true or 2s elapse.
+func waitFor(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for: %s", msg)
+		case <-time.After(1 * time.Millisecond):
+		}
+	}
+}
+
 // requireEvent asserts that at least one event contains both reason and message substring.
 func requireEvent(t *testing.T, events []string, reason, msgSubstr string) {
 	t.Helper()
@@ -3666,9 +3718,8 @@ func TestRunLoop_EventRenderFailed(t *testing.T) {
 
 	// Frontend update (no template change) → render fails → no rollback.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 1, 2*time.Second)
 	requireEvent(t, events, "VCLRenderFailed", "VCL render error")
 
 	code := wait()
@@ -3726,10 +3777,10 @@ func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Template change → render ok → reload fails → rollback → render fails.
+	// Expect 4 events: VCLTemplateChanged, VCLReloadFailed, VCLRolledBack, VCLRenderFailed.
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 4, 2*time.Second)
 	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
 	requireEvent(t, events, "VCLRolledBack", "Rolled back to previous template after reload failure")
 	requireEvent(t, events, "VCLRenderFailed", "after rollback")
