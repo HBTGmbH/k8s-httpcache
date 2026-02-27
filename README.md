@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/HBTGmbH/k8s-httpcache)](https://goreportcard.com/report/github.com/HBTGmbH/k8s-httpcache)
 [![License](https://img.shields.io/github/license/HBTGmbH/k8s-httpcache)](https://github.com/HBTGmbH/k8s-httpcache/blob/main/LICENSE)
 
-Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
+A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) with many more additional features (see list below).
 
 ## Features
 
