@@ -496,14 +496,11 @@ func TestRunLoop_ReloadZeroFrontends(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.frontendCh <- []watcher.Frontend{}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
 		t.Fatal("expected RenderToFile to be called for zero frontends")
-	}
-	if h.mgr.getReloadCount() < 1 {
-		t.Fatal("expected mgr.Reload to be called for zero frontends")
 	}
 
 	code := wait()
@@ -535,7 +532,7 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 		{IP: "10.0.0.2", Port: 80, Name: "pod-2"},
 	}
 	h.frontendCh <- pods
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	mu.Lock()
 	n := len(gotFrontends)
@@ -574,14 +571,11 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 		name:      backendName,
 		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
 		t.Fatal("expected RenderToFile after backend update")
-	}
-	if h.mgr.getReloadCount() < 1 {
-		t.Fatal("expected mgr.Reload after backend update")
 	}
 
 	// Verify metrics.
@@ -612,14 +606,11 @@ func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
 		name: "tuning",
 		data: map[string]any{"ttl": "300"},
 	}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
 		t.Fatal("expected RenderToFile after values update")
-	}
-	if h.mgr.getReloadCount() < 1 {
-		t.Fatal("expected mgr.Reload after values update")
 	}
 
 	// Verify metric.
@@ -698,14 +689,11 @@ func TestRunLoop_SecretsUpdateTriggersReload(t *testing.T) {
 		name: "auth",
 		data: map[string]any{"token": "abc123"},
 	}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
 		t.Fatal("expected RenderToFile after secrets update")
-	}
-	if h.mgr.getReloadCount() < 1 {
-		t.Fatal("expected mgr.Reload after secrets update")
 	}
 
 	// Verify metric.
@@ -747,7 +735,7 @@ func TestRunLoop_SecretsUpdateUpdatesRedactor(t *testing.T) {
 		name: "db",
 		data: map[string]any{"password": secret},
 	}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitFor(t, func() bool { return strings.Contains(rd.Redact("leak "+secret+" here"), "[REDACTED]") }, "redactor updated")
 
 	// After the secret change, the redactor should redact the value.
 	got := rd.Redact("leak " + secret + " here")
@@ -757,7 +745,7 @@ func TestRunLoop_SecretsUpdateUpdatesRedactor(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -802,11 +790,11 @@ func TestRunLoop_ReloadErrorRedactsSecretsInEvent(t *testing.T) {
 		name:      "nginx",
 		endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 80, Name: "pod1"}},
 	}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	// Drain events from the recorder and check for secret leaks.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -836,11 +824,7 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.templateCh <- struct{}{}
-	waitFor(t, func() bool {
-		_, rc, _ := h.rend.counts()
-
-		return rc >= 1
-	}, "RenderToFile called")
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	reloadCount, renderCount, _ := h.rend.counts()
 	if reloadCount < 1 {
@@ -916,7 +900,11 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 
 	// Template change → Reload succeeds → RenderToFile fails → Rollback
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		_, _, rc := h.rend.counts()
+
+		return rc >= 1
+	}, "Rollback called")
 
 	_, _, rollbackCount := h.rend.counts()
 	if rollbackCount < 1 {
@@ -957,15 +945,11 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 	// Template change → Reload succeeds → RenderToFile succeeds →
 	// mgr.Reload fails → Rollback → retry render → retry mgr.Reload
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "retry mgr.Reload after rollback")
 
 	_, _, rollbackCount := h.rend.counts()
 	if rollbackCount < 1 {
 		t.Fatal("expected Rollback after varnish reload error with new template")
-	}
-	// Retry should have called mgr.Reload a second time
-	if h.mgr.getReloadCount() < 2 {
-		t.Fatal("expected retry mgr.Reload after rollback")
 	}
 
 	// Verify metrics.
@@ -1041,7 +1025,7 @@ func TestRunLoop_RollbackReloadError(t *testing.T) {
 	// Template change → rend.Reload ok → RenderToFile ok → mgr.Reload fails →
 	// Rollback → retry RenderToFile ok → retry mgr.Reload fails again → continue
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "mgr.Reload called twice")
 
 	// Verify metrics: two reload errors (initial + retry) and one rollback.
 	if delta := getCounterValue(t, "error", h.metrics.VCLReloadsTotal) - reloadErrBefore; delta < 2 {
@@ -1135,7 +1119,9 @@ func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 
 	// Frontend update (not a template change) → RenderToFile fails → no Rollback.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		return getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)-renderErrBefore >= 1
+	}, "render error metric incremented")
 
 	_, renderCount, rollbackCount := h.rend.counts()
 	if renderCount < 1 {
@@ -1293,7 +1279,7 @@ func TestRunLoop_SignalShutdownVarnishError(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -1311,8 +1297,8 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.frontendDebounce = 50 * time.Millisecond
-	lc.backendDebounce = 50 * time.Millisecond
+	lc.frontendDebounce = 500 * time.Millisecond
+	lc.backendDebounce = 500 * time.Millisecond
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -1326,7 +1312,7 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 		{IP: "10.0.0.1", Port: 80, Name: "pod-1"},
 		{IP: "10.0.0.2", Port: 80, Name: "pod-2"},
 	}
-	time.Sleep(100 * time.Millisecond) // wait for debounce to fire
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "debounce fired")
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount != 1 {
@@ -1337,7 +1323,7 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 }
@@ -1452,10 +1438,15 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 
 	// Frontend update with nil bcast — no panic.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		_, rc, _ := h.rend.counts()
+
+		return rc >= 1
+	}, "RenderToFile called")
 
 	// Signal shutdown with nil bcast — no panic.
 	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -1544,7 +1535,7 @@ func TestRunLoop_DrainSkippedWhenDisabled(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -1592,11 +1583,11 @@ func TestRunLoop_DrainInterruptedBySecondSignal(t *testing.T) {
 
 	// First signal starts shutdown+drain.
 	sigCh <- syscall.SIGTERM
-	// Let it enter the poll loop.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for drain polling to start.
+	waitFor(t, func() bool { return h.mgr.getSessionsCalls() >= 1 }, "drain polling started")
 	// Second signal interrupts drain.
 	sigCh <- syscall.SIGINT
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) >= 2 }, "second signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -1986,7 +1977,7 @@ func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 
 	// Clean shutdown.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -2053,7 +2044,12 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 
 	// Trigger a frontend update to cause a render.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond) // debounce
+	waitFor(t, func() bool {
+		renderMu.Lock()
+		defer renderMu.Unlock()
+
+		return renderedVals != nil
+	}, "RenderToFile called")
 
 	// Assert RenderToFile was called with latestValues containing
 	// dirtest.greeting == "hello".
@@ -2074,7 +2070,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 
 	// Clean shutdown.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -3483,10 +3479,10 @@ func drainEvents(rec *record.FakeRecorder) []string {
 }
 
 // collectEvents waits for at least n events from the FakeRecorder,
-// returning all collected events once n are received or the timeout expires.
-func collectEvents(rec *record.FakeRecorder, n int, timeout time.Duration) []string {
+// returning all collected events once n are received or 2s elapse.
+func collectEvents(rec *record.FakeRecorder, n int) []string {
 	var events []string
-	deadline := time.After(timeout)
+	deadline := time.After(2 * time.Second)
 	for len(events) < n {
 		select {
 		case e := <-rec.Events:
@@ -3534,9 +3530,8 @@ func TestRunLoop_EventReasonFrontendEndpoints(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLReloaded", "frontend endpoints changed")
 
 	code := wait()
@@ -3556,9 +3551,8 @@ func TestRunLoop_EventReasonBackendEndpoints(t *testing.T) {
 		name:      "api",
 		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLReloaded", "backend endpoints changed")
 
 	code := wait()
@@ -3575,9 +3569,8 @@ func TestRunLoop_EventReasonValuesUpdated(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.valuesCh <- valuesChange{name: "tuning", data: map[string]any{"ttl": "300"}}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLReloaded", "values updated")
 
 	code := wait()
@@ -3594,9 +3587,8 @@ func TestRunLoop_EventReasonTemplateChanged(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 2)
 	requireEvent(t, events, "VCLTemplateChanged", "template file change detected")
 	requireEvent(t, events, "VCLReloaded", "template changed")
 
@@ -3619,9 +3611,8 @@ func TestRunLoop_EventReasonMultipleTriggers(t *testing.T) {
 		name:      "api",
 		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 2)
 	requireEvent(t, events, "VCLReloaded", "frontend endpoints changed")
 	requireEvent(t, events, "VCLReloaded", "backend endpoints changed")
 
@@ -3648,9 +3639,8 @@ func TestRunLoop_EventReasonAfterRollback(t *testing.T) {
 
 	// Template change → mgr.Reload fails → rollback → retry succeeds
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 4)
 	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
 	requireEvent(t, events, "VCLRolledBack", "Rolled back to previous template")
 	requireEvent(t, events, "VCLReloaded", "template changed")
@@ -3677,9 +3667,8 @@ func TestRunLoop_EventReasonAllFourTriggers(t *testing.T) {
 	}
 	h.valuesCh <- valuesChange{name: "tuning", data: map[string]any{"ttl": "300"}}
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 5)
 	requireEvent(t, events, "VCLReloaded", "frontend endpoints changed")
 	requireEvent(t, events, "VCLReloaded", "backend endpoints changed")
 	requireEvent(t, events, "VCLReloaded", "values updated")
@@ -3700,9 +3689,8 @@ func TestRunLoop_EventTemplateParseFailed(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 2)
 	requireEvent(t, events, "VCLTemplateParseFailed", "Template parse error")
 
 	code := wait()
@@ -3724,7 +3712,7 @@ func TestRunLoop_EventRenderFailed(t *testing.T) {
 	// Frontend update (no template change) → render fails → no rollback.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
-	events := collectEvents(rec, 1, 2*time.Second)
+	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLRenderFailed", "VCL render error")
 
 	code := wait()
@@ -3745,9 +3733,8 @@ func TestRunLoop_EventRenderFailedRollback(t *testing.T) {
 
 	// Template change → parse ok → render fails → rollback.
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 3)
 	requireEvent(t, events, "VCLRenderFailed", "VCL render error")
 	requireEvent(t, events, "VCLRolledBack", "Template rollback after render error")
 
@@ -3785,7 +3772,7 @@ func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
 	// Expect 4 events: VCLTemplateChanged, VCLReloadFailed, VCLRolledBack, VCLRenderFailed.
 	h.templateCh <- struct{}{}
 
-	events := collectEvents(rec, 4, 2*time.Second)
+	events := collectEvents(rec, 4)
 	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
 	requireEvent(t, events, "VCLRolledBack", "Rolled back to previous template after reload failure")
 	requireEvent(t, events, "VCLRenderFailed", "after rollback")
@@ -3808,9 +3795,8 @@ func TestRunLoop_EventReloadFailedNoRollback(t *testing.T) {
 
 	// Frontend update (no template change) → render ok → reload fails → no rollback.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
 	// Should NOT contain a rollback event.
 	for _, e := range events {
@@ -3837,9 +3823,8 @@ func TestRunLoop_EventReloadFailedAfterRollback(t *testing.T) {
 
 	// Template change → render ok → reload fails → rollback → render ok → reload fails again.
 	h.templateCh <- struct{}{}
-	time.Sleep(20 * time.Millisecond)
 
-	events := drainEvents(rec)
+	events := collectEvents(rec, 4)
 	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed after rollback")
 
 	code := wait()
@@ -4556,7 +4541,7 @@ func TestRunLoop_StatusStoreUpdatedOnReload(t *testing.T) {
 
 	// Clean shutdown.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -4637,7 +4622,7 @@ func TestRunLoop_StatusStoreBackendCounts(t *testing.T) {
 
 	// Clean shutdown.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -4686,7 +4671,7 @@ func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
 
 	// Clean shutdown.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -4720,7 +4705,11 @@ func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
 
 	// Frontend update → RenderToFile fails → no status update.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool {
+		_, rc, _ := h.rend.counts()
+
+		return rc >= 1
+	}, "RenderToFile called")
 
 	snap := store.snapshot()
 	if snap.ReloadCount != 0 {
@@ -4735,7 +4724,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
 
 	// Clean shutdown.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 
@@ -4769,7 +4758,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
 
 	// Frontend update → render ok → mgr.Reload fails → no status update.
 	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	snap := store.snapshot()
 	if snap.ReloadCount != 0 {
@@ -4784,7 +4773,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
 
 	// Clean shutdown.
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(20 * time.Millisecond)
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
 

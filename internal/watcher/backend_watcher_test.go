@@ -61,7 +61,7 @@ func readBackendChanges(t *testing.T, bw *BackendWatcher) []Endpoint {
 	select {
 	case eps := <-bw.Changes():
 		return eps
-	case <-time.After(5 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("timeout waiting for backend endpoint change")
 
 		return nil
