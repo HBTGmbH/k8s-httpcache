@@ -3028,3 +3028,78 @@ func TestParseVarnishstatExportFilter(t *testing.T) {
 		t.Errorf("VarnishstatExportFilter = %v, want %v", cfg.VarnishstatExportFilter, want)
 	}
 }
+
+func TestParseVarnishncsaDefaults(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VarnishncsaEnabled {
+		t.Error("VarnishncsaEnabled = true, want false (default)")
+	}
+	if cfg.VarnishncsaPath != "varnishncsa" {
+		t.Errorf("VarnishncsaPath = %q, want %q", cfg.VarnishncsaPath, "varnishncsa")
+	}
+	if cfg.VarnishncsaFormat != "" {
+		t.Errorf("VarnishncsaFormat = %q, want empty", cfg.VarnishncsaFormat)
+	}
+	if cfg.VarnishncsaQuery != "" {
+		t.Errorf("VarnishncsaQuery = %q, want empty", cfg.VarnishncsaQuery)
+	}
+	if cfg.VarnishncsaBackend {
+		t.Error("VarnishncsaBackend = true, want false")
+	}
+	if cfg.VarnishncsaOutput != "" {
+		t.Errorf("VarnishncsaOutput = %q, want empty", cfg.VarnishncsaOutput)
+	}
+	if cfg.VarnishncsaPrefix != "[access] " {
+		t.Errorf("VarnishncsaPrefix = %q, want %q", cfg.VarnishncsaPrefix, "[access] ")
+	}
+}
+
+func TestParseVarnishncsaAllFlags(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--varnishncsa-enabled",
+		"--varnishncsa-path=/usr/bin/varnishncsa",
+		"--varnishncsa-format=%h %s %b",
+		"--varnishncsa-query=ReqURL ~ /api",
+		"--varnishncsa-backend",
+		"--varnishncsa-output=/var/log/access.log",
+		"--varnishncsa-prefix", "[ncsa] ",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.VarnishncsaEnabled {
+		t.Error("VarnishncsaEnabled = false, want true")
+	}
+	if cfg.VarnishncsaPath != "/usr/bin/varnishncsa" {
+		t.Errorf("VarnishncsaPath = %q, want /usr/bin/varnishncsa", cfg.VarnishncsaPath)
+	}
+	if cfg.VarnishncsaFormat != "%h %s %b" {
+		t.Errorf("VarnishncsaFormat = %q, want %%h %%s %%b", cfg.VarnishncsaFormat)
+	}
+	if cfg.VarnishncsaQuery != "ReqURL ~ /api" {
+		t.Errorf("VarnishncsaQuery = %q, want ReqURL ~ /api", cfg.VarnishncsaQuery)
+	}
+	if !cfg.VarnishncsaBackend {
+		t.Error("VarnishncsaBackend = false, want true")
+	}
+	if cfg.VarnishncsaOutput != "/var/log/access.log" {
+		t.Errorf("VarnishncsaOutput = %q, want /var/log/access.log", cfg.VarnishncsaOutput)
+	}
+	if cfg.VarnishncsaPrefix != "[ncsa] " {
+		t.Errorf("VarnishncsaPrefix = %q, want %q", cfg.VarnishncsaPrefix, "[ncsa] ")
+	}
+}

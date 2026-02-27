@@ -33,6 +33,7 @@ import (
 	"k8s-httpcache/internal/config"
 	"k8s-httpcache/internal/redact"
 	"k8s-httpcache/internal/telemetry"
+	"k8s-httpcache/internal/varnish"
 	"k8s-httpcache/internal/watcher"
 )
 
@@ -4890,5 +4891,222 @@ func TestDetectLocalZone_ForbiddenRBAC(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "forbidden") {
 		t.Errorf("expected log to mention forbidden error, got: %s", logOutput)
+	}
+}
+
+func TestRunLoop_NCSAEventEmitsKubeEvent(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	rec := h.withRecorder()
+	ncsaCh := make(chan varnish.NCSAEvent, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.ncsaEvents = ncsaCh
+	lc.recorder = rec
+	lc.podRef = h.podRef
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	ncsaCh <- varnish.NCSAEvent{
+		Type:    "Warning",
+		Reason:  "VarnishncsaExited",
+		Message: "varnishncsa exited unexpectedly: signal: killed",
+	}
+
+	// Wait for event to be processed.
+	deadline := time.After(2 * time.Second)
+	var events []string
+	for {
+		select {
+		case e := <-rec.Events:
+			events = append(events, e)
+			if strings.Contains(e, "VarnishncsaExited") {
+				goto found
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for event, got: %v", events)
+		}
+	}
+found:
+
+	requireEvent(t, events, "VarnishncsaExited", "varnishncsa exited unexpectedly")
+
+	// Shut down cleanly.
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+}
+
+func TestRunLoop_NCSAEventsNilNoPanic(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	// ncsaEvents defaults to nil in loopConfig — verify the loop runs fine.
+	wait := h.runAndWait(h.bcast)
+
+	// Trigger a normal reload to confirm the loop is operational.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_NCSACrashLoopExitsWithError(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	ncsaCrashed := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.ncsaCrashed = ncsaCrashed
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Simulate crash loop by closing the channel.
+	close(ncsaCrashed)
+
+	// Wait for SIGTERM to be forwarded to varnishd.
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+
+	// Let varnishd exit.
+	close(h.mgr.done)
+	<-done
+
+	if got := int(code.Load()); got != 1 {
+		t.Fatalf("expected exit code 1, got %d", got)
+	}
+
+	// Verify SIGTERM was forwarded.
+	sigs := h.mgr.getForwardedSigs()
+	if len(sigs) == 0 {
+		t.Fatal("expected at least one forwarded signal")
+	}
+	if sigs[0] != syscall.SIGTERM {
+		t.Errorf("first forwarded signal = %v, want SIGTERM", sigs[0])
+	}
+}
+
+func TestRunLoop_StopNCSACalledOnShutdown(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var stopCalled atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.stopNCSA = func() { stopCalled.Store(true) }
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+
+	if !stopCalled.Load() {
+		t.Fatal("stopNCSA was not called during shutdown")
+	}
+}
+
+func TestRunLoop_StopNCSANilOnShutdown(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.stopNCSA = nil // explicitly nil — should not panic
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+
+	result := int(code.Load())
+	if result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestBuildNCSAArgs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want []string
+	}{
+		{
+			name: "empty config",
+			cfg:  config.Config{},
+			want: nil,
+		},
+		{
+			name: "backend only",
+			cfg:  config.Config{VarnishncsaBackend: true},
+			want: []string{"-b"},
+		},
+		{
+			name: "format only",
+			cfg:  config.Config{VarnishncsaFormat: "%h %s"},
+			want: []string{"-F", "%h %s"},
+		},
+		{
+			name: "query only",
+			cfg:  config.Config{VarnishncsaQuery: "ReqURL ~ /api"},
+			want: []string{"-q", "ReqURL ~ /api"},
+		},
+		{
+			name: "output only",
+			cfg:  config.Config{VarnishncsaOutput: "/var/log/access.log"},
+			want: []string{"-w", "/var/log/access.log"},
+		},
+		{
+			name: "all combined",
+			cfg: config.Config{
+				VarnishncsaBackend: true,
+				VarnishncsaFormat:  "%h %s",
+				VarnishncsaQuery:   "ReqURL ~ /api",
+				VarnishncsaOutput:  "/var/log/access.log",
+			},
+			want: []string{"-b", "-F", "%h %s", "-q", "ReqURL ~ /api", "-w", "/var/log/access.log"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildNCSAArgs(&tc.cfg)
+			if len(got) == 0 && len(tc.want) == 0 {
+				return
+			}
+			if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", tc.want) {
+				t.Errorf("buildNCSAArgs() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3475,4 +3476,706 @@ func TestExecProcSignal(t *testing.T) {
 	_ = ep.Signal(os.Interrupt)
 
 	_ = er // keep linter happy about er being used
+}
+
+// --- NCSA tests ---
+
+func TestStartNCSA(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotName string
+	var gotArgs []string
+
+	mp := &mockProc{pid: 99, waitCh: make(chan struct{})}
+
+	r := &mockRunner{
+		startFn: func(name string, args []string) (proc, error) {
+			mu.Lock()
+			gotName = name
+			gotArgs = slices.Clone(args)
+			mu.Unlock()
+
+			return mp, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.workDir = "/var/lib/varnish/test"
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", []string{"-b", "-F", "%h %s"}, "[access] ")
+	defer func() {
+		close(mp.waitCh)
+		m.StopNCSA()
+	}()
+
+	// Wait until the process is started.
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := gotName
+		mu.Unlock()
+		if n != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for Start call")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotName != "/usr/bin/varnishncsa" {
+		t.Errorf("name = %q, want /usr/bin/varnishncsa", gotName)
+	}
+	want := []string{"-n", "/var/lib/varnish/test", "-b", "-F", "%h %s"}
+	if !slices.Equal(gotArgs, want) {
+		t.Errorf("args = %v, want %v", gotArgs, want)
+	}
+}
+
+func TestStartNCSARestartOnExit(t *testing.T) {
+	t.Parallel()
+
+	var startCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			startCount.Add(1)
+
+			return &mockProc{pid: 1}, nil // Wait returns immediately → exit
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+	defer m.StopNCSA()
+
+	deadline := time.After(2 * time.Second)
+	for startCount.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out: startCount=%d, want >= 2", startCount.Load())
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestStartNCSAEventsOnExit(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			return &mockProc{pid: 1, waitErr: errors.New("crashed")}, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+	defer m.StopNCSA()
+
+	select {
+	case ev := <-m.NCSAEvents():
+		if ev.Type != "Warning" {
+			t.Errorf("event type = %q, want Warning", ev.Type)
+		}
+		if ev.Reason != "VarnishncsaExited" {
+			t.Errorf("event reason = %q, want VarnishncsaExited", ev.Reason)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for NCSA event")
+	}
+}
+
+func TestStartNCSAEmptyPathNoOp(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			t.Fatal("Start should not be called with empty path")
+
+			return nil, errors.New("unreachable")
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.StartNCSA("", nil, "")
+
+	if m.NCSAEvents() != nil {
+		t.Error("NCSAEvents() should be nil when path is empty")
+	}
+}
+
+func TestStopNCSANoOp(t *testing.T) {
+	t.Parallel()
+
+	m := newTestManager(&mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn:   func(string, []string) (string, error) { return "", nil },
+	})
+
+	// StopNCSA without StartNCSA should not panic.
+	m.StopNCSA()
+}
+
+func TestStartNCSAStartFailedRestartsAfterDelay(t *testing.T) {
+	t.Parallel()
+
+	var startCount atomic.Int32
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			startCount.Add(1)
+
+			return nil, errors.New("binary not found")
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+	defer m.StopNCSA()
+
+	// Wait for at least 2 start attempts (failed → delay → retry).
+	deadline := time.After(2 * time.Second)
+	for startCount.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out: startCount=%d, want >= 2", startCount.Load())
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	// Verify VarnishncsaStartFailed event was emitted.
+	select {
+	case ev := <-m.NCSAEvents():
+		if ev.Reason != "VarnishncsaStartFailed" {
+			t.Errorf("event reason = %q, want VarnishncsaStartFailed", ev.Reason)
+		}
+		if ev.Type != "Warning" {
+			t.Errorf("event type = %q, want Warning", ev.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for start-failed event")
+	}
+}
+
+func TestStartNCSARestartedEventAfterDelay(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			return &mockProc{pid: 1, waitErr: errors.New("exit 1")}, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+	defer m.StopNCSA()
+
+	// Drain events until we see the VarnishncsaRestarted event.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-m.NCSAEvents():
+			if ev.Reason == "VarnishncsaRestarted" {
+				if ev.Type != "Normal" {
+					t.Errorf("event type = %q, want Normal", ev.Type)
+				}
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for VarnishncsaRestarted event")
+		}
+	}
+}
+
+func TestStartNCSANoWorkDir(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotArgs []string
+
+	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
+
+	r := &mockRunner{
+		startFn: func(_ string, args []string) (proc, error) {
+			mu.Lock()
+			gotArgs = slices.Clone(args)
+			mu.Unlock()
+
+			return mp, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.workDir = "" // no workDir → no -n flag
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", []string{"-b"}, "")
+	defer func() {
+		close(mp.waitCh)
+		m.StopNCSA()
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		a := gotArgs
+		mu.Unlock()
+		if a != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for Start call")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Should NOT contain -n flag.
+	want := []string{"-b"}
+	if !slices.Equal(gotArgs, want) {
+		t.Errorf("args = %v, want %v (no -n flag)", gotArgs, want)
+	}
+}
+
+func TestStopNCSASendsSIGTERM(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProc{pid: 42, waitCh: make(chan struct{})}
+	started := make(chan struct{}, 1)
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			started <- struct{}{}
+
+			return mp, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+
+	// Wait for the monitor goroutine to start the process.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ncsa process to start")
+	}
+
+	// StopNCSA should close ncsaStop, which causes the monitor to
+	// send SIGTERM and wait. We need to unblock Wait after SIGTERM.
+	go func() {
+		// Wait until SIGTERM is received, then unblock Wait.
+		for {
+			mp.mu.Lock()
+			got := slices.Clone(mp.signalled)
+			mp.mu.Unlock()
+			if len(got) > 0 {
+				close(mp.waitCh)
+
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	m.StopNCSA()
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if len(mp.signalled) == 0 {
+		t.Fatal("expected SIGTERM to be sent to ncsa process")
+	}
+	if mp.signalled[0] != os.Signal(syscall.SIGTERM) {
+		t.Errorf("signal = %v, want SIGTERM", mp.signalled[0])
+	}
+}
+
+func TestForwardSignalSIGKILLReachesNCSA(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProc{pid: 10, waitCh: make(chan struct{})}
+	ncsaProc := &mockProc{pid: 20, waitCh: make(chan struct{})}
+	defer close(mp.waitCh)
+	defer close(ncsaProc.waitCh)
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return mp, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.proc = mp
+	m.ncsaMu.Lock()
+	m.ncsaProc = ncsaProc
+	m.ncsaMu.Unlock()
+
+	// SIGTERM should NOT reach ncsa.
+	m.ForwardSignal(syscall.SIGTERM)
+
+	ncsaProc.mu.Lock()
+	termSigs := len(ncsaProc.signalled)
+	ncsaProc.mu.Unlock()
+	if termSigs != 0 {
+		t.Errorf("SIGTERM should not reach ncsa, got %d signals", termSigs)
+	}
+
+	// SIGKILL should reach BOTH varnishd and ncsa.
+	m.ForwardSignal(syscall.SIGKILL)
+
+	mp.mu.Lock()
+	varnishdSigs := slices.Clone(mp.signalled)
+	mp.mu.Unlock()
+	ncsaProc.mu.Lock()
+	ncsaSigs := slices.Clone(ncsaProc.signalled)
+	ncsaProc.mu.Unlock()
+
+	// varnishd should have received both SIGTERM and SIGKILL.
+	if len(varnishdSigs) != 2 {
+		t.Fatalf("varnishd signal count = %d, want 2", len(varnishdSigs))
+	}
+	if varnishdSigs[1] != os.Signal(syscall.SIGKILL) {
+		t.Errorf("varnishd signal[1] = %v, want SIGKILL", varnishdSigs[1])
+	}
+
+	// ncsa should have received only SIGKILL.
+	if len(ncsaSigs) != 1 {
+		t.Fatalf("ncsa signal count = %d, want 1", len(ncsaSigs))
+	}
+	if ncsaSigs[0] != os.Signal(syscall.SIGKILL) {
+		t.Errorf("ncsa signal[0] = %v, want SIGKILL", ncsaSigs[0])
+	}
+}
+
+func TestStartNCSACrashLoopExitsAfterMaxCrashes(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			return &mockProc{pid: 1, waitErr: errors.New("crashed")}, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.NCSAMaxCrashes = 3
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+
+	// monitorNCSA should stop after 3 crashes and close ncsaCrashed.
+	select {
+	case <-m.NCSACrashed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ncsaCrashed to close")
+	}
+
+	// ncsaDone should also be closed (monitorNCSA returned).
+	select {
+	case <-m.ncsaDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ncsaDone to close")
+	}
+
+	// Verify VarnishncsaCrashLoop event was emitted.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-m.NCSAEvents():
+			if ev.Reason == "VarnishncsaCrashLoop" {
+				if ev.Type != "Warning" {
+					t.Errorf("event type = %q, want Warning", ev.Type)
+				}
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for VarnishncsaCrashLoop event")
+		}
+	}
+}
+
+func TestStartNCSACrashLoopStartFailures(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			return nil, errors.New("binary not found")
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.NCSAMaxCrashes = 3
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+
+	// Start failures should also trigger crash loop detection.
+	select {
+	case <-m.NCSACrashed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ncsaCrashed to close")
+	}
+
+	// ncsaDone should also be closed.
+	select {
+	case <-m.ncsaDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ncsaDone to close")
+	}
+
+	// Verify VarnishncsaCrashLoop event was emitted.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-m.NCSAEvents():
+			if ev.Reason == "VarnishncsaCrashLoop" {
+				if ev.Type != "Warning" {
+					t.Errorf("event type = %q, want Warning", ev.Type)
+				}
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for VarnishncsaCrashLoop event")
+		}
+	}
+}
+
+func TestNCSACrashedNilWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	m := newTestManager(&mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn:   func(string, []string) (string, error) { return "", nil },
+	})
+
+	// NCSACrashed() returns nil when StartNCSA was never called.
+	if m.NCSACrashed() != nil {
+		t.Error("NCSACrashed() should be nil when StartNCSA was never called")
+	}
+}
+
+func TestPrefixWriterReturnValue(t *testing.T) {
+	t.Parallel()
+	pw := newPrefixWriter(io.Discard, "[x] ")
+
+	// Complete line: returned n should equal input length, not output length.
+	input := []byte("hello world\n")
+	n, err := pw.Write(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != len(input) {
+		t.Errorf("n = %d, want %d", n, len(input))
+	}
+
+	// Fragment (no newline): returned n should equal input length.
+	frag := []byte("partial")
+	n, err = pw.Write(frag)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != len(frag) {
+		t.Errorf("n = %d, want %d", n, len(frag))
+	}
+}
+
+type errWriter struct{ err error }
+
+func (w errWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestPrefixWriterErrorPropagation(t *testing.T) {
+	t.Parallel()
+	writeErr := errors.New("disk full")
+	pw := newPrefixWriter(errWriter{err: writeErr}, "[x] ")
+
+	_, err := pw.Write([]byte("hello\n"))
+	if !errors.Is(err, writeErr) {
+		t.Errorf("error = %v, want %v", err, writeErr)
+	}
+}
+
+func TestPrefixWriter(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		prefix string
+		writes []string
+		want   string
+	}{
+		{
+			name:   "single complete line",
+			prefix: "[access] ",
+			writes: []string{"GET /foo 200\n"},
+			want:   "[access] GET /foo 200\n",
+		},
+		{
+			name:   "multiple lines in one write",
+			prefix: ">> ",
+			writes: []string{"line1\nline2\n"},
+			want:   ">> line1\n>> line2\n",
+		},
+		{
+			name:   "fragmented write",
+			prefix: "[a] ",
+			writes: []string{"hel", "lo world\n"},
+			want:   "[a] hello world\n",
+		},
+		{
+			name:   "empty prefix passes through",
+			prefix: "",
+			writes: []string{"hello\n"},
+			want:   "hello\n",
+		},
+		{
+			name:   "no trailing newline buffers",
+			prefix: "[x] ",
+			writes: []string{"no newline"},
+			want:   "",
+		},
+		{
+			name:   "buffered fragment flushed on newline",
+			prefix: "[x] ",
+			writes: []string{"partial", " line\n"},
+			want:   "[x] partial line\n",
+		},
+		{
+			name:   "multi-line with trailing fragment",
+			prefix: "[a] ",
+			writes: []string{"line1\nline2\npartial"},
+			want:   "[a] line1\n[a] line2\n",
+		},
+		{
+			name:   "empty input",
+			prefix: "[a] ",
+			writes: []string{""},
+			want:   "",
+		},
+		{
+			name:   "three fragments then newline",
+			prefix: "P ",
+			writes: []string{"a", "b", "c\n"},
+			want:   "P abc\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			pw := newPrefixWriter(&buf, tc.prefix)
+			for _, w := range tc.writes {
+				_, err := pw.Write([]byte(w))
+				if err != nil {
+					t.Fatalf("Write error: %v", err)
+				}
+			}
+			if got := buf.String(); got != tc.want {
+				t.Errorf("output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// --- prefixWriter benchmarks ---
+
+// BenchmarkPrefixWriter_SingleLine benchmarks the common case: varnishncsa
+// writes one complete newline-terminated line per Write call.
+// After scratch buffer warm-up this must report 0 allocs/op.
+func BenchmarkPrefixWriter_SingleLine(b *testing.B) {
+	pw := newPrefixWriter(io.Discard, "[access] ")
+	line := []byte("127.0.0.1 - - [27/Feb/2026:12:00:00 +0000] \"GET /api/v1/health HTTP/1.1\" 200 2 \"-\" \"kube-probe/1.30\"\n")
+
+	// Warm up the scratch buffer with one write.
+	_, _ = pw.Write(line)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(line)))
+	b.ResetTimer()
+	for range b.N {
+		_, _ = pw.Write(line)
+	}
+}
+
+// BenchmarkPrefixWriter_MultiLine benchmarks a Write call that delivers
+// multiple newline-terminated lines at once (e.g. buffered pipe output).
+// After warm-up this must report 0 allocs/op.
+func BenchmarkPrefixWriter_MultiLine(b *testing.B) {
+	pw := newPrefixWriter(io.Discard, "[access] ")
+	single := []byte("127.0.0.1 - - [27/Feb/2026:12:00:00 +0000] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.5\"\n")
+	multi := make([]byte, 0, len(single)*10)
+	for range 10 {
+		multi = append(multi, single...)
+	}
+
+	_, _ = pw.Write(multi)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(multi)))
+	b.ResetTimer()
+	for range b.N {
+		_, _ = pw.Write(multi)
+	}
+}
+
+// BenchmarkPrefixWriter_Fragmented benchmarks two-part fragmented writes
+// where the first call has no newline and the second completes the line.
+// After warm-up this must report 0 allocs/op.
+func BenchmarkPrefixWriter_Fragmented(b *testing.B) {
+	pw := newPrefixWriter(io.Discard, "[access] ")
+	frag1 := []byte("127.0.0.1 - - [27/Feb/2026:12:00:00 +0000]")
+	frag2 := []byte(" \"GET /api/v1/health HTTP/1.1\" 200 2\n")
+
+	// Warm up.
+	_, _ = pw.Write(frag1)
+	_, _ = pw.Write(frag2)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(frag1) + len(frag2)))
+	b.ResetTimer()
+	for range b.N {
+		_, _ = pw.Write(frag1)
+		_, _ = pw.Write(frag2)
+	}
 }

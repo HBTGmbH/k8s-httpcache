@@ -257,6 +257,13 @@ type Config struct {
 	Zone                       string
 	VarnishstatExport          bool
 	VarnishstatExportFilter    []string
+	VarnishncsaEnabled         bool
+	VarnishncsaPath            string
+	VarnishncsaFormat          string // -F format string
+	VarnishncsaQuery           string // -q VSL query
+	VarnishncsaBackend         bool   // -b backend mode (default: client)
+	VarnishncsaOutput          string // -w file path (empty = stdout)
+	VarnishncsaPrefix          string // line prefix for stdout output
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -563,6 +570,52 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    "Metrics:",
 				Usage:       "Counter groups to export (e.g. MAIN,SMA,VBE); empty exports all (only effective when --varnishstat-export is enabled)",
 				Destination: &c.VarnishstatExportFilter,
+			},
+
+			// Access logging
+			&cli.BoolFlag{
+				Name:        "varnishncsa-enabled",
+				Category:    "Access logging:",
+				Usage:       "Enable varnishncsa access logging subprocess",
+				Destination: &c.VarnishncsaEnabled,
+			},
+			&cli.StringFlag{
+				Name:        "varnishncsa-path",
+				Category:    "Access logging:",
+				Usage:       "Path to varnishncsa binary",
+				Value:       "varnishncsa",
+				Destination: &c.VarnishncsaPath,
+			},
+			&cli.StringFlag{
+				Name:        "varnishncsa-format",
+				Category:    "Access logging:",
+				Usage:       `Custom log format string (passed as -F; only effective with --varnishncsa-enabled)`,
+				Destination: &c.VarnishncsaFormat,
+			},
+			&cli.StringFlag{
+				Name:        "varnishncsa-query",
+				Category:    "Access logging:",
+				Usage:       `VSL query expression (passed as -q; only effective with --varnishncsa-enabled)`,
+				Destination: &c.VarnishncsaQuery,
+			},
+			&cli.BoolFlag{
+				Name:        "varnishncsa-backend",
+				Category:    "Access logging:",
+				Usage:       "Log backend requests instead of client requests (passes -b; only effective with --varnishncsa-enabled)",
+				Destination: &c.VarnishncsaBackend,
+			},
+			&cli.StringFlag{
+				Name:        "varnishncsa-output",
+				Category:    "Access logging:",
+				Usage:       `Output file path (default: stdout; only effective with --varnishncsa-enabled)`,
+				Destination: &c.VarnishncsaOutput,
+			},
+			&cli.StringFlag{
+				Name:        "varnishncsa-prefix",
+				Category:    "Access logging:",
+				Usage:       `Prefix prepended to each access log line on stdout (only effective with --varnishncsa-enabled)`,
+				Value:       "[access] ",
+				Destination: &c.VarnishncsaPrefix,
 			},
 
 			// Drain

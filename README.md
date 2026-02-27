@@ -44,6 +44,7 @@ Replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache).
   - https://github.com/mittwald/kube-httpcache/issues/66
 - JSON [status endpoint](#status-endpoint) (`/status`) on the metrics server providing runtime state (version, uptime, endpoint counts, reload metrics, varnishd process status)
 - [Topology-aware routing](#topology-aware-routing): endpoint zone, node name, and routing hints are exposed in templates, allowing weighted directors that prefer same-zone backends
+- Optional [access logging](#access-logging) via a managed `varnishncsa` subprocess with auto-restart, configurable log format, VSL query filtering, and stdout line prefixing
 
 ## Container image
 
@@ -257,6 +258,18 @@ Note that `/readyz` cannot verify whether the loaded VCL is correct and Varnish 
 
 Both endpoints are available whenever the metrics server is enabled (the default). They are disabled when `--metrics-addr=none`.
 
+### Access logging flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--varnishncsa-enabled` | `false` | Enable managed `varnishncsa` access logging subprocess (see [Access logging](#access-logging)) |
+| `--varnishncsa-path` | `varnishncsa` | Path to `varnishncsa` binary |
+| `--varnishncsa-format` | *(Combined)* | Custom log format string (passed as `-F`); see `varnishncsa(1)` |
+| `--varnishncsa-query` | *(all)* | VSL query expression (passed as `-q`) to filter which requests are logged |
+| `--varnishncsa-backend` | `false` | Log backend (fetch) requests instead of client requests (passes `-b`) |
+| `--varnishncsa-output` | *(stdout)* | Output file path (passed as `-w`); default writes to stdout |
+| `--varnishncsa-prefix` | `[access]` + space | Prefix prepended to each log line on stdout (ignored when `--varnishncsa-output` is set) |
+
 ### Kubernetes Events
 
 When the `POD_NAME` environment variable is set, k8s-httpcache emits Kubernetes Events visible via `kubectl describe pod` and `kubectl get events`. Set `POD_NAME` using the Downward API:
@@ -283,6 +296,10 @@ The following events are emitted:
 | `DrainStarted` | Normal | Graceful drain started after receiving a termination signal |
 | `DrainCompleted` | Normal | All active connections have drained |
 | `DrainTimeout` | Warning | Drain timeout reached, proceeding with forced shutdown |
+| `VarnishncsaStartFailed` | Warning | `varnishncsa` failed to start (will retry) |
+| `VarnishncsaExited` | Warning | `varnishncsa` exited unexpectedly (will restart) |
+| `VarnishncsaRestarted` | Normal | `varnishncsa` restarted after unexpected exit |
+| `VarnishncsaCrashLoop` | Warning | `varnishncsa` exceeded maximum consecutive crashes, giving up |
 
 Events require RBAC permission to `create` and `patch` the `events` resource (see [RBAC](#rbac)). If the permission is missing, a single warning is logged and the service continues without event recording.
 
@@ -895,6 +912,59 @@ If no frontends are available, the server returns HTTP 503 with:
   "error": "no frontends available"
 }
 ```
+
+## Access logging
+
+k8s-httpcache can run a managed `varnishncsa` subprocess alongside `varnishd` to stream HTTP access logs. This is a convenience option for simple setups. For production deployments, consider running `varnishncsa` as a separate sidecar container instead — this lets log tailers use the container name to distinguish access logs from k8s-httpcache/varnishd output without relying on line prefixes.
+
+Enable it with `--varnishncsa-enabled`:
+
+```
+k8s-httpcache --varnishncsa-enabled ...
+```
+
+By default, access logs are written to stdout using Varnish's Combined log format (equivalent to Apache's `%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-agent}i"`). Each line is prefixed with `[access]` (plus a trailing space) so you can distinguish access log lines from application log lines:
+
+```
+[access] 10.244.0.5 - - [27/Feb/2026:14:30:01 +0000] "GET /api/v1/data HTTP/1.1" 200 1234 "https://example.com" "curl/8.5.0"
+2026/02/27 14:30:01 INFO VCL reloaded
+```
+
+### Lifecycle
+
+- The subprocess shares Varnish's working directory (`-n`) automatically
+- If `varnishncsa` exits unexpectedly, it is automatically restarted after a 5-second delay
+- Kubernetes Events are emitted for start failures, unexpected exits, and restarts (see [Kubernetes Events](#kubernetes-events))
+- If `varnishncsa` crashes 3 times consecutively (start failures or unexpected exits), k8s-httpcache shuts down with a non-zero exit code so Kubernetes can restart the pod
+- On shutdown, `varnishncsa` receives SIGTERM before `varnishd` is stopped
+
+### Examples
+
+Log only 5xx responses:
+
+```
+k8s-httpcache --varnishncsa-enabled --varnishncsa-query='RespStatus >= 500'
+```
+
+Use a custom format showing cache hit/miss:
+
+```
+k8s-httpcache --varnishncsa-enabled --varnishncsa-format='%h %s %{Varnish:hitmiss}x %U'
+```
+
+Log backend (fetch) requests instead of client requests:
+
+```
+k8s-httpcache --varnishncsa-enabled --varnishncsa-backend
+```
+
+Write to a file instead of stdout (prefix is ignored when writing to a file):
+
+```
+k8s-httpcache --varnishncsa-enabled --varnishncsa-output=/var/log/varnish/access.log
+```
+
+See [Access logging flags](#access-logging-flags) for the full flag reference.
 
 ## Graceful shutdown / zero-downtime deploys
 

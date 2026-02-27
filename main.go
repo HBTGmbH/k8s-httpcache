@@ -301,12 +301,15 @@ type loopConfig struct {
 	metrics  *telemetry.Metrics
 	redactor *redact.Redactor // nil when no secrets are configured
 
-	frontendCh <-chan []watcher.Frontend
-	backendCh  chan backendChange
-	valuesCh   chan valuesChange
-	secretsCh  chan secretsChange
-	templateCh <-chan struct{}
-	sigCh      <-chan os.Signal
+	frontendCh  <-chan []watcher.Frontend
+	backendCh   chan backendChange
+	valuesCh    chan valuesChange
+	secretsCh   chan secretsChange
+	templateCh  <-chan struct{}
+	sigCh       <-chan os.Signal
+	ncsaEvents  <-chan varnish.NCSAEvent // nil when disabled
+	ncsaCrashed <-chan struct{}          // closed when ncsa crash-loops (nil when disabled)
+	stopNCSA    func()                   // called during shutdown (nil when disabled)
 
 	serviceName           string
 	frontendDebounce      time.Duration
@@ -633,6 +636,12 @@ func main() {
 		eventRecorder.Event(podRef, v1.EventTypeNormal, "VCLReloaded", "Initial VCL loaded and varnishd started")
 	}
 
+	// Start varnishncsa access logging subprocess (opt-in).
+	if cfg.VarnishncsaEnabled {
+		mgr.StartNCSA(cfg.VarnishncsaPath, buildNCSAArgs(cfg), cfg.VarnishncsaPrefix)
+		slog.Info("varnishncsa access logging enabled", "path", cfg.VarnishncsaPath) //nolint:gosec // G706: path from CLI flag, not runtime user input
+	}
+
 	// Watch VCL template file for changes.
 	var templateCh <-chan struct{}
 	if cfg.FileWatch {
@@ -713,12 +722,15 @@ func main() {
 		metrics:  metrics,
 		redactor: secretRedactor,
 
-		frontendCh: w.Changes(),
-		backendCh:  backendCh,
-		valuesCh:   valuesCh,
-		secretsCh:  secretsCh,
-		templateCh: templateCh,
-		sigCh:      sigCh,
+		frontendCh:  w.Changes(),
+		backendCh:   backendCh,
+		valuesCh:    valuesCh,
+		secretsCh:   secretsCh,
+		templateCh:  templateCh,
+		sigCh:       sigCh,
+		ncsaEvents:  mgr.NCSAEvents(),
+		ncsaCrashed: mgr.NCSACrashed(),
+		stopNCSA:    func() { mgr.StopNCSA() },
 
 		serviceName:           cfg.ServiceName,
 		frontendDebounce:      cfg.FrontendDebounce,
@@ -1019,6 +1031,22 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			}
 			handleReload()
 
+		case ev := <-lc.ncsaEvents:
+			emitEvent(&lc, ev.Type, ev.Reason, ev.Message)
+
+		case <-lc.ncsaCrashed:
+			slog.Error("varnishncsa crash loop detected, shutting down")
+			cancel()
+			lc.mgr.ForwardSignal(syscall.SIGTERM)
+			select {
+			case <-lc.mgr.Done():
+			case <-time.After(lc.shutdownTimeout):
+				slog.Warn("varnishd did not exit in time, forcing")
+				lc.mgr.ForwardSignal(syscall.SIGKILL)
+			}
+
+			return 1
+
 		case sig := <-lc.sigCh:
 			slog.Info("received signal, shutting down", "signal", sig)
 
@@ -1028,6 +1056,10 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 			if lc.bcast != nil {
 				_ = lc.bcast.Drain(lc.broadcastDrainTimeout)
+			}
+
+			if lc.stopNCSA != nil {
+				lc.stopNCSA()
 			}
 
 			cancel()
@@ -1230,6 +1262,25 @@ func appendUnique(slice []string, s string) []string {
 	}
 
 	return append(slice, s)
+}
+
+// buildNCSAArgs converts varnishncsa config flags into command-line arguments.
+func buildNCSAArgs(cfg *config.Config) []string {
+	var args []string
+	if cfg.VarnishncsaBackend {
+		args = append(args, "-b")
+	}
+	if cfg.VarnishncsaFormat != "" {
+		args = append(args, "-F", cfg.VarnishncsaFormat)
+	}
+	if cfg.VarnishncsaQuery != "" {
+		args = append(args, "-q", cfg.VarnishncsaQuery)
+	}
+	if cfg.VarnishncsaOutput != "" {
+		args = append(args, "-w", cfg.VarnishncsaOutput)
+	}
+
+	return args
 }
 
 // watchFile polls a file for content changes and sends on the returned channel
