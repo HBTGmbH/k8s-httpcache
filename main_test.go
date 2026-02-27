@@ -473,10 +473,11 @@ func (h *testHarness) runAndWait(bcast broadcaster) func() int {
 		// called) before closing done, so the outer select picks the
 		// signal case, not the unexpected-exit case.
 		deadline := time.After(2 * time.Second)
+	poll:
 		for len(h.mgr.getForwardedSigs()) == 0 {
 			select {
 			case <-deadline:
-				break
+				break poll
 			case <-time.After(1 * time.Millisecond):
 			}
 		}
@@ -837,6 +838,7 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
+
 		return rc >= 1
 	}, "RenderToFile called")
 
@@ -873,6 +875,7 @@ func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
+
 		return rc >= 1
 	}, "RenderToFile called")
 
@@ -1000,6 +1003,7 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool {
 		_, _, rc := h.rend.counts()
+
 		return rc >= 1
 	}, "Rollback called")
 
@@ -1210,6 +1214,7 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
+
 		return rc >= 2
 	}, "2 RenderToFile calls")
 
