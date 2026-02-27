@@ -872,6 +872,137 @@ func TestBackendWatcher_Labels(t *testing.T) {
 	}
 }
 
+func TestBackendWatcher_LabelsNilToPopulated(t *testing.T) {
+	t.Parallel()
+
+	// Service starts with no labels.
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	clientset := fake.NewClientset(svc)
+
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	_ = readBackendChanges(t, bw)
+
+	// Labels() should return nil (service has no labels).
+	if labels := bw.Labels(); labels != nil {
+		t.Fatalf("expected nil labels initially, got %v", labels)
+	}
+
+	waitForWatch()
+
+	// Add labels to the service.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Labels = map[string]string{"tier": "backend"}
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Should trigger a resend.
+	_ = readBackendChanges(t, bw)
+
+	labels := bw.Labels()
+	if labels == nil {
+		t.Fatal("expected non-nil labels after adding labels")
+	}
+	if labels["tier"] != "backend" {
+		t.Errorf("expected tier=backend, got %q", labels["tier"])
+	}
+}
+
+func TestBackendWatcher_LabelsPopulatedToNil(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Labels = map[string]string{"version": "v1"}
+	clientset := fake.NewClientset(svc)
+
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	_ = readBackendChanges(t, bw)
+
+	if labels := bw.Labels(); labels["version"] != "v1" {
+		t.Fatalf("expected version=v1, got %v", labels)
+	}
+
+	waitForWatch()
+
+	// Remove all labels from the service.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Labels = nil
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Should trigger a resend.
+	_ = readBackendChanges(t, bw)
+
+	labels := bw.Labels()
+	if len(labels) != 0 {
+		t.Errorf("expected empty labels after removing all, got %v", labels)
+	}
+}
+
+func TestBackendWatcher_LabelsOnLateAppearingService(t *testing.T) {
+	t.Parallel()
+
+	// No service at startup.
+	clientset := fake.NewClientset()
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initially no Service → empty endpoints, nil labels.
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints initially, got %d", len(eps))
+	}
+	if labels := bw.Labels(); labels != nil {
+		t.Fatalf("expected nil labels for missing service, got %v", labels)
+	}
+
+	waitForWatch()
+
+	// Service appears with labels.
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Labels = map[string]string{"env": "prod", "tier": "api"}
+	_, err := clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating Service: %v", err)
+	}
+
+	// Read until we get actual endpoints (may see a nil resend first).
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ep := <-bw.Changes():
+			if len(ep) == 1 && ep[0].IP == "api.example.com" {
+				goto gotEndpoints
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for endpoints from late-appearing service")
+		}
+	}
+gotEndpoints:
+
+	labels := bw.Labels()
+	if labels == nil {
+		t.Fatal("expected non-nil labels from late-appearing service")
+	}
+	if labels["env"] != "prod" {
+		t.Errorf("expected env=prod, got %q", labels["env"])
+	}
+	if labels["tier"] != "api" {
+		t.Errorf("expected tier=api, got %q", labels["tier"])
+	}
+}
+
 func TestBackendWatcherClusterIPNoEndpointSlice(t *testing.T) {
 	t.Parallel()
 	// ClusterIP Service exists at startup, but no EndpointSlice yet.

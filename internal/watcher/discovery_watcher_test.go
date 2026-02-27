@@ -2,6 +2,8 @@ package watcher
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -10,7 +12,10 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func makeDiscoverableService(namespace, name string, lbls map[string]string) *corev1.Service {
@@ -1261,5 +1266,173 @@ func TestDiscoveryWatcher_ServiceAddedDuringInitPhase(t *testing.T) {
 	}
 	if apiEps[0].Port != 9090 {
 		t.Errorf("api port = %d, want 9090", apiEps[0].Port)
+	}
+}
+
+// --- Stub lister for syncServices unit tests ---
+
+type stubServiceLister struct {
+	services []*corev1.Service
+	err      error
+}
+
+func (l *stubServiceLister) List(_ labels.Selector) ([]*corev1.Service, error) {
+	return l.services, l.err
+}
+
+func (l *stubServiceLister) Services(_ string) corelisters.ServiceNamespaceLister {
+	return &stubServiceNamespaceLister{services: l.services, err: l.err}
+}
+
+type stubServiceNamespaceLister struct {
+	services []*corev1.Service
+	err      error
+}
+
+func (l *stubServiceNamespaceLister) List(_ labels.Selector) ([]*corev1.Service, error) {
+	return l.services, l.err
+}
+
+func (l *stubServiceNamespaceLister) Get(_ string) (*corev1.Service, error) {
+	return nil, l.err
+}
+
+func TestDiscoveryWatcher_SyncServicesListerError(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+
+	for _, allNS := range []bool{false, true} {
+		name := "namespaced"
+		if allNS {
+			name = "allNamespaces"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dw := NewBackendDiscoveryWatcher(clientset, "default", allNS, sel, "", nil)
+
+			// Pre-populate a backend to verify it survives the lister error.
+			bw := NewBackendWatcher(clientset, "default", "web", "")
+			_, childCancel := context.WithCancel(t.Context())
+			dw.backends["default/web"] = &managedBackend{
+				watcher:   bw,
+				cancel:    childCancel,
+				namespace: "default",
+				name:      "web",
+			}
+			dw.initialized = true
+
+			listerErr := errors.New("simulated API server error")
+			dw.syncServices(t.Context(), &stubServiceLister{err: listerErr})
+
+			// Backend should still be present — lister error causes early return
+			// without reconciling (no spurious removals).
+			dw.mu.Lock()
+			_, exists := dw.backends["default/web"]
+			dw.mu.Unlock()
+			if !exists {
+				t.Fatal("backend was removed despite lister error; syncServices should return early")
+			}
+		})
+	}
+}
+
+func TestDiscoveryWatcher_RemovalDroppedWhenChannelFull(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+
+	// Pre-populate a backend.
+	bw := NewBackendWatcher(clientset, "default", "web", "")
+	_, childCancel := context.WithCancel(t.Context())
+	_, fwdCancel := context.WithCancel(t.Context())
+	dw.backends["default/web"] = &managedBackend{
+		watcher:   bw,
+		cancel:    childCancel,
+		fwdCancel: fwdCancel,
+		namespace: "default",
+		name:      "web",
+	}
+	dw.initialized = true
+
+	// Fill the update channel to capacity.
+	for i := range cap(dw.updateCh) {
+		dw.updateCh <- BackendUpdate{Name: fmt.Sprintf("filler-%d", i)}
+	}
+
+	// Call syncServices with an empty lister (no services match).
+	// The backend should be removed from the map, and the removal
+	// notification should be silently dropped (channel full) without blocking.
+	dw.syncServices(t.Context(), &stubServiceLister{})
+
+	// Verify the backend was removed from the internal map.
+	dw.mu.Lock()
+	_, exists := dw.backends["default/web"]
+	dw.mu.Unlock()
+	if exists {
+		t.Fatal("backend was not removed from internal map")
+	}
+
+	// Drain the channel — should contain only filler items, not the removal.
+	for range cap(dw.updateCh) {
+		u := <-dw.updateCh
+		if u.Name == "web" && u.Endpoints == nil {
+			t.Fatal("removal update was not dropped; expected best-effort send to fail when channel is full")
+		}
+	}
+}
+
+func TestDiscoveryWatcher_ContextCancelDuringInitialCollection(t *testing.T) {
+	t.Parallel()
+
+	// A ClusterIP service needs an EndpointSlice watcher to resolve endpoints.
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	clientset := fake.NewClientset(svc)
+
+	// Block EndpointSlice list operations so the child BackendWatcher
+	// never completes its initial sync and never sends to Changes().
+	blocker := make(chan struct{})
+	t.Cleanup(func() { close(blocker) })
+	blocked := make(chan struct{}, 1)
+	clientset.PrependReactor("list", "endpointslices", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		select {
+		case blocked <- struct{}{}:
+		default:
+		}
+		<-blocker
+
+		return false, nil, nil
+	})
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- dw.Run(ctx)
+	}()
+
+	// Wait until the child watcher's endpointslice list is blocked,
+	// confirming the discovery watcher is stuck in initial collection.
+	select {
+	case <-blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for endpointslice list to be attempted")
+	}
+
+	// Cancel the context while waiting for initial endpoint collection.
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
 	}
 }

@@ -2851,3 +2851,38 @@ sub vcl_init {
 		}
 	})
 }
+
+func TestRender_SprigOverridesNonMapInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		tmpl string
+		want string
+	}{
+		{"keys", `<< len (keys "x") >>`, "0"},
+		{"hasKey", `<< hasKey "x" "k" >>`, "false"},
+		{"get", `[<< get "x" "k" >>]`, "[]"},
+		{"values", `<< len (values "x") >>`, "0"},
+		{"pick", `<< len (pick "x" "k") >>`, "0"},
+		{"omit", `<< len (omit "x" "k") >>`, "0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := writeTempTemplate(t, tt.tmpl)
+			r, err := New(path, "<<", ">>")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			out, err := r.Render(nil, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if out != tt.want {
+				t.Errorf("got %q, want %q", out, tt.want)
+			}
+		})
+	}
+}

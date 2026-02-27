@@ -5245,6 +5245,58 @@ func TestRunLoop_BackendLabelsPassedToRenderer(t *testing.T) {
 	}
 }
 
+func TestRunLoop_ExplicitBackendLabelsSeededAtStartup(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	// Pre-seed latestBackendLabels with labels for an explicit backend,
+	// simulating the initial seed from bw.Labels() at startup (main.go:598).
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.latestBackends["api"] = []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}
+	lc.latestBackendLabels["api"] = map[string]string{"version": "v1", "tier": "backend"}
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger a render via a frontend change.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
+
+	// The renderer should have received the pre-seeded labels.
+	h.rend.mu.Lock()
+	gotLabels := h.rend.latestBackendLabels
+	h.rend.mu.Unlock()
+
+	if gotLabels == nil {
+		t.Fatal("expected latestBackendLabels to be set")
+	}
+	apiLabels, ok := gotLabels["api"]
+	if !ok {
+		t.Fatal("expected 'api' in latestBackendLabels for explicit backend")
+	}
+	if apiLabels["version"] != "v1" {
+		t.Errorf("expected version=v1, got %q", apiLabels["version"])
+	}
+	if apiLabels["tier"] != "backend" {
+		t.Errorf("expected tier=backend, got %q", apiLabels["tier"])
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for loop exit")
+	}
+	if c := code.Load(); c != 0 {
+		t.Fatalf("expected exit 0, got %d", c)
+	}
+}
+
 func TestRunLoop_SkipsReloadWhenVCLUnchanged(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()

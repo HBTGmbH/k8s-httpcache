@@ -491,7 +491,7 @@ Service labels are exposed in `.BackendLabels`, keyed by backend name. This enab
 << end >>
 ```
 
-Note: Only discovered backends (from `--backend-selector`) have labels in `.BackendLabels`. Explicit `--backend` entries do not, so use `hasKey` to guard against missing entries when mixing both in a single template.
+Both explicit `--backend` and discovered `--backend-selector` backends have their Service labels available in `.BackendLabels`.
 
 ### Lifecycle
 
