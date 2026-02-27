@@ -525,9 +525,9 @@ func TestBackendWatcherDeduplicatesUnchanged(t *testing.T) {
 	waitForWatch()
 	readBackendChanges(t, bw)
 
-	// Update an unrelated field (annotation) via Get-then-Update — endpoints stay the same.
+	// Update an unrelated field (finalizer) via Get-then-Update — endpoints stay the same.
 	current := getService(t, ctx, clientset)
-	current.Annotations = map[string]string{"unrelated": "change"}
+	current.Finalizers = []string{"unrelated/change"}
 	_, err := clientset.CoreV1().Services("default").Update(ctx, current, metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("updating Service: %v", err)
@@ -885,9 +885,9 @@ func TestBackendWatcher_LabelsNilToPopulated(t *testing.T) {
 
 	_ = readBackendChanges(t, bw)
 
-	// Labels() should return nil (service has no labels).
-	if labels := bw.Labels(); labels != nil {
-		t.Fatalf("expected nil labels initially, got %v", labels)
+	// Labels() should return an empty map (service has no labels).
+	if labels := bw.Labels(); len(labels) != 0 {
+		t.Fatalf("expected empty labels initially, got %v", labels)
 	}
 
 	waitForWatch()
@@ -963,8 +963,8 @@ func TestBackendWatcher_LabelsOnLateAppearingService(t *testing.T) {
 	if len(eps) != 0 {
 		t.Fatalf("expected 0 endpoints initially, got %d", len(eps))
 	}
-	if labels := bw.Labels(); labels != nil {
-		t.Fatalf("expected nil labels for missing service, got %v", labels)
+	if labels := bw.Labels(); len(labels) != 0 {
+		t.Fatalf("expected empty labels for missing service, got %v", labels)
 	}
 
 	waitForWatch()
@@ -1000,6 +1000,193 @@ gotEndpoints:
 	}
 	if labels["tier"] != "api" {
 		t.Errorf("expected tier=api, got %q", labels["tier"])
+	}
+}
+
+func TestBackendWatcher_Annotations(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{"example.com/version": "v1", "example.com/tier": "backend"}
+	clientset := fake.NewClientset(svc)
+
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Read initial endpoints.
+	_ = readBackendChanges(t, bw)
+
+	// Annotations() should return the Service annotations.
+	annotations := bw.Annotations()
+	if annotations == nil {
+		t.Fatal("expected non-nil annotations")
+	}
+	if annotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", annotations["example.com/version"])
+	}
+	if annotations["example.com/tier"] != "backend" {
+		t.Errorf("expected example.com/tier=backend, got %q", annotations["example.com/tier"])
+	}
+
+	// Mutating the returned map should not affect internal state.
+	annotations["example.com/version"] = "mutated"
+	annotations2 := bw.Annotations()
+	if annotations2["example.com/version"] != "v1" {
+		t.Errorf("Annotations() returned shared map; expected v1 after mutation, got %q", annotations2["example.com/version"])
+	}
+
+	waitForWatch()
+
+	// Update Service annotations — should trigger a resend even though endpoints haven't changed.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Annotations = map[string]string{"example.com/version": "v2", "example.com/tier": "backend"}
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Should receive a resend with the same endpoints.
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+		t.Errorf("unexpected endpoints after annotation change: %v", eps)
+	}
+
+	// Annotations should now reflect the update.
+	annotations3 := bw.Annotations()
+	if annotations3["example.com/version"] != "v2" {
+		t.Errorf("expected example.com/version=v2 after update, got %q", annotations3["example.com/version"])
+	}
+}
+
+func TestBackendWatcher_AnnotationsNilToPopulated(t *testing.T) {
+	t.Parallel()
+
+	// Service starts with no annotations.
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	clientset := fake.NewClientset(svc)
+
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	_ = readBackendChanges(t, bw)
+
+	// Annotations() should return an empty map (service has no annotations).
+	if annotations := bw.Annotations(); len(annotations) != 0 {
+		t.Fatalf("expected empty annotations initially, got %v", annotations)
+	}
+
+	waitForWatch()
+
+	// Add annotations to the service.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Annotations = map[string]string{"example.com/tier": "backend"}
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Should trigger a resend.
+	_ = readBackendChanges(t, bw)
+
+	annotations := bw.Annotations()
+	if annotations == nil {
+		t.Fatal("expected non-nil annotations after adding annotations")
+	}
+	if annotations["example.com/tier"] != "backend" {
+		t.Errorf("expected example.com/tier=backend, got %q", annotations["example.com/tier"])
+	}
+}
+
+func TestBackendWatcher_AnnotationsPopulatedToNil(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{"example.com/version": "v1"}
+	clientset := fake.NewClientset(svc)
+
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	_ = readBackendChanges(t, bw)
+
+	if annotations := bw.Annotations(); annotations["example.com/version"] != "v1" {
+		t.Fatalf("expected example.com/version=v1, got %v", annotations)
+	}
+
+	waitForWatch()
+
+	// Remove all annotations from the service.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Annotations = nil
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Should trigger a resend.
+	_ = readBackendChanges(t, bw)
+
+	annotations := bw.Annotations()
+	if len(annotations) != 0 {
+		t.Errorf("expected empty annotations after removing all, got %v", annotations)
+	}
+}
+
+func TestBackendWatcher_AnnotationsOnLateAppearingService(t *testing.T) {
+	t.Parallel()
+
+	// No service at startup.
+	clientset := fake.NewClientset()
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initially no Service → empty endpoints, nil annotations.
+	eps := readBackendChanges(t, bw)
+	if len(eps) != 0 {
+		t.Fatalf("expected 0 endpoints initially, got %d", len(eps))
+	}
+	if annotations := bw.Annotations(); len(annotations) != 0 {
+		t.Fatalf("expected empty annotations for missing service, got %v", annotations)
+	}
+
+	waitForWatch()
+
+	// Service appears with annotations.
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{"example.com/env": "prod", "example.com/tier": "api"}
+	_, err := clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating Service: %v", err)
+	}
+
+	// Read until we get actual endpoints (may see a nil resend first).
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ep := <-bw.Changes():
+			if len(ep) == 1 && ep[0].IP == "api.example.com" {
+				goto gotEndpoints
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for endpoints from late-appearing service")
+		}
+	}
+gotEndpoints:
+
+	annotations := bw.Annotations()
+	if annotations == nil {
+		t.Fatal("expected non-nil annotations from late-appearing service")
+	}
+	if annotations["example.com/env"] != "prod" {
+		t.Errorf("expected example.com/env=prod, got %q", annotations["example.com/env"])
+	}
+	if annotations["example.com/tier"] != "api" {
+		t.Errorf("expected example.com/tier=api, got %q", annotations["example.com/tier"])
 	}
 }
 
@@ -1180,5 +1367,208 @@ func TestBackendWatcherServiceDeletedRecreatedDifferentType(t *testing.T) {
 	}
 	if eps[0].Name != "external" {
 		t.Errorf("Name = %q, want external", eps[0].Name)
+	}
+}
+
+func TestBackendWatcher_ExcludeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"big":"json"}`,
+		"example.com/version":                              "v1",
+	}
+	clientset := fake.NewClientset(svc)
+
+	exclude := BuildAnnotationFilter(DefaultExcludeAnnotations)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.SetExcludeAnnotations(exclude)
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	_ = readBackendChanges(t, bw)
+
+	annotations := bw.Annotations()
+	if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+		t.Error("expected kubectl.kubernetes.io/last-applied-configuration to be excluded")
+	}
+	if annotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", annotations["example.com/version"])
+	}
+}
+
+func TestBackendWatcher_ExcludeAnnotationsPrefix(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"big":"json"}`,
+		"kubectl.kubernetes.io/other":                      "value",
+		"example.com/version":                              "v1",
+	}
+	clientset := fake.NewClientset(svc)
+
+	exclude := BuildAnnotationFilter([]string{"kubectl.kubernetes.io/*"})
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.SetExcludeAnnotations(exclude)
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	_ = readBackendChanges(t, bw)
+
+	annotations := bw.Annotations()
+	if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+		t.Error("expected kubectl.kubernetes.io/last-applied-configuration to be excluded")
+	}
+	if _, ok := annotations["kubectl.kubernetes.io/other"]; ok {
+		t.Error("expected kubectl.kubernetes.io/other to be excluded by prefix")
+	}
+	if annotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", annotations["example.com/version"])
+	}
+}
+
+// TestBackendWatcher_ExcludeAnnotationsDynamicUpdate verifies that annotation
+// exclusion continues to work when Service annotations are updated after the
+// initial sync.
+func TestBackendWatcher_ExcludeAnnotationsDynamicUpdate(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"v":1}`,
+		"example.com/version":                              "v1",
+	}
+	clientset := fake.NewClientset(svc)
+
+	exclude := BuildAnnotationFilter(DefaultExcludeAnnotations)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.SetExcludeAnnotations(exclude)
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initial sync.
+	_ = readBackendChanges(t, bw)
+
+	annotations := bw.Annotations()
+	if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+		t.Error("excluded annotation should not be present initially")
+	}
+	if annotations["example.com/version"] != "v1" {
+		t.Fatalf("expected example.com/version=v1, got %q", annotations["example.com/version"])
+	}
+
+	waitForWatch()
+
+	// Update: change the non-excluded annotation and the excluded one.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Annotations["kubectl.kubernetes.io/last-applied-configuration"] = `{"v":2}`
+	svc2.Annotations["example.com/version"] = "v2"
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Should receive a resend because the non-excluded annotation changed.
+	_ = readBackendChanges(t, bw)
+
+	annotations = bw.Annotations()
+	if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+		t.Error("excluded annotation should not be present after update")
+	}
+	if annotations["example.com/version"] != "v2" {
+		t.Errorf("expected example.com/version=v2 after update, got %q", annotations["example.com/version"])
+	}
+}
+
+// TestBackendWatcher_ExcludedOnlyAnnotationChangeSkipsResend verifies that
+// when the only annotation changes are to excluded keys, the watcher does
+// NOT emit a resend because the filtered annotations map is unchanged.
+func TestBackendWatcher_ExcludedOnlyAnnotationChangeSkipsResend(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"v":1}`,
+		"example.com/version":                              "v1",
+	}
+	clientset := fake.NewClientset(svc)
+
+	exclude := BuildAnnotationFilter(DefaultExcludeAnnotations)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.SetExcludeAnnotations(exclude)
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Initial sync.
+	_ = readBackendChanges(t, bw)
+
+	waitForWatch()
+
+	// Update ONLY the excluded annotation — the filtered map is unchanged.
+	svc2 := getService(t, ctx, clientset)
+	svc2.Annotations["kubectl.kubernetes.io/last-applied-configuration"] = `{"v":2}`
+	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// No resend should occur because the filtered annotations are identical.
+	assertNoBackendChanges(t, bw, 500*time.Millisecond)
+
+	// Confirm annotations are still the same.
+	annotations := bw.Annotations()
+	if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+		t.Error("excluded annotation should not be present")
+	}
+	if annotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", annotations["example.com/version"])
+	}
+}
+
+// TestBackendWatcher_ExcludeAnnotationsCombinedDefaultAndUser tests the pattern
+// used in main.go: slices.Concat(DefaultExcludeAnnotations, userPatterns).
+func TestBackendWatcher_ExcludeAnnotationsCombinedDefaultAndUser(t *testing.T) {
+	t.Parallel()
+
+	svc := makeService(corev1.ServiceTypeExternalName, "api.example.com")
+	svc.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"big":"json"}`,
+		"internal.example.com/debug":                       "true",
+		"internal.example.com/trace-id":                    "abc",
+		"example.com/version":                              "v1",
+	}
+	clientset := fake.NewClientset(svc)
+
+	// Simulate main.go: combine default + user-specified patterns.
+	combined := append(DefaultExcludeAnnotations, "internal.example.com/*") //nolint:gocritic // test intentionally appends to a different slice
+	exclude := BuildAnnotationFilter(combined)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+	bw.SetExcludeAnnotations(exclude)
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	_ = readBackendChanges(t, bw)
+
+	annotations := bw.Annotations()
+	if _, ok := annotations["kubectl.kubernetes.io/last-applied-configuration"]; ok {
+		t.Error("default-excluded annotation should not be present")
+	}
+	if _, ok := annotations["internal.example.com/debug"]; ok {
+		t.Error("user-excluded annotation (prefix) should not be present")
+	}
+	if _, ok := annotations["internal.example.com/trace-id"]; ok {
+		t.Error("user-excluded annotation (prefix) should not be present")
+	}
+	if annotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", annotations["example.com/version"])
+	}
+	if len(annotations) != 1 {
+		t.Errorf("expected exactly 1 annotation remaining, got %d: %v", len(annotations), annotations)
 	}
 }

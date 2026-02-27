@@ -28,9 +28,12 @@ type BackendWatcher struct {
 	log          *slog.Logger
 	ch           chan []Endpoint
 
+	excludeAnnotation func(string) bool // nil = no filtering
+
 	mu              sync.Mutex // protects fields below
 	previous        []Endpoint
 	labels          map[string]string
+	annotations     map[string]string
 	synced          bool
 	serviceNotFound bool
 
@@ -57,11 +60,37 @@ func (bw *BackendWatcher) Changes() <-chan []Endpoint {
 }
 
 // Labels returns a copy of the most recently observed Service labels.
+// Returns an empty (non-nil) map when the Service has no labels or has not
+// been observed yet, so callers never need to nil-check.
 func (bw *BackendWatcher) Labels() map[string]string {
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
 
+	if bw.labels == nil {
+		return make(map[string]string)
+	}
+
 	return maps.Clone(bw.labels)
+}
+
+// Annotations returns a copy of the most recently observed Service annotations.
+// Returns an empty (non-nil) map when the Service has no annotations or has not
+// been observed yet, so callers never need to nil-check.
+func (bw *BackendWatcher) Annotations() map[string]string {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+
+	if bw.annotations == nil {
+		return make(map[string]string)
+	}
+
+	return maps.Clone(bw.annotations)
+}
+
+// SetExcludeAnnotations sets the annotation exclusion filter. Must be called
+// before Run.
+func (bw *BackendWatcher) SetExcludeAnnotations(exclude func(string) bool) {
+	bw.excludeAnnotation = exclude
 }
 
 // Run starts watching the Service object and blocks until ctx is cancelled.
@@ -122,6 +151,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
 		}
 		bw.labels = nil
+		bw.annotations = nil
 		bw.stopEndpointSliceWatcherLocked()
 		bw.mu.Unlock()
 		bw.send(nil)
@@ -133,16 +163,22 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 	bw.mu.Lock()
 	bw.serviceNotFound = false
 
-	// Track Service labels; trigger a resend when only labels changed so
-	// downstream consumers (e.g. VCL templates using .BackendLabels) pick
-	// up the new metadata even if endpoints remain identical.
+	// Track Service labels and annotations; trigger a resend when metadata
+	// changed so downstream consumers (e.g. VCL templates using
+	// .BackendLabels / .BackendAnnotations) pick up new metadata even if
+	// endpoints remain identical.
 	newLabels := maps.Clone(svc.Labels)
 	labelsChanged := !maps.Equal(bw.labels, newLabels)
 	bw.labels = newLabels
+
+	newAnnotations := filterAnnotations(maps.Clone(svc.Annotations), bw.excludeAnnotation)
+	annotationsChanged := !maps.Equal(bw.annotations, newAnnotations)
+	bw.annotations = newAnnotations
+
 	synced := bw.synced
 	bw.mu.Unlock()
 
-	if labelsChanged && synced {
+	if (labelsChanged || annotationsChanged) && synced {
 		bw.resend()
 	}
 
@@ -242,7 +278,7 @@ func (bw *BackendWatcher) stopEndpointSliceWatcherLocked() {
 
 // resend re-sends the last known endpoints to the channel, bypassing
 // the endpoint-equality dedup in send(). This is used when Service
-// metadata (labels) changes without an endpoint change.
+// metadata (labels or annotations) changes without an endpoint change.
 func (bw *BackendWatcher) resend() {
 	bw.mu.Lock()
 	eps := bw.previous

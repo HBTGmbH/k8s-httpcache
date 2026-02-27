@@ -274,6 +274,7 @@ type Config struct {
 	VarnishncsaBackend         bool   // -b backend mode (default: client)
 	VarnishncsaOutput          string // -w file path (empty = stdout)
 	VarnishncsaPrefix          string // line prefix for stdout output
+	ExcludeAnnotations         []string
 }
 
 // isValidDNSLabel checks whether s is a valid RFC 1123 DNS label:
@@ -472,6 +473,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Usage:       "Poll interval for --values-dir directories (only effective when --file-watch is enabled)",
 				Value:       5 * time.Second,
 				Destination: &c.ValuesDirPollInterval,
+			},
+			&cli.StringSliceFlag{
+				Name:        "exclude-annotations",
+				Category:    "Listen, backend, and values:",
+				Usage:       "Annotation keys or prefixes to exclude from .BackendAnnotations (repeatable; trailing * for prefix match, e.g. kubectl.kubernetes.io/*)",
+				Destination: &c.ExcludeAnnotations,
 			},
 
 			// Varnish paths

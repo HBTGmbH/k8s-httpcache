@@ -19,9 +19,10 @@ import (
 // BackendUpdate carries an endpoint change for a discovered backend service.
 // Endpoints is nil when the service was removed.
 type BackendUpdate struct {
-	Name      string
-	Endpoints []Endpoint        // nil = removed
-	Labels    map[string]string // Service labels at the time of the update
+	Name        string
+	Endpoints   []Endpoint        // nil = removed
+	Labels      map[string]string // Service labels at the time of the update
+	Annotations map[string]string // Service annotations at the time of the update
 }
 
 // managedBackend tracks a child BackendWatcher spawned for a discovered Service.
@@ -37,22 +38,24 @@ type managedBackend struct {
 // manages child BackendWatchers for each discovered Service. Updates are
 // emitted on a single channel as BackendUpdate values.
 type BackendDiscoveryWatcher struct {
-	clientset     kubernetes.Interface
-	namespace     string // empty when allNamespaces=true
-	allNamespaces bool
-	selector      labels.Selector
-	portOverride  string
-	explicitNames map[string]bool // names reserved by --backend flags
-	log           *slog.Logger
+	clientset         kubernetes.Interface
+	namespace         string // empty when allNamespaces=true
+	allNamespaces     bool
+	selector          labels.Selector
+	portOverride      string
+	explicitNames     map[string]bool // names reserved by --backend flags
+	excludeAnnotation func(string) bool
+	log               *slog.Logger
 
 	mu          sync.Mutex
 	backends    map[string]*managedBackend // keyed by "namespace/serviceName"
 	initialized bool                       // true after initial sync; enables forwarding in syncServices
 
-	updateCh      chan BackendUpdate
-	initialState  map[string][]Endpoint
-	initialLabels map[string]map[string]string
-	initialCh     chan struct{} // closed after initial sync
+	updateCh           chan BackendUpdate
+	initialState       map[string][]Endpoint
+	initialLabels      map[string]map[string]string
+	initialAnnotations map[string]map[string]string
+	initialCh          chan struct{} // closed after initial sync
 }
 
 // NewBackendDiscoveryWatcher creates a new discovery watcher.
@@ -65,19 +68,26 @@ func NewBackendDiscoveryWatcher(
 	explicitNames map[string]bool,
 ) *BackendDiscoveryWatcher {
 	return &BackendDiscoveryWatcher{
-		clientset:     clientset,
-		namespace:     namespace,
-		allNamespaces: allNamespaces,
-		selector:      selector,
-		portOverride:  portOverride,
-		explicitNames: explicitNames,
-		log:           slog.Default(),
-		backends:      make(map[string]*managedBackend),
-		updateCh:      make(chan BackendUpdate, 16),
-		initialState:  make(map[string][]Endpoint),
-		initialLabels: make(map[string]map[string]string),
-		initialCh:     make(chan struct{}),
+		clientset:          clientset,
+		namespace:          namespace,
+		allNamespaces:      allNamespaces,
+		selector:           selector,
+		portOverride:       portOverride,
+		explicitNames:      explicitNames,
+		log:                slog.Default(),
+		backends:           make(map[string]*managedBackend),
+		updateCh:           make(chan BackendUpdate, 16),
+		initialState:       make(map[string][]Endpoint),
+		initialLabels:      make(map[string]map[string]string),
+		initialAnnotations: make(map[string]map[string]string),
+		initialCh:          make(chan struct{}),
 	}
+}
+
+// SetExcludeAnnotations sets the annotation exclusion filter that will be
+// propagated to all child BackendWatchers. Must be called before Run.
+func (dw *BackendDiscoveryWatcher) SetExcludeAnnotations(exclude func(string) bool) {
+	dw.excludeAnnotation = exclude
 }
 
 // Initial returns a channel that is closed after the initial sync completes.
@@ -103,6 +113,21 @@ func (dw *BackendDiscoveryWatcher) InitialLabels() map[string]map[string]string 
 
 	out := make(map[string]map[string]string, len(dw.initialLabels))
 	for k, v := range dw.initialLabels {
+		out[k] = maps.Clone(v)
+	}
+
+	return out
+}
+
+// InitialAnnotations returns a copy of the Service annotations collected during
+// the first reconciliation, keyed by service name. Safe to call after Initial()
+// is closed.
+func (dw *BackendDiscoveryWatcher) InitialAnnotations() map[string]map[string]string {
+	dw.mu.Lock()
+	defer dw.mu.Unlock()
+
+	out := make(map[string]map[string]string, len(dw.initialAnnotations))
+	for k, v := range dw.initialAnnotations {
 		out[k] = maps.Clone(v)
 	}
 
@@ -160,6 +185,7 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 			dw.mu.Lock()
 			dw.initialState[mb.name] = eps
 			dw.initialLabels[mb.name] = mb.watcher.Labels()
+			dw.initialAnnotations[mb.name] = mb.watcher.Annotations()
 			dw.mu.Unlock()
 		}
 	}
@@ -214,7 +240,7 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 					return
 				}
 				select {
-				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: bw.Labels()}:
+				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: bw.Labels(), Annotations: bw.Annotations()}:
 				case <-fwdCtx.Done():
 					return
 				}
@@ -273,6 +299,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		}
 
 		bw := NewBackendWatcher(dw.clientset, svc.Namespace, svc.Name, dw.portOverride)
+		bw.SetExcludeAnnotations(dw.excludeAnnotation)
 		childCtx, childCancel := context.WithCancel(ctx)
 		go func() {
 			runErr := bw.Run(childCtx)

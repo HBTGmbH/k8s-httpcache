@@ -3469,3 +3469,38 @@ func TestParseBackendSelectorPortOutOfRange(t *testing.T) {
 		t.Fatal("expected error for port out of range")
 	}
 }
+
+func TestParseExcludeAnnotations(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--exclude-annotations=internal.example.com/*",
+		"--exclude-annotations=custom-key",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"internal.example.com/*", "custom-key"}
+	if !slices.Equal(cfg.ExcludeAnnotations, want) {
+		t.Errorf("ExcludeAnnotations = %v, want %v", cfg.ExcludeAnnotations, want)
+	}
+}
+
+func TestParseExcludeAnnotationsEmpty(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.ExcludeAnnotations) != 0 {
+		t.Errorf("ExcludeAnnotations = %v, want empty", cfg.ExcludeAnnotations)
+	}
+}

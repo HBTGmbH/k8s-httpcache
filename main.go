@@ -61,6 +61,7 @@ type vclRenderer interface {
 	RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error)
 	Rollback()
 	SetBackendLabels(labels map[string]map[string]string)
+	SetBackendAnnotations(annotations map[string]map[string]string)
 }
 
 // varnishProcess abstracts varnishd lifecycle (satisfied by *varnish.Manager).
@@ -331,11 +332,12 @@ type loopConfig struct {
 	drainPollInterval time.Duration
 	drainTimeout      time.Duration
 
-	latestFrontends     []watcher.Frontend
-	latestBackends      map[string][]watcher.Endpoint
-	latestBackendLabels map[string]map[string]string
-	latestValues        map[string]map[string]any
-	latestSecrets       map[string]map[string]any
+	latestFrontends          []watcher.Frontend
+	latestBackends           map[string][]watcher.Endpoint
+	latestBackendLabels      map[string]map[string]string
+	latestBackendAnnotations map[string]map[string]string
+	latestValues             map[string]map[string]any
+	latestSecrets            map[string]map[string]any
 
 	lastVCLHash [sha256.Size]byte
 }
@@ -485,6 +487,10 @@ func main() {
 		}
 	}()
 
+	// Build annotation exclusion filter (defaults + user patterns).
+	excludeAnnotationPatterns := slices.Concat(watcher.DefaultExcludeAnnotations, cfg.ExcludeAnnotations)
+	excludeAnnotation := watcher.BuildAnnotationFilter(excludeAnnotationPatterns)
+
 	// Start backend watchers.
 	var (
 		bwNames    = make([]string, 0, len(cfg.Backends))
@@ -492,6 +498,7 @@ func main() {
 	)
 	for _, b := range cfg.Backends {
 		bw := watcher.NewBackendWatcher(clientset, b.Namespace, b.ServiceName, b.Port)
+		bw.SetExcludeAnnotations(excludeAnnotation)
 		name := b.Name
 		go func() {
 			err := bw.Run(ctx)
@@ -512,6 +519,7 @@ func main() {
 	for _, bs := range cfg.BackendSelectors {
 		sel, _ := labels.Parse(bs.Selector) // already validated in config
 		dw := watcher.NewBackendDiscoveryWatcher(clientset, bs.Namespace, bs.AllNamespaces, sel, bs.Port, explicitNames)
+		dw.SetExcludeAnnotations(excludeAnnotation)
 		go func() {
 			runErr := dw.Run(ctx)
 			if runErr != nil {
@@ -593,14 +601,17 @@ func main() {
 	}
 	latestBackends := make(map[string][]watcher.Endpoint)
 	latestBackendLabels := make(map[string]map[string]string)
+	latestBackendAnnotations := make(map[string]map[string]string)
 	for i, bw := range bwWatchers {
 		latestBackends[bwNames[i]] = <-bw.Changes()
 		latestBackendLabels[bwNames[i]] = bw.Labels()
+		latestBackendAnnotations[bwNames[i]] = bw.Annotations()
 	}
 	for _, dw := range discoveryWatchers {
 		<-dw.Initial()
 		maps.Copy(latestBackends, dw.InitialState())
 		maps.Copy(latestBackendLabels, dw.InitialLabels())
+		maps.Copy(latestBackendAnnotations, dw.InitialAnnotations())
 	}
 	latestValues := make(map[string]map[string]any)
 	for i, vw := range vwWatchers {
@@ -651,6 +662,7 @@ func main() {
 
 	// Render VCL with real endpoint data and start varnishd.
 	rend.SetBackendLabels(latestBackendLabels)
+	rend.SetBackendAnnotations(latestBackendAnnotations)
 	renderStart := time.Now()
 	initialVCLStr, err := rend.Render(latestFrontends, latestBackends, latestValues, latestSecrets)
 	metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
@@ -706,7 +718,7 @@ func main() {
 			name := bwNames[i]
 			go func() {
 				for eps := range bw.Changes() {
-					backendCh <- backendChange{name: name, endpoints: eps, labels: bw.Labels()}
+					backendCh <- backendChange{name: name, endpoints: eps, labels: bw.Labels(), annotations: bw.Annotations()}
 				}
 			}()
 		}
@@ -714,10 +726,11 @@ func main() {
 			go func() {
 				for update := range dw.Changes() {
 					backendCh <- backendChange{
-						name:      update.Name,
-						endpoints: update.Endpoints,
-						labels:    update.Labels,
-						removed:   update.Endpoints == nil,
+						name:        update.Name,
+						endpoints:   update.Endpoints,
+						labels:      update.Labels,
+						annotations: update.Annotations,
+						removed:     update.Endpoints == nil,
 					}
 				}
 			}()
@@ -808,11 +821,12 @@ func main() {
 		drainPollInterval: cfg.DrainPollInterval,
 		drainTimeout:      cfg.DrainTimeout,
 
-		latestFrontends:     latestFrontends,
-		latestBackends:      latestBackends,
-		latestBackendLabels: latestBackendLabels,
-		latestValues:        latestValues,
-		latestSecrets:       latestSecrets,
+		latestFrontends:          latestFrontends,
+		latestBackends:           latestBackends,
+		latestBackendLabels:      latestBackendLabels,
+		latestBackendAnnotations: latestBackendAnnotations,
+		latestValues:             latestValues,
+		latestSecrets:            latestSecrets,
 
 		lastVCLHash: initialVCLHash,
 	}))
@@ -823,6 +837,7 @@ func main() {
 // Varnish. Called after the primary reload fails on a new template.
 func rollbackReload(lc *loopConfig, reasons string) {
 	lc.rend.SetBackendLabels(lc.latestBackendLabels)
+	lc.rend.SetBackendAnnotations(lc.latestBackendAnnotations)
 	renderStart := time.Now()
 	vclStr, err := lc.rend.Render(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 	lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
@@ -984,6 +999,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		templateChanged = false
 
 		lc.rend.SetBackendLabels(lc.latestBackendLabels)
+		lc.rend.SetBackendAnnotations(lc.latestBackendAnnotations)
 		renderStart := time.Now()
 		vclStr, err := lc.rend.Render(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 		lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
@@ -1087,10 +1103,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			if bc.removed {
 				delete(lc.latestBackends, bc.name)
 				delete(lc.latestBackendLabels, bc.name)
+				delete(lc.latestBackendAnnotations, bc.name)
 				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
 			} else {
 				lc.latestBackends[bc.name] = bc.endpoints
 				lc.latestBackendLabels[bc.name] = bc.labels
+				lc.latestBackendAnnotations[bc.name] = bc.annotations
 				lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			}
 			lc.metrics.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
@@ -1099,7 +1117,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			if epsChanged {
 				pendingReasons = appendUnique(pendingReasons, "backend endpoints changed")
 			} else {
-				pendingReasons = appendUnique(pendingReasons, "backend labels changed")
+				pendingReasons = appendUnique(pendingReasons, "backend metadata changed")
 			}
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
@@ -1314,10 +1332,11 @@ func buildClientset() (kubernetes.Interface, error) {
 }
 
 type backendChange struct {
-	name      string
-	endpoints []watcher.Endpoint
-	labels    map[string]string
-	removed   bool // true when a discovered service disappears
+	name        string
+	endpoints   []watcher.Endpoint
+	labels      map[string]string
+	annotations map[string]string
+	removed     bool // true when a discovered service disappears
 }
 
 type valuesChange struct {

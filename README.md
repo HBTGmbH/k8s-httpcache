@@ -103,6 +103,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--secrets` | | Secret to watch for template values (repeatable). See [Secrets specification](#secrets-specification). |
 | `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
 | `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories (only effective when `--file-watch` is enabled) |
+| `--exclude-annotations` | | Annotation keys or prefixes to exclude from `.BackendAnnotations` (repeatable; trailing `*` for prefix match, e.g. `kubectl.kubernetes.io/*`). `kubectl.kubernetes.io/last-applied-configuration` is always excluded by default. |
 
 ### Varnish paths
 
@@ -478,7 +479,7 @@ Discovered Services are merged into `.Backends` keyed by their Service name. For
 
 Explicit `--backend` names take priority — if a discovered Service has the same name as an explicit backend, the discovered Service is skipped. This lets you pin specific backends while still discovering the rest dynamically.
 
-Service labels are exposed in `.BackendLabels`, keyed by backend name. This enables conditional VCL logic based on Service metadata:
+Service labels and annotations are exposed in `.BackendLabels` and `.BackendAnnotations`, keyed by backend name. This enables conditional VCL logic based on Service metadata:
 
 ```vcl
 << range $name, $eps := .Backends >>
@@ -491,14 +492,27 @@ Service labels are exposed in `.BackendLabels`, keyed by backend name. This enab
 << end >>
 ```
 
-Both explicit `--backend` and discovered `--backend-selector` backends have their Service labels available in `.BackendLabels`.
+Annotations work the same way:
+
+```vcl
+<< range $name, $eps := .Backends >>
+  << if hasKey $.BackendAnnotations $name >>
+    << $annotations := index $.BackendAnnotations $name >>
+    << if index $annotations "example.com/cache-ttl" >>
+      # annotation-based routing logic
+    << end >>
+  << end >>
+<< end >>
+```
+
+Both explicit `--backend` and discovered `--backend-selector` backends have their Service labels and annotations available in `.BackendLabels` and `.BackendAnnotations`.
 
 ### Lifecycle
 
 - **Startup**: All Services matching the selector at startup are discovered during the initial reconciliation and included in the first VCL render.
 - **New Services**: When a new matching Service appears, a child EndpointSlice watcher is spawned and a VCL reload is triggered once its endpoints are known.
-- **Removed Services**: When a matching Service is deleted or its labels no longer match the selector, its endpoints are removed from `.Backends` and `.BackendLabels`, and a VCL reload is triggered.
-- **Label changes**: When a Service's labels change (but still match the selector), `.BackendLabels` is updated and a VCL reload is triggered.
+- **Removed Services**: When a matching Service is deleted or its labels no longer match the selector, its endpoints are removed from `.Backends`, `.BackendLabels`, and `.BackendAnnotations`, and a VCL reload is triggered.
+- **Label/annotation changes**: When a Service's labels or annotations change (but still match the selector), `.BackendLabels` and `.BackendAnnotations` are updated and a VCL reload is triggered.
 
 ExternalName services discovered via `--backend-selector` follow the same rules as explicit ExternalName backends: the `externalName` hostname is used directly, and a numeric `--backend-selector` port override is required (otherwise port 80 is used with a warning).
 
@@ -678,6 +692,7 @@ The template receives the following data:
 | `.Secrets` | `map[string]map[string]any` | Secret values keyed by the `name` from `--secrets`. Each value is YAML-parsed like `.Values`. |
 | `.LocalZone` | `string` | Topology zone of the Varnish pod (empty if `NODE_NAME` is not set or zone detection fails). See [Topology-aware routing](#topology-aware-routing). |
 | `.BackendLabels` | `map[string]map[string]string` | Kubernetes Service labels keyed by backend name. Updated dynamically when Service labels change. Useful for conditional VCL logic based on Service metadata. See [Dynamic backend discovery](#dynamic-backend-discovery). |
+| `.BackendAnnotations` | `map[string]map[string]string` | Kubernetes Service annotations keyed by backend name. Updated dynamically when Service annotations change. `kubectl.kubernetes.io/last-applied-configuration` is excluded by default; use `--exclude-annotations` to exclude additional keys. See [Dynamic backend discovery](#dynamic-backend-discovery). |
 
 Each `Frontend` / `Endpoint` has:
 

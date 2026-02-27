@@ -17,14 +17,15 @@ import (
 )
 
 type templateData struct {
-	Frontends      []watcher.Frontend
-	Backends       map[string][]watcher.Endpoint
-	BackendLabels  map[string]map[string]string  // Service labels keyed by backend name
-	LocalBackends  map[string][]watcher.Endpoint // same-zone backends
-	RemoteBackends map[string][]watcher.Endpoint // other-zone backends
-	Values         map[string]map[string]any
-	Secrets        map[string]map[string]any
-	LocalZone      string // zone of the Varnish pod (empty if unknown)
+	Frontends          []watcher.Frontend
+	Backends           map[string][]watcher.Endpoint
+	BackendLabels      map[string]map[string]string  // Service labels keyed by backend name
+	BackendAnnotations map[string]map[string]string  // Service annotations keyed by backend name
+	LocalBackends      map[string][]watcher.Endpoint // same-zone backends
+	RemoteBackends     map[string][]watcher.Endpoint // other-zone backends
+	Values             map[string]map[string]any
+	Secrets            map[string]map[string]any
+	LocalZone          string // zone of the Varnish pod (empty if unknown)
 }
 
 // splitBackendsByZone partitions backends into local (same-zone) and remote
@@ -51,15 +52,16 @@ func splitBackendsByZone(backends map[string][]watcher.Endpoint, zone string) (m
 
 // Renderer renders VCL from a Go template and a list of frontends.
 type Renderer struct {
-	tmpl          *template.Template
-	prev          *template.Template
-	templatePath  string
-	funcMap       template.FuncMap
-	drainBackend  string
-	delimLeft     string
-	delimRight    string
-	localZone     string
-	backendLabels map[string]map[string]string
+	tmpl               *template.Template
+	prev               *template.Template
+	templatePath       string
+	funcMap            template.FuncMap
+	drainBackend       string
+	delimLeft          string
+	delimRight         string
+	localZone          string
+	backendLabels      map[string]map[string]string
+	backendAnnotations map[string]map[string]string
 }
 
 // SetDrainBackend configures the renderer to auto-inject drain VCL using the
@@ -78,6 +80,12 @@ func (r *Renderer) SetLocalZone(zone string) {
 // .BackendLabels in templates.
 func (r *Renderer) SetBackendLabels(labels map[string]map[string]string) {
 	r.backendLabels = labels
+}
+
+// SetBackendAnnotations sets the Service annotations map made available as
+// .BackendAnnotations in templates.
+func (r *Renderer) SetBackendAnnotations(annotations map[string]map[string]string) {
+	r.backendAnnotations = annotations
 }
 
 // New parses the template file and returns a Renderer.
@@ -231,17 +239,23 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]wa
 		backendLabels = make(map[string]map[string]string)
 	}
 
+	backendAnnotations := r.backendAnnotations
+	if backendAnnotations == nil {
+		backendAnnotations = make(map[string]map[string]string)
+	}
+
 	var buf bytes.Buffer
 
 	err := r.tmpl.Execute(&buf, templateData{
-		Frontends:      frontends,
-		Backends:       backends,
-		BackendLabels:  backendLabels,
-		LocalBackends:  localBackends,
-		RemoteBackends: remoteBackends,
-		Values:         values,
-		Secrets:        secrets,
-		LocalZone:      r.localZone,
+		Frontends:          frontends,
+		Backends:           backends,
+		BackendLabels:      backendLabels,
+		BackendAnnotations: backendAnnotations,
+		LocalBackends:      localBackends,
+		RemoteBackends:     remoteBackends,
+		Values:             values,
+		Secrets:            secrets,
+		LocalZone:          r.localZone,
 	})
 	if err != nil {
 		return "", fmt.Errorf("executing template: %w", err)

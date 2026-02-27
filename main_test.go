@@ -187,16 +187,17 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 // --- Mock types for runLoop tests ---
 
 type mockRenderer struct {
-	mu                  sync.Mutex
-	reloadFn            func() error
-	renderFn            func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any, map[string]map[string]any) (string, error)
-	renderToFileFn      func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any, map[string]map[string]any) (string, error)
-	rollbackFn          func()
-	reloadCount         int
-	renderCount         int
-	rollbackCount       int
-	lastBackends        map[string][]watcher.Endpoint
-	latestBackendLabels map[string]map[string]string
+	mu                       sync.Mutex
+	reloadFn                 func() error
+	renderFn                 func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any, map[string]map[string]any) (string, error)
+	renderToFileFn           func([]watcher.Frontend, map[string][]watcher.Endpoint, map[string]map[string]any, map[string]map[string]any) (string, error)
+	rollbackFn               func()
+	reloadCount              int
+	renderCount              int
+	rollbackCount            int
+	lastBackends             map[string][]watcher.Endpoint
+	latestBackendLabels      map[string]map[string]string
+	latestBackendAnnotations map[string]map[string]string
 }
 
 func (m *mockRenderer) Reload() error {
@@ -252,6 +253,12 @@ func (m *mockRenderer) SetBackendLabels(labels map[string]map[string]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.latestBackendLabels = maps.Clone(labels)
+}
+
+func (m *mockRenderer) SetBackendAnnotations(annotations map[string]map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.latestBackendAnnotations = maps.Clone(annotations)
 }
 
 func (m *mockRenderer) counts() (int, int, int) {
@@ -446,11 +453,12 @@ func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
 
 		drainPollInterval: 1 * time.Second,
 
-		latestFrontends:     nil,
-		latestBackends:      make(map[string][]watcher.Endpoint),
-		latestBackendLabels: make(map[string]map[string]string),
-		latestValues:        make(map[string]map[string]any),
-		latestSecrets:       make(map[string]map[string]any),
+		latestFrontends:          nil,
+		latestBackends:           make(map[string][]watcher.Endpoint),
+		latestBackendLabels:      make(map[string]map[string]string),
+		latestBackendAnnotations: make(map[string]map[string]string),
+		latestValues:             make(map[string]map[string]any),
+		latestSecrets:            make(map[string]map[string]any),
 
 		recorder: h.recorder,
 		podRef:   h.podRef,
@@ -3589,7 +3597,7 @@ func TestRunLoop_EventReasonBackendEndpoints(t *testing.T) {
 	}
 }
 
-func TestRunLoop_EventReasonBackendLabelsChanged(t *testing.T) {
+func TestRunLoop_EventReasonBackendMetadataChanged(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
@@ -3607,7 +3615,7 @@ func TestRunLoop_EventReasonBackendLabelsChanged(t *testing.T) {
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload")
 	_ = collectEvents(rec, 1) // drain
 
-	// Second send: same endpoints, different labels → "backend labels changed".
+	// Second send: same endpoints, different labels → "backend metadata changed".
 	h.backendCh <- backendChange{
 		name:      "api",
 		endpoints: eps,
@@ -3615,7 +3623,41 @@ func TestRunLoop_EventReasonBackendLabelsChanged(t *testing.T) {
 	}
 
 	events := collectEvents(rec, 1)
-	requireEvent(t, events, "VCLReloaded", "backend labels changed")
+	requireEvent(t, events, "VCLReloaded", "backend metadata changed")
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_EventReasonBackendAnnotationsChanged(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	eps := []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}
+
+	// First send: new endpoints → "backend endpoints changed".
+	h.backendCh <- backendChange{
+		name:        "api",
+		endpoints:   eps,
+		annotations: map[string]string{"example.com/version": "v1"},
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload")
+	_ = collectEvents(rec, 1) // drain
+
+	// Second send: same endpoints, different annotations → "backend metadata changed".
+	h.backendCh <- backendChange{
+		name:        "api",
+		endpoints:   eps,
+		annotations: map[string]string{"example.com/version": "v2"},
+	}
+
+	events := collectEvents(rec, 1)
+	requireEvent(t, events, "VCLReloaded", "backend metadata changed")
 
 	code := wait()
 	if code != 0 {
@@ -5245,6 +5287,42 @@ func TestRunLoop_BackendLabelsPassedToRenderer(t *testing.T) {
 	}
 }
 
+func TestRunLoop_BackendAnnotationsPassedToRenderer(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	wait := h.runAndWait(h.bcast)
+
+	h.backendCh <- backendChange{
+		name:        "api",
+		endpoints:   []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		annotations: map[string]string{"example.com/version": "v2", "example.com/tier": "backend"},
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
+
+	h.rend.mu.Lock()
+	gotAnnotations := h.rend.latestBackendAnnotations
+	h.rend.mu.Unlock()
+
+	if gotAnnotations == nil {
+		t.Fatal("expected latestBackendAnnotations to be set")
+	}
+	apiAnnotations, ok := gotAnnotations["api"]
+	if !ok {
+		t.Fatal("expected 'api' in latestBackendAnnotations")
+	}
+	if apiAnnotations["example.com/version"] != "v2" {
+		t.Errorf("expected example.com/version=v2, got %q", apiAnnotations["example.com/version"])
+	}
+	if apiAnnotations["example.com/tier"] != "backend" {
+		t.Errorf("expected example.com/tier=backend, got %q", apiAnnotations["example.com/tier"])
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
 func TestRunLoop_ExplicitBackendLabelsSeededAtStartup(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
@@ -5297,11 +5375,173 @@ func TestRunLoop_ExplicitBackendLabelsSeededAtStartup(t *testing.T) {
 	}
 }
 
+func TestRunLoop_ExplicitBackendAnnotationsSeededAtStartup(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	// Pre-seed latestBackendAnnotations with annotations for an explicit backend,
+	// simulating the initial seed from bw.Annotations() at startup.
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.latestBackends["api"] = []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}
+	lc.latestBackendAnnotations["api"] = map[string]string{"example.com/version": "v1", "example.com/tier": "backend"}
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger a render via a frontend change.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
+
+	// The renderer should have received the pre-seeded annotations.
+	h.rend.mu.Lock()
+	gotAnnotations := h.rend.latestBackendAnnotations
+	h.rend.mu.Unlock()
+
+	if gotAnnotations == nil {
+		t.Fatal("expected latestBackendAnnotations to be set")
+	}
+	apiAnnotations, ok := gotAnnotations["api"]
+	if !ok {
+		t.Fatal("expected 'api' in latestBackendAnnotations for explicit backend")
+	}
+	if apiAnnotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", apiAnnotations["example.com/version"])
+	}
+	if apiAnnotations["example.com/tier"] != "backend" {
+		t.Errorf("expected example.com/tier=backend, got %q", apiAnnotations["example.com/tier"])
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for loop exit")
+	}
+	if c := code.Load(); c != 0 {
+		t.Fatalf("expected exit 0, got %d", c)
+	}
+}
+
+// TestRunLoop_BackendAnnotationsFilteredByWatcher simulates a watcher that has
+// already filtered annotations (as happens in production when
+// SetExcludeAnnotations is called). The runLoop should pass only the
+// filtered annotations to the renderer.
+func TestRunLoop_BackendAnnotationsFilteredByWatcher(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	wait := h.runAndWait(h.bcast)
+
+	// Simulate a backendChange from a watcher with annotation exclusion applied:
+	// kubectl.kubernetes.io/last-applied-configuration was already stripped by
+	// the watcher — it should NOT appear in the renderer's annotations.
+	h.backendCh <- backendChange{
+		name:      "api",
+		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		annotations: map[string]string{
+			"example.com/version": "v1",
+			"example.com/tier":    "backend",
+		},
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
+
+	h.rend.mu.Lock()
+	gotAnnotations := h.rend.latestBackendAnnotations
+	h.rend.mu.Unlock()
+
+	if gotAnnotations == nil {
+		t.Fatal("expected latestBackendAnnotations to be set")
+	}
+	apiAnnotations, ok := gotAnnotations["api"]
+	if !ok {
+		t.Fatal("expected 'api' in latestBackendAnnotations")
+	}
+	if _, has := apiAnnotations["kubectl.kubernetes.io/last-applied-configuration"]; has {
+		t.Error("excluded annotation should not appear in renderer")
+	}
+	if apiAnnotations["example.com/version"] != "v1" {
+		t.Errorf("example.com/version = %q, want v1", apiAnnotations["example.com/version"])
+	}
+	if apiAnnotations["example.com/tier"] != "backend" {
+		t.Errorf("example.com/tier = %q, want backend", apiAnnotations["example.com/tier"])
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+// TestRunLoop_BackendAnnotationsFilteredSeededAtStartup verifies that pre-seeded
+// annotations (already filtered by the watcher at startup) flow correctly
+// through the runLoop to the renderer on the first render.
+func TestRunLoop_BackendAnnotationsFilteredSeededAtStartup(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+
+	// Pre-seed with filtered annotations (as main.go would after calling
+	// bw.Annotations() on a watcher with SetExcludeAnnotations).
+	lc.latestBackends["api"] = []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}
+	lc.latestBackendAnnotations["api"] = map[string]string{
+		"example.com/version": "v1",
+		// kubectl.kubernetes.io/last-applied-configuration already excluded
+	}
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger a render via a frontend change.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
+
+	h.rend.mu.Lock()
+	gotAnnotations := h.rend.latestBackendAnnotations
+	h.rend.mu.Unlock()
+
+	if gotAnnotations == nil {
+		t.Fatal("expected latestBackendAnnotations to be set")
+	}
+	apiAnnotations, ok := gotAnnotations["api"]
+	if !ok {
+		t.Fatal("expected 'api' in latestBackendAnnotations")
+	}
+	if _, has := apiAnnotations["kubectl.kubernetes.io/last-applied-configuration"]; has {
+		t.Error("excluded annotation should not appear in renderer")
+	}
+	if apiAnnotations["example.com/version"] != "v1" {
+		t.Errorf("example.com/version = %q, want v1", apiAnnotations["example.com/version"])
+	}
+	if len(apiAnnotations) != 1 {
+		t.Errorf("expected 1 annotation, got %d: %v", len(apiAnnotations), apiAnnotations)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for loop exit")
+	}
+	if c := code.Load(); c != 0 {
+		t.Fatalf("expected exit 0, got %d", c)
+	}
+}
+
 func TestRunLoop_SkipsReloadWhenVCLUnchanged(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 
-	// renderFn always returns the same VCL — simulates a label-only change
+	// renderFn always returns the same VCL — simulates a metadata-only change
 	// that doesn't affect the rendered output.
 	const fixedVCL = "vcl 4.1; /* unchanged */"
 	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string][]watcher.Endpoint, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {

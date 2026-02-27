@@ -602,6 +602,115 @@ func TestDiscoveryWatcher_LabelUpdateInForwardingPath(t *testing.T) {
 	}
 }
 
+// --- Annotation tests ---
+
+func TestDiscoveryWatcher_Annotations(t *testing.T) {
+	t.Parallel()
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	svc.Annotations = map[string]string{"example.com/version": "v1", "example.com/tier": "backend"}
+	slice := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
+	clientset := fake.NewClientset(svc, slice)
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	select {
+	case <-dw.Initial():
+	case <-time.After(60 * time.Second):
+		t.Fatal("timeout waiting for initial sync")
+	}
+
+	// InitialAnnotations should contain annotations for the discovered service.
+	initialAnnotations := dw.InitialAnnotations()
+	webAnnotations, ok := initialAnnotations["web"]
+	if !ok {
+		t.Fatal("expected 'web' in initial annotations")
+	}
+	if webAnnotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", webAnnotations["example.com/version"])
+	}
+	if webAnnotations["example.com/tier"] != "backend" {
+		t.Errorf("expected example.com/tier=backend, got %q", webAnnotations["example.com/tier"])
+	}
+
+	waitForWatch()
+
+	// Update Service annotations to trigger a resend with annotations in the update.
+	svc2, err := clientset.CoreV1().Services("default").Get(ctx, "web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting Service: %v", err)
+	}
+	svc2.Annotations["example.com/version"] = "v2"
+	_, err = clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// Read updates until we see one with the new annotations.
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case u := <-dw.Changes():
+			if u.Annotations != nil && u.Annotations["example.com/version"] == "v2" {
+				return // success
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for annotation update in BackendUpdate")
+		}
+	}
+}
+
+func TestDiscoveryWatcher_AnnotationUpdateInForwardingPath(t *testing.T) {
+	t.Parallel()
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	svc.Annotations = map[string]string{"example.com/version": "v1"}
+	slice := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
+	clientset := fake.NewClientset(svc, slice)
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	waitForInitial(t, dw)
+
+	waitForWatch()
+
+	// Update annotations on the Service without changing endpoints.
+	svc2, err := clientset.CoreV1().Services("default").Get(ctx, "web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting Service: %v", err)
+	}
+	svc2.Annotations["example.com/version"] = "v3"
+	_, err = clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	// The update should propagate as a BackendUpdate with updated annotations.
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case u := <-dw.Changes():
+			if u.Annotations != nil && u.Annotations["example.com/version"] == "v3" {
+				if u.Name != "web" {
+					t.Errorf("Name = %q, want web", u.Name)
+				}
+
+				return // success
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for annotation update in forwarding path")
+		}
+	}
+}
+
 // --- ExternalName service discovered as backend ---
 
 func TestDiscoveryWatcher_ExternalNameService(t *testing.T) {
@@ -1434,5 +1543,155 @@ func TestDiscoveryWatcher_ContextCancelDuringInitialCollection(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not return after context cancellation")
+	}
+}
+
+func TestDiscoveryWatcher_ExcludeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	svc.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"big":"json"}`,
+		"example.com/version":                              "v1",
+	}
+	slice := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
+	clientset := fake.NewClientset(svc, slice)
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+	dw.SetExcludeAnnotations(BuildAnnotationFilter(DefaultExcludeAnnotations))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	select {
+	case <-dw.Initial():
+	case <-time.After(60 * time.Second):
+		t.Fatal("timeout waiting for initial sync")
+	}
+
+	// InitialAnnotations should not contain the excluded key.
+	initialAnnotations := dw.InitialAnnotations()
+	webAnnotations, ok := initialAnnotations["web"]
+	if !ok {
+		t.Fatal("expected 'web' in initial annotations")
+	}
+	if _, excluded := webAnnotations["kubectl.kubernetes.io/last-applied-configuration"]; excluded {
+		t.Error("expected kubectl.kubernetes.io/last-applied-configuration to be excluded from InitialAnnotations")
+	}
+	if webAnnotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", webAnnotations["example.com/version"])
+	}
+
+	waitForWatch()
+
+	// Update annotations — the forwarded update should also be filtered.
+	svc2, err := clientset.CoreV1().Services("default").Get(ctx, "web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting Service: %v", err)
+	}
+	svc2.Annotations["example.com/version"] = "v2"
+	_, err = clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case u := <-dw.Changes():
+			if u.Annotations != nil && u.Annotations["example.com/version"] == "v2" {
+				if _, excluded := u.Annotations["kubectl.kubernetes.io/last-applied-configuration"]; excluded {
+					t.Error("expected excluded annotation to not appear in forwarded BackendUpdate")
+				}
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for annotation update")
+		}
+	}
+}
+
+func TestDiscoveryWatcher_ExcludeAnnotationsPrefixMatch(t *testing.T) {
+	t.Parallel()
+
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	svc.Annotations = map[string]string{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"big":"json"}`,
+		"kubectl.kubernetes.io/restartedAt":                "2026-01-01",
+		"example.com/version":                              "v1",
+	}
+	slice := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
+	clientset := fake.NewClientset(svc, slice)
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+	dw.SetExcludeAnnotations(BuildAnnotationFilter([]string{"kubectl.kubernetes.io/*"}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	select {
+	case <-dw.Initial():
+	case <-time.After(60 * time.Second):
+		t.Fatal("timeout waiting for initial sync")
+	}
+
+	// InitialAnnotations should exclude all kubectl.kubernetes.io/* keys.
+	initialAnnotations := dw.InitialAnnotations()
+	webAnnotations, ok := initialAnnotations["web"]
+	if !ok {
+		t.Fatal("expected 'web' in initial annotations")
+	}
+	if _, excluded := webAnnotations["kubectl.kubernetes.io/last-applied-configuration"]; excluded {
+		t.Error("expected kubectl.kubernetes.io/last-applied-configuration to be excluded by prefix")
+	}
+	if _, excluded := webAnnotations["kubectl.kubernetes.io/restartedAt"]; excluded {
+		t.Error("expected kubectl.kubernetes.io/restartedAt to be excluded by prefix")
+	}
+	if webAnnotations["example.com/version"] != "v1" {
+		t.Errorf("expected example.com/version=v1, got %q", webAnnotations["example.com/version"])
+	}
+	if len(webAnnotations) != 1 {
+		t.Errorf("expected exactly 1 annotation remaining, got %d: %v", len(webAnnotations), webAnnotations)
+	}
+
+	waitForWatch()
+
+	// Update annotations — forwarded update should also be prefix-filtered.
+	svc2, err := clientset.CoreV1().Services("default").Get(ctx, "web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("getting Service: %v", err)
+	}
+	svc2.Annotations["example.com/version"] = "v2"
+	svc2.Annotations["kubectl.kubernetes.io/new-key"] = "new-value"
+	_, err = clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating Service: %v", err)
+	}
+
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case u := <-dw.Changes():
+			if u.Annotations != nil && u.Annotations["example.com/version"] == "v2" {
+				if _, excluded := u.Annotations["kubectl.kubernetes.io/new-key"]; excluded {
+					t.Error("expected kubectl.kubernetes.io/new-key to be excluded by prefix in update")
+				}
+				if _, excluded := u.Annotations["kubectl.kubernetes.io/last-applied-configuration"]; excluded {
+					t.Error("expected kubectl.kubernetes.io/last-applied-configuration to be excluded in update")
+				}
+				if len(u.Annotations) != 1 {
+					t.Errorf("expected exactly 1 annotation in update, got %d: %v", len(u.Annotations), u.Annotations)
+				}
+
+				return
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for prefix-filtered annotation update")
+		}
 	}
 }

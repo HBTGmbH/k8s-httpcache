@@ -730,6 +730,200 @@ func TestRender_BackendLabelsEmpty(t *testing.T) {
 	}
 }
 
+func TestRender_BackendAnnotations(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $annotations := index $.BackendAnnotations $name >>` +
+		`<< $name >>:version=<< index $annotations "example.com/version" >>,tier=<< index $annotations "example.com/tier" >>
+<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	}
+	r.SetBackendAnnotations(map[string]map[string]string{
+		"api": {"example.com/version": "v2", "example.com/tier": "backend"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:version=v2,tier=backend") {
+		t.Errorf("expected annotations in output, got: %s", out)
+	}
+}
+
+func TestRender_BackendAnnotationsEmpty(t *testing.T) {
+	t.Parallel()
+	// BackendAnnotations should default to an empty map when not set.
+	tmpl := `annotations_len=<< len .BackendAnnotations >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "annotations_len=0") {
+		t.Errorf("expected annotations_len=0, got: %s", out)
+	}
+}
+
+func TestRender_BackendAnnotationsMultipleBackends(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $annotations := index $.BackendAnnotations $name >>` +
+		`<< $name >>:tier=<< index $annotations "example.com/tier" >>
+<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	}
+	r.SetBackendAnnotations(map[string]map[string]string{
+		"api":    {"example.com/tier": "frontend"},
+		"worker": {"example.com/tier": "backend"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:tier=frontend") {
+		t.Errorf("expected api annotations in output, got: %s", out)
+	}
+	if !strings.Contains(out, "worker:tier=backend") {
+		t.Errorf("expected worker annotations in output, got: %s", out)
+	}
+}
+
+func TestRender_BackendAnnotationsConditional(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $annotations := index $.BackendAnnotations $name >>` +
+		`<< if eq (index $annotations "example.com/tier") "premium" >>` +
+		`<< $name >>:PREMIUM
+<< else >>` +
+		`<< $name >>:STANDARD
+<< end >>` +
+		`<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	}
+	r.SetBackendAnnotations(map[string]map[string]string{
+		"api":    {"example.com/tier": "premium"},
+		"worker": {"example.com/tier": "basic"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:PREMIUM") {
+		t.Errorf("expected api:PREMIUM, got: %s", out)
+	}
+	if !strings.Contains(out, "worker:STANDARD") {
+		t.Errorf("expected worker:STANDARD, got: %s", out)
+	}
+}
+
+func TestRender_BackendAnnotationsMissingBackend(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< if hasKey $.BackendAnnotations $name >>` +
+		`<< $name >>:HAS_ANNOTATIONS
+<< else >>` +
+		`<< $name >>:NO_ANNOTATIONS
+<< end >>` +
+		`<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+		"static": {{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+	}
+	// Only "api" has annotations; "static" (explicit --backend) does not.
+	r.SetBackendAnnotations(map[string]map[string]string{
+		"api": {"example.com/tier": "backend"},
+	})
+
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:HAS_ANNOTATIONS") {
+		t.Errorf("expected api:HAS_ANNOTATIONS, got: %s", out)
+	}
+	if !strings.Contains(out, "static:NO_ANNOTATIONS") {
+		t.Errorf("expected static:NO_ANNOTATIONS, got: %s", out)
+	}
+}
+
+func TestRender_BackendAnnotationsUpdate(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $eps := .Backends >>` +
+		`<< $annotations := index $.BackendAnnotations $name >>` +
+		`<< $name >>:version=<< index $annotations "example.com/version" >>
+<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string][]watcher.Endpoint{
+		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	}
+
+	// First render with v1.
+	r.SetBackendAnnotations(map[string]map[string]string{
+		"api": {"example.com/version": "v1"},
+	})
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:version=v1") {
+		t.Errorf("expected v1, got: %s", out)
+	}
+
+	// Second render with updated annotations.
+	r.SetBackendAnnotations(map[string]map[string]string{
+		"api": {"example.com/version": "v2"},
+	})
+	out, err = r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "api:version=v2") {
+		t.Errorf("expected v2 after update, got: %s", out)
+	}
+}
+
 func TestRender_SprigGetOverride(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< get .BackendLabels "api" >>`
