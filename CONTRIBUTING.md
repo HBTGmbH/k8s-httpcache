@@ -38,6 +38,12 @@ CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w -extldflags "-static
 go test -race ./...
 ```
 
+The CI uses [gotestsum](https://github.com/gotestyourself/gotestsum) for nicer output and JUnit reports:
+
+```bash
+gotestsum --format testdox -- -race ./...
+```
+
 ### Linting
 
 Run all linting checks (aborts on first failure):
