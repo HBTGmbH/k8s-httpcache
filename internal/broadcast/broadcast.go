@@ -143,13 +143,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.metrics.BroadcastFanoutTargets.Set(float64(len(frontends)))
 
 	for _, fe := range frontends {
-		wg.Add(1)
-		go func(fe watcher.Frontend) {
-			defer wg.Done()
+		wg.Go(func() {
 			nr := namedResult{name: fe.Name}
 			nr.result = s.forward(r, &fe, body)
 			results <- nr
-		}(fe)
+		})
 	}
 
 	wg.Wait()

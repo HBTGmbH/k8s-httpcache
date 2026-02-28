@@ -22,7 +22,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -416,8 +416,8 @@ func newTestHarness() *testHarness {
 	}
 }
 
-func (h *testHarness) loopConfig(bcast broadcaster) loopConfig {
-	return loopConfig{
+func (h *testHarness) loopConfig(bcast broadcaster) *loopConfig {
+	return &loopConfig{
 		rend:    h.rend,
 		mgr:     h.mgr,
 		bcast:   bcast,
@@ -2907,7 +2907,7 @@ func TestResetDebounce_PreservesFirstEventOnSubsequentCalls(t *testing.T) {
 	resetDebounce(&s, 100*time.Millisecond, 0)
 	defer s.timer.Stop()
 
-	if s.firstEvent != first {
+	if !s.firstEvent.Equal(first) {
 		t.Errorf("firstEvent changed from %v to %v on second call", first, s.firstEvent)
 	}
 }

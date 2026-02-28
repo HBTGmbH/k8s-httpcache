@@ -1005,7 +1005,7 @@ func TestParseDefaults(t *testing.T) {
 		t.Errorf("ValuesDirPollInterval = %v, want 5s", cfg.ValuesDirPollInterval)
 	}
 	if cfg.Drain {
-		t.Errorf("Drain = true, want false")
+		t.Error("Drain = true, want false")
 	}
 	if cfg.DrainDelay != 15*time.Second {
 		t.Errorf("DrainDelay = %v, want 15s", cfg.DrainDelay)
@@ -3224,7 +3224,7 @@ func TestParseBackendSelectorMultiple(t *testing.T) {
 	if cfg.BackendSelectors[0].Selector != "app=web" {
 		t.Errorf("[0].Selector = %q, want app=web", cfg.BackendSelectors[0].Selector)
 	}
-	if cfg.BackendSelectors[1].AllNamespaces != true {
+	if !cfg.BackendSelectors[1].AllNamespaces {
 		t.Error("[1].AllNamespaces = false, want true")
 	}
 	if cfg.BackendSelectors[1].Port != "9090" {

@@ -1078,9 +1078,7 @@ func TestRender_SprigOriginalsDictFunctionsFailOnTypedMaps(t *testing.T) {
 			switch fn {
 			case "keys", "values":
 				expr = "{{ " + fn + " .M }}"
-			case "hasKey", "get":
-				expr = "{{ " + fn + " .M \"api\" }}"
-			case "pick", "omit":
+			case "hasKey", "get", "pick", "omit":
 				expr = "{{ " + fn + " .M \"api\" }}"
 			}
 
@@ -1450,10 +1448,10 @@ func TestRender_WithBackends(t *testing.T) {
 		t.Errorf("expected auth-pod-0_auth in output, got: %s", out)
 	}
 	if !strings.Contains(out, "10.1.0.1") {
-		t.Errorf("expected IP 10.1.0.1 in output")
+		t.Error("expected IP 10.1.0.1 in output")
 	}
 	if !strings.Contains(out, "3000") {
-		t.Errorf("expected port 3000 in output")
+		t.Error("expected port 3000 in output")
 	}
 }
 

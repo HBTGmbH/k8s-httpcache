@@ -109,6 +109,51 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    revive:
+      enable-all-rules: true
+      rules:
+        - name: confusing-results
+          disabled: true
+        - name: add-constant
+          disabled: true
+        - name: argument-limit
+          disabled: true
+        - name: cognitive-complexity
+          disabled: true
+        - name: comments-density
+          disabled: true
+        - name: cyclomatic
+          disabled: true
+        - name: file-header
+          disabled: true
+        - name: file-length-limit
+          disabled: true
+        - name: flag-parameter
+          disabled: true
+        - name: function-length
+          disabled: true
+        - name: function-result-limit
+          disabled: true
+        - name: line-length-limit
+          disabled: true
+        - name: max-control-nesting
+          disabled: true
+        - name: max-public-structs
+          disabled: true
+        - name: modifies-parameter
+          disabled: true
+        - name: banned-characters
+          disabled: true
+        - name: imports-blocklist
+          disabled: true
+        - name: string-format
+          disabled: true
+        - name: confusing-naming
+          disabled: true
+        - name: deep-exit
+          disabled: true
+        - name: enforce-switch-style
+          disabled: true
   exclusions:
     rules:
       - path: _test\.go

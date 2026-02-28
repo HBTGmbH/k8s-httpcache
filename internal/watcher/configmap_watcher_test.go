@@ -271,7 +271,7 @@ func TestConfigMapWatcherYAMLParsing(t *testing.T) {
 	}
 
 	// Boolean is parsed.
-	if data["boolean"] != true {
+	if b, ok := data["boolean"].(bool); !ok || !b {
 		t.Errorf("expected boolean=true, got %v", data["boolean"])
 	}
 

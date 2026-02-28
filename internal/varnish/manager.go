@@ -123,7 +123,7 @@ func (r execRunner) Start(name string, args []string) (proc, error) {
 	return &execProc{cmd: cmd}, nil
 }
 
-func (r execRunner) Run(name string, args []string) (string, error) {
+func (execRunner) Run(name string, args []string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:noctx // varnishadm commands are short-lived; timeout is handled by the admin socket.
 	out, err := cmd.CombinedOutput()
 
@@ -593,7 +593,7 @@ func (m *Manager) reload(vclPath string) error {
 	return lastErr
 }
 
-func (m *Manager) parseActiveSessionsV7(out string) (uint64, error) {
+func (*Manager) parseActiveSessionsV7(out string) (uint64, error) {
 	var data struct {
 		Counters map[string]struct {
 			Value uint64 `json:"value"`
@@ -615,7 +615,7 @@ func (m *Manager) parseActiveSessionsV7(out string) (uint64, error) {
 	return total, nil
 }
 
-func (m *Manager) parseActiveSessionsV6(out string) (uint64, error) {
+func (*Manager) parseActiveSessionsV6(out string) (uint64, error) {
 	var data map[string]json.RawMessage
 
 	err := json.Unmarshal([]byte(out), &data)

@@ -158,7 +158,7 @@ func TestFileValuesWatcherYAMLParsing(t *testing.T) {
 	if !reflect.DeepEqual(data["number"], float64(42)) {
 		t.Errorf("expected number=42 (float64), got %v (%T)", data["number"], data["number"])
 	}
-	if data["boolean"] != true {
+	if b, ok := data["boolean"].(bool); !ok || !b {
 		t.Errorf("expected boolean=true, got %v", data["boolean"])
 	}
 
@@ -205,7 +205,7 @@ func TestFileValuesWatcherFileAddedLater(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected new to be map[string]any, got %T", data["new"])
 	}
-	if m["added"] != true {
+	if b, ok := m["added"].(bool); !ok || !b {
 		t.Errorf("expected added=true, got %v", m["added"])
 	}
 }

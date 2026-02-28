@@ -26,7 +26,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -785,7 +785,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// Main event loop with debounce.
-	os.Exit(runLoop(ctx, cancel, loopConfig{
+	os.Exit(runLoop(ctx, cancel, &loopConfig{
 		rend:     rend,
 		mgr:      mgr,
 		bcast:    bcast,
@@ -941,8 +941,7 @@ func handleDrain(lc *loopConfig, sig os.Signal) {
 	}
 }
 
-//nolint:gocritic // hugeParam: called once per process; helpers already take &lc
-func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
+func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 	var (
 		frontend        debounceState
 		backend         debounceState
@@ -984,7 +983,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			if err != nil {
 				lc.metrics.VCLTemplateParseErrorsTotal.Inc()
 				slog.Error("template parse error, keeping old template", "error", err)
-				emitEvent(&lc, v1.EventTypeWarning, "VCLTemplateParseFailed", fmt.Sprintf("Template parse error: %v", err))
+				emitEvent(lc, v1.EventTypeWarning, "VCLTemplateParseFailed", fmt.Sprintf("Template parse error: %v", err))
 			} else {
 				reloadedTemplate = true
 			}
@@ -998,11 +997,11 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		if err != nil {
 			lc.metrics.VCLRenderErrorsTotal.Inc()
 			slog.Error("render error", "error", err)
-			emitEvent(&lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error: %v", err))
+			emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error: %v", err))
 			if reloadedTemplate {
 				lc.metrics.VCLRollbacksTotal.Inc()
 				lc.rend.Rollback()
-				emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
+				emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
 			}
 
 			return
@@ -1036,7 +1035,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 		if err != nil {
 			lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
 			slog.Error("reload error", "error", err)
-			emitEvent(&lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
+			emitEvent(lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
 			_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
 
 			if !reloadedTemplate {
@@ -1049,16 +1048,16 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			lc.metrics.VCLRollbacksTotal.Inc()
 			lc.rend.Rollback()
 			slog.Warn("rolled back to previous template")
-			emitEvent(&lc, v1.EventTypeWarning, "VCLRolledBack", "Rolled back to previous template after reload failure")
+			emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Rolled back to previous template after reload failure")
 
-			rollbackReload(&lc, reasons)
+			rollbackReload(lc, reasons)
 
 			return
 		}
 
 		lc.lastVCLHash = vclHash
 		lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
-		emitEvent(&lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully (%s)", reasons))
+		emitEvent(lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully (%s)", reasons))
 		if lc.status != nil {
 			lc.status.recordReload()
 			lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
@@ -1072,7 +1071,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			lc.metrics.VCLTemplateChangesTotal.Inc()
 			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("VCL template changed on disk, scheduling reload")
-			emitEvent(&lc, v1.EventTypeNormal, "VCLTemplateChanged", "VCL template file change detected on disk")
+			emitEvent(lc, v1.EventTypeNormal, "VCLTemplateChanged", "VCL template file change detected on disk")
 			pendingReload = true
 			templateChanged = true
 			pendingReasons = appendUnique(pendingReasons, "template changed")
@@ -1161,7 +1160,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			handleReload()
 
 		case ev := <-lc.ncsaEvents:
-			emitEvent(&lc, ev.Type, ev.Reason, ev.Message)
+			emitEvent(lc, ev.Type, ev.Reason, ev.Message)
 
 		case <-lc.ncsaCrashed:
 			slog.Error("varnishncsa crash loop detected, shutting down")
@@ -1180,7 +1179,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			slog.Info("received signal, shutting down", "signal", sig)
 
 			if lc.drainBackend != "" {
-				handleDrain(&lc, sig)
+				handleDrain(lc, sig)
 			}
 
 			if lc.bcast != nil {
@@ -1216,7 +1215,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 				lc.status.setVarnishdUp(false)
 			}
 			slog.Error("varnishd exited unexpectedly", "error", lc.mgr.Err())
-			emitEvent(&lc, v1.EventTypeWarning, "VarnishdExited", fmt.Sprintf("varnishd exited unexpectedly: %v", lc.mgr.Err()))
+			emitEvent(lc, v1.EventTypeWarning, "VarnishdExited", fmt.Sprintf("varnishd exited unexpectedly: %v", lc.mgr.Err()))
 			cancel()
 
 			return 1

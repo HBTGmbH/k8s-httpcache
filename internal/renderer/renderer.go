@@ -333,16 +333,16 @@ func commentOutImportStdFrom(vcl string, from int) string {
 		if pos[0] < from {
 			continue // before threshold — leave it
 		}
-		b.WriteString(vcl[prev:pos[0]])
+		_, _ = b.WriteString(vcl[prev:pos[0]])
 		matched := vcl[pos[0]:pos[1]]
-		b.WriteString("// Commented out by k8s-httpcache; moved to the top of the VCL.\n")
-		b.WriteString("// " + strings.TrimRight(matched, "\n") + "\n")
+		_, _ = b.WriteString("// Commented out by k8s-httpcache; moved to the top of the VCL.\n")
+		_, _ = b.WriteString("// " + strings.TrimRight(matched, "\n") + "\n")
 		prev = pos[1]
 	}
 	if prev == 0 {
 		return vcl // nothing was commented out
 	}
-	b.WriteString(vcl[prev:])
+	_, _ = b.WriteString(vcl[prev:])
 
 	return b.String()
 }
@@ -378,22 +378,20 @@ func backendBlocksEnd(vcl string) int {
 			// Skip /* */ block comments.
 			if i+1 < len(vcl) && vcl[i] == '/' && vcl[i+1] == '*' {
 				end := strings.Index(vcl[i+2:], "*/")
-				if end >= 0 {
-					i = i + 2 + end + 1 // skip past "*/"
-				} else {
+				if end < 0 {
 					break // unclosed comment, stop scanning
 				}
+				i = i + 2 + end + 1 // skip past "*/"
 
 				continue
 			}
 			// Skip // and # line comments.
 			if vcl[i] == '#' || (i+1 < len(vcl) && vcl[i] == '/' && vcl[i+1] == '/') {
 				nl := strings.IndexByte(vcl[i:], '\n')
-				if nl >= 0 {
-					i += nl // advance to newline
-				} else {
+				if nl < 0 {
 					break // no newline, rest is comment
 				}
+				i += nl // advance to newline
 
 				continue
 			}
