@@ -245,8 +245,8 @@ vclTemplateContent: |
   import directors;
   import std;
 
-  <<- range $name, $eps := .Backends >>
-  <<- range $eps >>
+  <<- range $name, $bg := .Backends >>
+  <<- range $bg.Endpoints >>
   backend << .Name >>_<< $name >> {
     .host = "<< .IP >>";
     .port = "<< .Port >>";
@@ -259,9 +259,9 @@ vclTemplateContent: |
   }
 
   sub vcl_init {
-    <<- range $name, $eps := .Backends >>
+    <<- range $name, $bg := .Backends >>
     new backend_<< $name >> = directors.round_robin();
-    <<- range $eps >>
+    <<- range $bg.Endpoints >>
     backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
     <<- end >>
     <<- end >>

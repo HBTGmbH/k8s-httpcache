@@ -103,7 +103,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--secrets` | | Secret to watch for template values (repeatable). See [Secrets specification](#secrets-specification). |
 | `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
 | `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories (only effective when `--file-watch` is enabled) |
-| `--exclude-annotations` | | Annotation keys or prefixes to exclude from `.BackendAnnotations` (repeatable; trailing `*` for prefix match, e.g. `kubectl.kubernetes.io/*`). `kubectl.kubernetes.io/last-applied-configuration` is always excluded by default. |
+| `--exclude-annotations` | | Annotation keys or prefixes to exclude from backend annotations (repeatable; trailing `*` for prefix match, e.g. `kubectl.kubernetes.io/*`). `kubectl.kubernetes.io/last-applied-configuration` is always excluded by default. |
 
 ### Varnish paths
 
@@ -479,15 +479,12 @@ Discovered Services are merged into `.Backends` keyed by their Service name. For
 
 Explicit `--backend` names take priority — if a discovered Service has the same name as an explicit backend, the discovered Service is skipped. This lets you pin specific backends while still discovering the rest dynamically.
 
-Service labels and annotations are exposed in `.BackendLabels` and `.BackendAnnotations`, keyed by backend name. This enables conditional VCL logic based on Service metadata:
+Service labels and annotations are available on each `BackendGroup` via `.Labels` and `.Annotations`. This enables conditional VCL logic based on Service metadata:
 
 ```vcl
-<< range $name, $eps := .Backends >>
-  << if hasKey $.BackendLabels $name >>
-    << $labels := index $.BackendLabels $name >>
-    << if eq (index $labels "tier") "premium" >>
-      # premium backend logic
-    << end >>
+<< range $name, $bg := .Backends >>
+  << if eq (index $bg.Labels "tier") "premium" >>
+    # premium backend logic
   << end >>
 << end >>
 ```
@@ -495,24 +492,21 @@ Service labels and annotations are exposed in `.BackendLabels` and `.BackendAnno
 Annotations work the same way:
 
 ```vcl
-<< range $name, $eps := .Backends >>
-  << if hasKey $.BackendAnnotations $name >>
-    << $annotations := index $.BackendAnnotations $name >>
-    << if index $annotations "example.com/cache-ttl" >>
-      # annotation-based routing logic
-    << end >>
+<< range $name, $bg := .Backends >>
+  << if index $bg.Annotations "example.com/cache-ttl" >>
+    # annotation-based routing logic
   << end >>
 << end >>
 ```
 
-Both explicit `--backend` and discovered `--backend-selector` backends have their Service labels and annotations available in `.BackendLabels` and `.BackendAnnotations`.
+Both explicit `--backend` and discovered `--backend-selector` backends have their Service labels and annotations available on the `BackendGroup` (`.Labels` and `.Annotations`).
 
 ### Lifecycle
 
 - **Startup**: All Services matching the selector at startup are discovered during the initial reconciliation and included in the first VCL render.
 - **New Services**: When a new matching Service appears, a child EndpointSlice watcher is spawned and a VCL reload is triggered once its endpoints are known.
-- **Removed Services**: When a matching Service is deleted or its labels no longer match the selector, its endpoints are removed from `.Backends`, `.BackendLabels`, and `.BackendAnnotations`, and a VCL reload is triggered.
-- **Label/annotation changes**: When a Service's labels or annotations change (but still match the selector), `.BackendLabels` and `.BackendAnnotations` are updated and a VCL reload is triggered.
+- **Removed Services**: When a matching Service is deleted or its labels no longer match the selector, its `BackendGroup` is removed from `.Backends` and a VCL reload is triggered.
+- **Label/annotation changes**: When a Service's labels or annotations change (but still match the selector), the `BackendGroup`'s `.Labels` and `.Annotations` are updated and a VCL reload is triggered.
 
 ExternalName services discovered via `--backend-selector` follow the same rules as explicit ExternalName backends: the `externalName` hostname is used directly, and a numeric `--backend-selector` port override is required (otherwise port 80 is used with a warning).
 
@@ -685,14 +679,20 @@ The template receives the following data:
 | Field | Type | Description |
 |-------|------|-------------|
 | `.Frontends` | `[]Frontend` | Varnish peer pods from the watched service EndpointSlice |
-| `.Backends` | `map[string][]Endpoint` | Named backend groups keyed by the `name` from `--backend` or by Service name for `--backend-selector` discovered backends |
-| `.LocalBackends` | `map[string][]Endpoint` | Same-zone backends (endpoints where `.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty map when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
-| `.RemoteBackends` | `map[string][]Endpoint` | Other-zone backends (all remaining endpoints). Endpoints with an unknown zone and no matching `ForZones` hint are included here. Empty map when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
+| `.Backends` | `map[string]BackendGroup` | Named backend groups keyed by the `name` from `--backend` or by Service name for `--backend-selector` discovered backends |
 | `.Values` | `map[string]map[string]any` | Template values keyed by the `name` from `--values` or `--values-dir`. Each value is YAML-parsed, so structured data (maps, lists, numbers) is accessible. |
 | `.Secrets` | `map[string]map[string]any` | Secret values keyed by the `name` from `--secrets`. Each value is YAML-parsed like `.Values`. |
 | `.LocalZone` | `string` | Topology zone of the Varnish pod (empty if `NODE_NAME` is not set or zone detection fails). See [Topology-aware routing](#topology-aware-routing). |
-| `.BackendLabels` | `map[string]map[string]string` | Kubernetes Service labels keyed by backend name. Updated dynamically when Service labels change. Useful for conditional VCL logic based on Service metadata. See [Dynamic backend discovery](#dynamic-backend-discovery). |
-| `.BackendAnnotations` | `map[string]map[string]string` | Kubernetes Service annotations keyed by backend name. Updated dynamically when Service annotations change. `kubectl.kubernetes.io/last-applied-configuration` is excluded by default; use `--exclude-annotations` to exclude additional keys. See [Dynamic backend discovery](#dynamic-backend-discovery). |
+
+Each `BackendGroup` has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `.Endpoints` | `[]Endpoint` | All ready endpoints for this backend |
+| `.Labels` | `map[string]string` | Kubernetes Service labels. Updated dynamically when Service labels change. Useful for conditional VCL logic based on Service metadata. See [Dynamic backend discovery](#dynamic-backend-discovery). |
+| `.Annotations` | `map[string]string` | Kubernetes Service annotations. Updated dynamically when Service annotations change. `kubectl.kubernetes.io/last-applied-configuration` is excluded by default; use `--exclude-annotations` to exclude additional keys. See [Dynamic backend discovery](#dynamic-backend-discovery). |
+| `.LocalEndpoints` | `[]Endpoint` | Same-zone endpoints (where `.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
+| `.RemoteEndpoints` | `[]Endpoint` | Other-zone endpoints (all remaining). Endpoints with unknown zone and no matching `.ForZones` hint are included here. Empty when `LocalZone` is empty. See [Topology-aware routing](#topology-aware-routing). |
 
 Each `Frontend` / `Endpoint` has:
 
@@ -719,15 +719,15 @@ All [Sprig](https://masterminds.github.io/sprig/) template functions are availab
 | `join` | `join ", " .List` — join a list with a separator |
 | `quote` / `squote` | Wrap in double/single quotes |
 | `keys` | `keys .Backends` — list of map keys |
-| `hasKey` | `hasKey .BackendLabels "api"` — check if a key exists |
-| `get` | `get .BackendLabels "api"` — get a value by key (`""` if missing) |
+| `hasKey` | `hasKey .Backends "api"` — check if a key exists |
+| `get` | `get .Backends "api"` — get a value by key (`""` if missing) |
 | `values` | `values .Backends` — list of map values |
-| `pick` | `pick .BackendLabels "api" "worker"` — subset of a map by key names |
-| `omit` | `omit .BackendLabels "internal"` — map without the named keys |
+| `pick` | `pick .Backends "api" "worker"` — subset of a map by key names |
+| `omit` | `omit .Backends "internal"` — map without the named keys |
 
 See the [full Sprig function reference](https://masterminds.github.io/sprig/) for the complete list.
 
-**Sprig overrides:** The six dict functions listed above (`keys`, `hasKey`, `get`, `values`, `pick`, `omit`) are overridden with reflect-based versions. Sprig's originals have a `map[string]interface{}` parameter type, and Go's type system does not consider typed maps like `map[string][]Endpoint` or `map[string]map[string]string` assignable to `map[string]interface{}`, so the template engine rejects the call before the function is even invoked. The overrides accept any map type.
+**Sprig overrides:** The six dict functions listed above (`keys`, `hasKey`, `get`, `values`, `pick`, `omit`) are overridden with reflect-based versions. Sprig's originals have a `map[string]interface{}` parameter type, and Go's type system does not consider typed maps like `map[string]BackendGroup` or `map[string]string` assignable to `map[string]interface{}`, so the template engine rejects the call before the function is even invoked. The overrides accept any map type.
 
 ### Runtime reload and rollback
 
@@ -750,8 +750,8 @@ backend << .Name >> {
 }
 <<- end >>
 
-<<- range $name, $eps := .Backends >>
-<<- range $eps >>
+<<- range $name, $bg := .Backends >>
+<<- range $bg.Endpoints >>
 backend << .Name >>_<< $name >> {
   .host = "<< .IP >>";
   .port = "<< .Port >>";
@@ -774,9 +774,9 @@ sub vcl_init {
   cluster.reconfigure();
   <<- end >>
 
-  <<- range $name, $eps := .Backends >>
+  <<- range $name, $bg := .Backends >>
   new backend_<< $name >> = directors.round_robin();
-  <<- range $eps >>
+  <<- range $bg.Endpoints >>
   backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
   <<- end >>
   <<- end >>
@@ -843,11 +843,11 @@ args: ["--zone", "europe-west3-a", ...]
 
 2. **Grant node read access** — see [Node access for zone auto-detection](#node-access-for-zone-auto-detection) in the RBAC section.
 
-When `--zone` is set, it takes precedence and `NODE_NAME` / node RBAC are not needed. If neither `--zone` nor `NODE_NAME` is set, the ClusterRole is missing, or the node has no `topology.kubernetes.io/zone` label, zone detection fails gracefully: `.LocalZone` will be empty, `.LocalBackends` and `.RemoteBackends` will both be empty maps, and templates should fall back to `.Backends` (see the `if .LocalZone` guard in the [fallback director example](#example-fallback-director-preferring-same-zone-backends)).
+When `--zone` is set, it takes precedence and `NODE_NAME` / node RBAC are not needed. If neither `--zone` nor `NODE_NAME` is set, the ClusterRole is missing, or the node has no `topology.kubernetes.io/zone` label, zone detection fails gracefully: `.LocalZone` will be empty, each `BackendGroup`'s `.LocalEndpoints` and `.RemoteEndpoints` will both be empty, and templates should fall back to `.Endpoints` (see the `if .LocalZone` guard in the [fallback director example](#example-fallback-director-preferring-same-zone-backends)).
 
-   Zone-aware routing also requires that the **backend pods' nodes** have the `topology.kubernetes.io/zone` label. Kubernetes populates `.Zone` on each endpoint from the node hosting that pod. If the backend nodes lack zone labels, all endpoints will have an empty `.Zone` and land in `.RemoteBackends` even when `.LocalZone` is correctly detected — the local director will always be empty and the fallback director will only use the remote round-robin.
+   Zone-aware routing also requires that the **backend pods' nodes** have the `topology.kubernetes.io/zone` label. Kubernetes populates `.Zone` on each endpoint from the node hosting that pod. If the backend nodes lack zone labels, all endpoints will have an empty `.Zone` and land in `.RemoteEndpoints` even when `.LocalZone` is correctly detected — the local director will always be empty and the fallback director will only use the remote round-robin.
 
-   [ExternalName service](#externalname-services) backends resolve to a DNS hostname rather than pod IPs, so their endpoints have no associated node. As a result, `.Zone`, `.NodeName`, and `.ForZones` will always be empty for ExternalName backends. They are included in `.Backends` as usual, but when zone splitting is active they will always land in `.RemoteBackends` (never in `.LocalBackends`).
+   [ExternalName service](#externalname-services) backends resolve to a DNS hostname rather than pod IPs, so their endpoints have no associated node. As a result, `.Zone`, `.NodeName`, and `.ForZones` will always be empty for ExternalName backends. They are included in `.Backends` as usual, but when zone splitting is active they will always land in `.RemoteEndpoints` (never in `.LocalEndpoints`).
 
 ### Available template fields
 
@@ -856,8 +856,13 @@ Top-level fields:
 | Field | Description |
 |-------|-------------|
 | `.LocalZone` | Zone of the Varnish pod (from `--zone` flag, or auto-detected from the node's `topology.kubernetes.io/zone` label) |
-| `.LocalBackends` | Pre-filtered view of `.Backends` containing only same-zone endpoints (`.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty map when `.LocalZone` is empty. |
-| `.RemoteBackends` | Pre-filtered view of `.Backends` containing all other endpoints. Endpoints with unknown zone and no matching `.ForZones` hint land here. Empty map when `.LocalZone` is empty. |
+
+Per-`BackendGroup` fields (on each group in `.Backends`):
+
+| Field | Description |
+|-------|-------------|
+| `.LocalEndpoints` | Same-zone endpoints (where `.Zone == .LocalZone` or `.ForZones` contains `.LocalZone`). Empty when `.LocalZone` is empty. |
+| `.RemoteEndpoints` | Other-zone endpoints. Endpoints with unknown zone and no matching `.ForZones` hint land here. Empty when `.LocalZone` is empty. |
 
 Per-endpoint fields (on each `Frontend` / `Endpoint`):
 
@@ -872,7 +877,7 @@ Per-endpoint fields (on each `Frontend` / `Endpoint`):
 ```vcl
 sub vcl_init {
   new lb = directors.random();
-  <<- range .Backends.myapp >>
+  <<- range .Backends.myapp.Endpoints >>
   lb.add_backend(<< .Name >>_myapp,
     << if eq .Zone $.LocalZone >>10<< else >>1<< end >>);
   <<- end >>
@@ -883,19 +888,19 @@ This gives backends in the same zone a weight of 10, while remote backends get a
 
 ### Example: fallback director preferring same-zone backends
 
-`.LocalBackends` and `.RemoteBackends` are pre-filtered views of `.Backends` split by zone, so you can build separate directors without inline conditionals. An endpoint is considered local if its `.Zone` matches `.LocalZone` or if its `.ForZones` hints include `.LocalZone` (Kubernetes Topology Aware Routing). When `.LocalZone` is empty, both maps are empty and you should fall back to `.Backends`.
+Each `BackendGroup` has `.LocalEndpoints` and `.RemoteEndpoints` — pre-filtered views of `.Endpoints` split by zone — so you can build separate directors without inline conditionals. An endpoint is considered local if its `.Zone` matches `.LocalZone` or if its `.ForZones` hints include `.LocalZone` (Kubernetes Topology Aware Routing). When `.LocalZone` is empty, both lists are empty and you should fall back to `.Endpoints`.
 
-The pattern works with any number of `--backend` groups. For each group, a local and remote [round-robin director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) can be created, then combined via a [fallback director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) that prefers the local director. The backends are declared from `.Backends` (which contains all endpoints regardless of zone), so every pod is reachable; only the director routing favors same-zone pods.
+The pattern works with any number of `--backend` groups. For each group, a local and remote [round-robin director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) can be created, then combined via a [fallback director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) that prefers the local director. The backends are declared from `.Endpoints` (which contains all endpoints regardless of zone), so every pod is reachable; only the director routing favors same-zone pods.
 
-When `.LocalZone` is empty (e.g. `NODE_NAME` not set), both `.LocalBackends` and `.RemoteBackends` are empty. A round-robin director with zero backends returns `NULL` for every request, so the template must guard the fallback pattern with `if .LocalZone` and fall back to a plain round-robin over `.Backends`:
+When `.LocalZone` is empty (e.g. `NODE_NAME` not set), both `.LocalEndpoints` and `.RemoteEndpoints` are empty. A round-robin director with zero backends returns `NULL` for every request, so the template must guard the fallback pattern with `if .LocalZone` and fall back to a plain round-robin over `.Endpoints`:
 
 ```vcl
 vcl 4.1;
 
 import directors;
 
-<<- range $name, $eps := .Backends >>
-<<- range $eps >>
+<<- range $name, $bg := .Backends >>
+<<- range $bg.Endpoints >>
 backend << .Name >>_<< $name >> {
   .host = "<< .IP >>";
   .port = "<< .Port >>";
@@ -904,16 +909,16 @@ backend << .Name >>_<< $name >> {
 <<- end >>
 
 sub vcl_init {
-  <<- range $name, $eps := .Backends >>
+  <<- range $name, $bg := .Backends >>
   <<- if $.LocalZone >>
 
   new local_<< $name >> = directors.round_robin();
-  <<- range index $.LocalBackends $name >>
+  <<- range $bg.LocalEndpoints >>
   local_<< $name >>.add_backend(<< .Name >>_<< $name >>);
   <<- end >>
 
   new remote_<< $name >> = directors.round_robin();
-  <<- range index $.RemoteBackends $name >>
+  <<- range $bg.RemoteEndpoints >>
   remote_<< $name >>.add_backend(<< .Name >>_<< $name >>);
   <<- end >>
 
@@ -924,7 +929,7 @@ sub vcl_init {
   <<- else >>
 
   new backend_<< $name >> = directors.round_robin();
-  <<- range $eps >>
+  <<- range $bg.Endpoints >>
   backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
   <<- end >>
 
@@ -941,7 +946,7 @@ sub vcl_recv {
 }
 ```
 
-With `--backend api=... --backend web=...` and pods spread across two zones, this creates `local_api`, `remote_api`, `backend_api` (fallback), `local_web`, `remote_web`, `backend_web` (fallback). Each `backend_*` director prefers same-zone pods via round-robin and falls back to the remote round-robin only when all local pods are unhealthy. When `.LocalZone` is empty, it degrades gracefully to a plain round-robin over all backends.
+With `--backend api=... --backend web=...` and pods spread across two zones, this creates `local_api`, `remote_api`, `backend_api` (fallback), `local_web`, `remote_web`, `backend_web` (fallback). Each `backend_*` director prefers same-zone pods via round-robin and falls back to the remote round-robin only when all local pods are unhealthy. When `.LocalZone` is empty, it degrades gracefully to a plain round-robin over all endpoints.
 
 > **Note on shard routing:** When [frontend sharding](#reference-vcl-template) is combined with zone-aware backend directors, shard routing can still cause cross-zone traffic. The shard director selects the owning Varnish pod by URL hash — if the selected pod is in a different zone, the request is forwarded there before the backend director runs. The zone-aware fallback director then picks a backend local to *that* pod, not the pod that originally received the request. This is by design (it preserves cache efficiency), but means that cross-zone hops between Varnish pods are not eliminated by zone-aware backend routing alone.
 
@@ -950,7 +955,7 @@ With `--backend api=... --backend web=...` and pods spread across two zones, thi
 When the Service has `service.kubernetes.io/topology-mode: Auto`, the kube-proxy allocates zone hints on each endpoint. These are available as `.ForZones` (a list of zone names, from `endpoint.hints.forZones`). You can use them to filter endpoints that Kubernetes recommends for your zone:
 
 ```vcl
-<<- range .Backends.myapp >>
+<<- range .Backends.myapp.Endpoints >>
 <<- if has $.LocalZone .ForZones >>
 backend << .Name >>_myapp { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 <<- end >>

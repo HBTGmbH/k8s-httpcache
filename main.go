@@ -57,11 +57,9 @@ const drainBackendName = "drain_flag"
 // vclRenderer abstracts VCL template operations (satisfied by *renderer.Renderer).
 type vclRenderer interface {
 	Reload() error
-	Render(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error)
-	RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error)
+	Render(frontends []watcher.Frontend, backends map[string]renderer.BackendGroup, values, secrets map[string]map[string]any) (string, error)
+	RenderToFile(frontends []watcher.Frontend, backends map[string]renderer.BackendGroup, values, secrets map[string]map[string]any) (string, error)
 	Rollback()
-	SetBackendLabels(labels map[string]map[string]string)
-	SetBackendAnnotations(annotations map[string]map[string]string)
 }
 
 // varnishProcess abstracts varnishd lifecycle (satisfied by *varnish.Manager).
@@ -288,10 +286,10 @@ func readyzHandler(store *statusStore, listenAddr string) http.HandlerFunc {
 }
 
 // backendCountsMap converts a backend endpoint map to a count map.
-func backendCountsMap(backends map[string][]watcher.Endpoint) map[string]int {
+func backendCountsMap(backends map[string]renderer.BackendGroup) map[string]int {
 	m := make(map[string]int, len(backends))
-	for name, eps := range backends {
-		m[name] = len(eps)
+	for name, bg := range backends {
+		m[name] = len(bg.Endpoints)
 	}
 
 	return m
@@ -332,12 +330,10 @@ type loopConfig struct {
 	drainPollInterval time.Duration
 	drainTimeout      time.Duration
 
-	latestFrontends          []watcher.Frontend
-	latestBackends           map[string][]watcher.Endpoint
-	latestBackendLabels      map[string]map[string]string
-	latestBackendAnnotations map[string]map[string]string
-	latestValues             map[string]map[string]any
-	latestSecrets            map[string]map[string]any
+	latestFrontends []watcher.Frontend
+	latestBackends  map[string]renderer.BackendGroup
+	latestValues    map[string]map[string]any
+	latestSecrets   map[string]map[string]any
 
 	lastVCLHash [sha256.Size]byte
 }
@@ -599,19 +595,23 @@ func main() {
 		slog.Warn("frontend Service has no ready endpoints at startup", //nolint:gosec // G706: values from CLI flags, not runtime user input
 			"namespace", cfg.ServiceNamespace, "service", cfg.ServiceName)
 	}
-	latestBackends := make(map[string][]watcher.Endpoint)
-	latestBackendLabels := make(map[string]map[string]string)
-	latestBackendAnnotations := make(map[string]map[string]string)
+	latestBackends := make(map[string]renderer.BackendGroup)
 	for i, bw := range bwWatchers {
-		latestBackends[bwNames[i]] = <-bw.Changes()
-		latestBackendLabels[bwNames[i]] = bw.Labels()
-		latestBackendAnnotations[bwNames[i]] = bw.Annotations()
+		latestBackends[bwNames[i]] = renderer.BackendGroup{
+			Endpoints:   <-bw.Changes(),
+			Labels:      bw.Labels(),
+			Annotations: bw.Annotations(),
+		}
 	}
 	for _, dw := range discoveryWatchers {
 		<-dw.Initial()
-		maps.Copy(latestBackends, dw.InitialState())
-		maps.Copy(latestBackendLabels, dw.InitialLabels())
-		maps.Copy(latestBackendAnnotations, dw.InitialAnnotations())
+		for name, eps := range dw.InitialState() {
+			latestBackends[name] = renderer.BackendGroup{
+				Endpoints:   eps,
+				Labels:      dw.InitialLabels()[name],
+				Annotations: dw.InitialAnnotations()[name],
+			}
+		}
 	}
 	latestValues := make(map[string]map[string]any)
 	for i, vw := range vwWatchers {
@@ -634,8 +634,8 @@ func main() {
 
 	// Set initial endpoint gauges.
 	metrics.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
-	for name, eps := range latestBackends {
-		metrics.Endpoints.WithLabelValues("backend", name).Set(float64(len(eps)))
+	for name, bg := range latestBackends {
+		metrics.Endpoints.WithLabelValues("backend", name).Set(float64(len(bg.Endpoints)))
 	}
 
 	// Start broadcast server if configured.
@@ -661,8 +661,6 @@ func main() {
 	}
 
 	// Render VCL with real endpoint data and start varnishd.
-	rend.SetBackendLabels(latestBackendLabels)
-	rend.SetBackendAnnotations(latestBackendAnnotations)
 	renderStart := time.Now()
 	initialVCLStr, err := rend.Render(latestFrontends, latestBackends, latestValues, latestSecrets)
 	metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
@@ -821,12 +819,10 @@ func main() {
 		drainPollInterval: cfg.DrainPollInterval,
 		drainTimeout:      cfg.DrainTimeout,
 
-		latestFrontends:          latestFrontends,
-		latestBackends:           latestBackends,
-		latestBackendLabels:      latestBackendLabels,
-		latestBackendAnnotations: latestBackendAnnotations,
-		latestValues:             latestValues,
-		latestSecrets:            latestSecrets,
+		latestFrontends: latestFrontends,
+		latestBackends:  latestBackends,
+		latestValues:    latestValues,
+		latestSecrets:   latestSecrets,
 
 		lastVCLHash: initialVCLHash,
 	}))
@@ -836,8 +832,6 @@ func main() {
 // rollbackReload re-renders VCL with the rolled-back template and reloads
 // Varnish. Called after the primary reload fails on a new template.
 func rollbackReload(lc *loopConfig, reasons string) {
-	lc.rend.SetBackendLabels(lc.latestBackendLabels)
-	lc.rend.SetBackendAnnotations(lc.latestBackendAnnotations)
 	renderStart := time.Now()
 	vclStr, err := lc.rend.Render(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 	lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
@@ -998,8 +992,6 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 
 		templateChanged = false
 
-		lc.rend.SetBackendLabels(lc.latestBackendLabels)
-		lc.rend.SetBackendAnnotations(lc.latestBackendAnnotations)
 		renderStart := time.Now()
 		vclStr, err := lc.rend.Render(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 		lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
@@ -1099,16 +1091,16 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc loopConfig) int {
 			resetDebounce(&frontend, lc.frontendDebounce, lc.frontendDebounceMax)
 
 		case bc := <-backendChan(lc.backendCh):
-			epsChanged := !watcher.EndpointsEqual(lc.latestBackends[bc.name], bc.endpoints)
+			epsChanged := !watcher.EndpointsEqual(lc.latestBackends[bc.name].Endpoints, bc.endpoints)
 			if bc.removed {
 				delete(lc.latestBackends, bc.name)
-				delete(lc.latestBackendLabels, bc.name)
-				delete(lc.latestBackendAnnotations, bc.name)
 				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
 			} else {
-				lc.latestBackends[bc.name] = bc.endpoints
-				lc.latestBackendLabels[bc.name] = bc.labels
-				lc.latestBackendAnnotations[bc.name] = bc.annotations
+				lc.latestBackends[bc.name] = renderer.BackendGroup{
+					Endpoints:   bc.endpoints,
+					Labels:      bc.labels,
+					Annotations: bc.annotations,
+				}
 				lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			}
 			lc.metrics.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
@@ -1282,14 +1274,14 @@ func (s *warnOnceEventSink) checkErr(err error) {
 // be fetched, or the label is absent.
 func detectLocalZone(logger *slog.Logger, clientset kubernetes.Interface, nodeName string) string {
 	if nodeName == "" {
-		logger.Info("NODE_NAME not set, topology zone detection disabled (.LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates)")
+		logger.Info("NODE_NAME not set, topology zone detection disabled (.LocalZone will be empty, .LocalEndpoints/.RemoteEndpoints will be empty in templates)")
 
 		return ""
 	}
 
 	node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	if err != nil {
-		logger.Warn("could not look up node for zone detection; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates",
+		logger.Warn("could not look up node for zone detection; .LocalZone will be empty, .LocalEndpoints/.RemoteEndpoints will be empty in templates",
 			"node", nodeName, "error", err)
 
 		return ""
@@ -1297,7 +1289,7 @@ func detectLocalZone(logger *slog.Logger, clientset kubernetes.Interface, nodeNa
 
 	zone := node.Labels["topology.kubernetes.io/zone"]
 	if zone == "" {
-		logger.Warn("node has no topology.kubernetes.io/zone label; .LocalZone will be empty, .LocalBackends/.RemoteBackends will be empty in templates",
+		logger.Warn("node has no topology.kubernetes.io/zone label; .LocalZone will be empty, .LocalEndpoints/.RemoteEndpoints will be empty in templates",
 			"node", nodeName)
 
 		return ""

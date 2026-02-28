@@ -165,7 +165,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 
 	// Track Service labels and annotations; trigger a resend when metadata
 	// changed so downstream consumers (e.g. VCL templates using
-	// .BackendLabels / .BackendAnnotations) pick up new metadata even if
+	// BackendGroup.Labels / .Annotations) pick up new metadata even if
 	// endpoints remain identical.
 	newLabels := maps.Clone(svc.Labels)
 	labelsChanged := !maps.Equal(bw.labels, newLabels)

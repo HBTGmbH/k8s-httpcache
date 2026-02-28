@@ -440,8 +440,8 @@ data:
     }
     <<- end >>
 
-    <<- range $name, $eps := .Backends >>
-    <<- range $eps >>
+    <<- range $name, $bg := .Backends >>
+    <<- range $bg.Endpoints >>
     backend << .Name >>_<< $name >> {
       .host = "<< .IP >>";
       .port = "<< .Port >>";
@@ -462,16 +462,16 @@ data:
       cluster.reconfigure();
       <<- end >>
 
-      <<- range $name, $eps := .Backends >>
+      <<- range $name, $bg := .Backends >>
       <<- if $.LocalZone >>
 
       new local_<< $name >> = directors.round_robin();
-      <<- range index $.LocalBackends $name >>
+      <<- range $bg.LocalEndpoints >>
       local_<< $name >>.add_backend(<< .Name >>_<< $name >>);
       <<- end >>
 
       new remote_<< $name >> = directors.round_robin();
-      <<- range index $.RemoteBackends $name >>
+      <<- range $bg.RemoteEndpoints >>
       remote_<< $name >>.add_backend(<< .Name >>_<< $name >>);
       <<- end >>
 
@@ -482,7 +482,7 @@ data:
       <<- else >>
 
       new backend_<< $name >> = directors.round_robin();
-      <<- range $eps >>
+      <<- range $bg.Endpoints >>
       backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
       <<- end >>
 
@@ -517,7 +517,7 @@ data:
       }
       <<- end >>
 
-      <<- range $name, $_ := .Backends >>
+      <<- range $name, $bg := .Backends >>
       if (req.url ~ "^/<< $name >>/") {
         set req.backend_hint = backend_<< $name >>.backend();
       }

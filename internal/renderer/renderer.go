@@ -16,34 +16,35 @@ import (
 	"k8s-httpcache/internal/watcher"
 )
 
-type templateData struct {
-	Frontends          []watcher.Frontend
-	Backends           map[string][]watcher.Endpoint
-	BackendLabels      map[string]map[string]string  // Service labels keyed by backend name
-	BackendAnnotations map[string]map[string]string  // Service annotations keyed by backend name
-	LocalBackends      map[string][]watcher.Endpoint // same-zone backends
-	RemoteBackends     map[string][]watcher.Endpoint // other-zone backends
-	Values             map[string]map[string]any
-	Secrets            map[string]map[string]any
-	LocalZone          string // zone of the Varnish pod (empty if unknown)
+// BackendGroup holds all data for a single backend group, exposed to VCL templates.
+type BackendGroup struct {
+	Endpoints       []watcher.Endpoint // all endpoints
+	Labels          map[string]string  // Service labels
+	Annotations     map[string]string  // Service annotations (filtered)
+	LocalEndpoints  []watcher.Endpoint // same-zone endpoints
+	RemoteEndpoints []watcher.Endpoint // other-zone endpoints
 }
 
-// splitBackendsByZone partitions backends into local (same-zone) and remote
-// (different-zone) groups. An endpoint is considered local if its Zone matches
+type templateData struct {
+	Frontends []watcher.Frontend
+	Backends  map[string]BackendGroup
+	Values    map[string]map[string]any
+	Secrets   map[string]map[string]any
+	LocalZone string // zone of the Varnish pod (empty if unknown)
+}
+
+// splitEndpointsByZone partitions endpoints into local (same-zone) and remote
+// (different-zone) slices. An endpoint is considered local if its Zone matches
 // the given zone, or if its ForZones hints include the zone (Kubernetes
 // Topology Aware Routing). Endpoints with an empty Zone and no matching
 // ForZones hint are placed into remote. The zone parameter must be non-empty.
-func splitBackendsByZone(backends map[string][]watcher.Endpoint, zone string) (map[string][]watcher.Endpoint, map[string][]watcher.Endpoint) {
-	local := make(map[string][]watcher.Endpoint, len(backends))
-	remote := make(map[string][]watcher.Endpoint, len(backends))
-
-	for name, eps := range backends {
-		for _, ep := range eps {
-			if ep.Zone == zone || slices.Contains(ep.ForZones, zone) {
-				local[name] = append(local[name], ep)
-			} else {
-				remote[name] = append(remote[name], ep)
-			}
+func splitEndpointsByZone(eps []watcher.Endpoint, zone string) ([]watcher.Endpoint, []watcher.Endpoint) {
+	var local, remote []watcher.Endpoint
+	for _, ep := range eps {
+		if ep.Zone == zone || slices.Contains(ep.ForZones, zone) {
+			local = append(local, ep)
+		} else {
+			remote = append(remote, ep)
 		}
 	}
 
@@ -52,16 +53,14 @@ func splitBackendsByZone(backends map[string][]watcher.Endpoint, zone string) (m
 
 // Renderer renders VCL from a Go template and a list of frontends.
 type Renderer struct {
-	tmpl               *template.Template
-	prev               *template.Template
-	templatePath       string
-	funcMap            template.FuncMap
-	drainBackend       string
-	delimLeft          string
-	delimRight         string
-	localZone          string
-	backendLabels      map[string]map[string]string
-	backendAnnotations map[string]map[string]string
+	tmpl         *template.Template
+	prev         *template.Template
+	templatePath string
+	funcMap      template.FuncMap
+	drainBackend string
+	delimLeft    string
+	delimRight   string
+	localZone    string
 }
 
 // SetDrainBackend configures the renderer to auto-inject drain VCL using the
@@ -76,27 +75,14 @@ func (r *Renderer) SetLocalZone(zone string) {
 	r.localZone = zone
 }
 
-// SetBackendLabels sets the Service labels map made available as
-// .BackendLabels in templates.
-func (r *Renderer) SetBackendLabels(labels map[string]map[string]string) {
-	r.backendLabels = labels
-}
-
-// SetBackendAnnotations sets the Service annotations map made available as
-// .BackendAnnotations in templates.
-func (r *Renderer) SetBackendAnnotations(annotations map[string]map[string]string) {
-	r.backendAnnotations = annotations
-}
-
 // New parses the template file and returns a Renderer.
 func New(templatePath, delimLeft, delimRight string) (*Renderer, error) {
 	funcMap := sprig.TxtFuncMap()
 
 	// Override Sprig dict functions with reflect-based versions that handle
-	// typed maps like map[string][]watcher.Endpoint and
-	// map[string]map[string]string. Sprig's originals only accept
-	// map[string]interface{}, and Go's type system does not consider typed
-	// maps assignable to that type.
+	// typed maps like map[string]BackendGroup and map[string]string. Sprig's
+	// originals only accept map[string]interface{}, and Go's type system
+	// does not consider typed maps assignable to that type.
 	funcMap["keys"] = func(v any) []string {
 		rv := reflect.ValueOf(v)
 		if rv.Kind() != reflect.Map {
@@ -219,43 +205,45 @@ func (r *Renderer) Rollback() {
 }
 
 // Render executes the template with the given frontends, backends, values, and secrets and returns the VCL string.
-func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error) {
+func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]BackendGroup, values, secrets map[string]map[string]any) (string, error) {
 	if values == nil {
 		values = make(map[string]map[string]any)
 	}
 	if secrets == nil {
 		secrets = make(map[string]map[string]any)
 	}
-	var localBackends, remoteBackends map[string][]watcher.Endpoint
-	if r.localZone != "" {
-		localBackends, remoteBackends = splitBackendsByZone(backends, r.localZone)
-	} else {
-		localBackends = make(map[string][]watcher.Endpoint)
-		remoteBackends = make(map[string][]watcher.Endpoint)
-	}
 
-	backendLabels := r.backendLabels
-	if backendLabels == nil {
-		backendLabels = make(map[string]map[string]string)
-	}
-
-	backendAnnotations := r.backendAnnotations
-	if backendAnnotations == nil {
-		backendAnnotations = make(map[string]map[string]string)
+	enriched := make(map[string]BackendGroup, len(backends))
+	for name, bg := range backends {
+		labels := bg.Labels
+		if labels == nil {
+			labels = make(map[string]string)
+		}
+		annotations := bg.Annotations
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		var local, remote []watcher.Endpoint
+		if r.localZone != "" {
+			local, remote = splitEndpointsByZone(bg.Endpoints, r.localZone)
+		}
+		enriched[name] = BackendGroup{
+			Endpoints:       bg.Endpoints,
+			Labels:          labels,
+			Annotations:     annotations,
+			LocalEndpoints:  local,
+			RemoteEndpoints: remote,
+		}
 	}
 
 	var buf bytes.Buffer
 
 	err := r.tmpl.Execute(&buf, templateData{
-		Frontends:          frontends,
-		Backends:           backends,
-		BackendLabels:      backendLabels,
-		BackendAnnotations: backendAnnotations,
-		LocalBackends:      localBackends,
-		RemoteBackends:     remoteBackends,
-		Values:             values,
-		Secrets:            secrets,
-		LocalZone:          r.localZone,
+		Frontends: frontends,
+		Backends:  enriched,
+		Values:    values,
+		Secrets:   secrets,
+		LocalZone: r.localZone,
 	})
 	if err != nil {
 		return "", fmt.Errorf("executing template: %w", err)
@@ -269,7 +257,7 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string][]wa
 }
 
 // RenderToFile renders the template to a temporary file and returns its path.
-func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[string][]watcher.Endpoint, values, secrets map[string]map[string]any) (string, error) {
+func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[string]BackendGroup, values, secrets map[string]map[string]any) (string, error) {
 	vcl, err := r.Render(frontends, backends, values, secrets)
 	if err != nil {
 		return "", err

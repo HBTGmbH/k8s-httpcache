@@ -125,17 +125,17 @@ func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
 
 func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
 	t.Parallel()
-	tmpl := `{{ range $name, $eps := .Backends }}{{ range $eps }}{{ .Name }}_{{ $name }}={{ .IP }}:{{ .Port }} {{ end }}{{ end }}`
+	tmpl := `{{ range $name, $bg := .Backends }}{{ range $bg.Endpoints }}{{ .Name }}_{{ $name }}={{ .IP }}:{{ .Port }} {{ end }}{{ end }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
-		},
+		}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -534,9 +534,8 @@ func TestRender_SprigFunctions(t *testing.T) {
 
 func TestRender_BackendLabels(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $labels := index $.BackendLabels $name >>` +
-		`<< $name >>:version=<< index $labels "version" >>,tier=<< index $labels "tier" >>
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< $name >>:version=<< index $bg.Labels "version" >>,tier=<< index $bg.Labels "tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -544,12 +543,12 @@ func TestRender_BackendLabels(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"version": "v2", "tier": "backend"},
+		},
 	}
-	r.SetBackendLabels(map[string]map[string]string{
-		"api": {"version": "v2", "tier": "backend"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -562,9 +561,8 @@ func TestRender_BackendLabels(t *testing.T) {
 
 func TestRender_BackendLabelsMultipleBackends(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $labels := index $.BackendLabels $name >>` +
-		`<< $name >>:tier=<< index $labels "tier" >>
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< $name >>:tier=<< index $bg.Labels "tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -572,14 +570,16 @@ func TestRender_BackendLabelsMultipleBackends(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "frontend"},
+		},
+		"worker": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
 	}
-	r.SetBackendLabels(map[string]map[string]string{
-		"api":    {"tier": "frontend"},
-		"worker": {"tier": "backend"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -596,9 +596,8 @@ func TestRender_BackendLabelsMultipleBackends(t *testing.T) {
 func TestRender_BackendLabelsConditional(t *testing.T) {
 	t.Parallel()
 	// Mirrors the documented README pattern: conditional logic based on labels.
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $labels := index $.BackendLabels $name >>` +
-		`<< if eq (index $labels "tier") "premium" >>` +
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< if eq (index $bg.Labels "tier") "premium" >>` +
 		`<< $name >>:PREMIUM
 << else >>` +
 		`<< $name >>:STANDARD
@@ -610,14 +609,16 @@ func TestRender_BackendLabelsConditional(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "premium"},
+		},
+		"worker": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Labels:    map[string]string{"tier": "basic"},
+		},
 	}
-	r.SetBackendLabels(map[string]map[string]string{
-		"api":    {"tier": "premium"},
-		"worker": {"tier": "basic"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -633,9 +634,8 @@ func TestRender_BackendLabelsConditional(t *testing.T) {
 
 func TestRender_BackendLabelsUpdate(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $labels := index $.BackendLabels $name >>` +
-		`<< $name >>:version=<< index $labels "version" >>
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< $name >>:version=<< index $bg.Labels "version" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -643,14 +643,13 @@ func TestRender_BackendLabelsUpdate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-	}
-
 	// First render with v1.
-	r.SetBackendLabels(map[string]map[string]string{
-		"api": {"version": "v1"},
-	})
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"version": "v1"},
+		},
+	}
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
@@ -660,9 +659,12 @@ func TestRender_BackendLabelsUpdate(t *testing.T) {
 	}
 
 	// Second render with updated labels.
-	r.SetBackendLabels(map[string]map[string]string{
-		"api": {"version": "v2"},
-	})
+	backends = map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"version": "v2"},
+		},
+	}
 	out, err = r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
@@ -674,11 +676,10 @@ func TestRender_BackendLabelsUpdate(t *testing.T) {
 
 func TestRender_BackendLabelsMissingBackend(t *testing.T) {
 	t.Parallel()
-	// A backend in .Backends has no entry in .BackendLabels (e.g. an
-	// explicit --backend has no Service labels). Templates can guard
-	// against this using hasKey.
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< if hasKey $.BackendLabels $name >>` +
+	// A backend in .Backends with nil Labels gets an empty map from Render.
+	// Templates can check for the presence of a specific label key using hasKey.
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< if $bg.Labels >>` +
 		`<< $name >>:HAS_LABELS
 << else >>` +
 		`<< $name >>:NO_LABELS
@@ -690,14 +691,16 @@ func TestRender_BackendLabelsMissingBackend(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-		"static": {{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+		"static": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+			// No labels — Render() will set Labels to empty map.
+		},
 	}
-	// Only "api" has labels; "static" (explicit --backend) does not.
-	r.SetBackendLabels(map[string]map[string]string{
-		"api": {"tier": "backend"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -713,15 +716,19 @@ func TestRender_BackendLabelsMissingBackend(t *testing.T) {
 
 func TestRender_BackendLabelsEmpty(t *testing.T) {
 	t.Parallel()
-	// BackendLabels should default to an empty map when not set.
-	tmpl := `labels_len=<< len .BackendLabels >>`
+	// A BackendGroup with nil Labels should get an empty map from Render.
+	tmpl := `<< range $name, $bg := .Backends >>labels_len=<< len $bg.Labels >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, err := r.Render(nil, nil, nil, nil)
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
+	}
+
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -732,9 +739,8 @@ func TestRender_BackendLabelsEmpty(t *testing.T) {
 
 func TestRender_BackendAnnotations(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $annotations := index $.BackendAnnotations $name >>` +
-		`<< $name >>:version=<< index $annotations "example.com/version" >>,tier=<< index $annotations "example.com/tier" >>
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< $name >>:version=<< index $bg.Annotations "example.com/version" >>,tier=<< index $bg.Annotations "example.com/tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -742,12 +748,12 @@ func TestRender_BackendAnnotations(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Annotations: map[string]string{"example.com/version": "v2", "example.com/tier": "backend"},
+		},
 	}
-	r.SetBackendAnnotations(map[string]map[string]string{
-		"api": {"example.com/version": "v2", "example.com/tier": "backend"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -760,15 +766,19 @@ func TestRender_BackendAnnotations(t *testing.T) {
 
 func TestRender_BackendAnnotationsEmpty(t *testing.T) {
 	t.Parallel()
-	// BackendAnnotations should default to an empty map when not set.
-	tmpl := `annotations_len=<< len .BackendAnnotations >>`
+	// A BackendGroup with nil Annotations should get an empty map from Render.
+	tmpl := `<< range $name, $bg := .Backends >>annotations_len=<< len $bg.Annotations >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	out, err := r.Render(nil, nil, nil, nil)
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
+	}
+
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -779,9 +789,8 @@ func TestRender_BackendAnnotationsEmpty(t *testing.T) {
 
 func TestRender_BackendAnnotationsMultipleBackends(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $annotations := index $.BackendAnnotations $name >>` +
-		`<< $name >>:tier=<< index $annotations "example.com/tier" >>
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< $name >>:tier=<< index $bg.Annotations "example.com/tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -789,14 +798,16 @@ func TestRender_BackendAnnotationsMultipleBackends(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Annotations: map[string]string{"example.com/tier": "frontend"},
+		},
+		"worker": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Annotations: map[string]string{"example.com/tier": "backend"},
+		},
 	}
-	r.SetBackendAnnotations(map[string]map[string]string{
-		"api":    {"example.com/tier": "frontend"},
-		"worker": {"example.com/tier": "backend"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -812,9 +823,8 @@ func TestRender_BackendAnnotationsMultipleBackends(t *testing.T) {
 
 func TestRender_BackendAnnotationsConditional(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $annotations := index $.BackendAnnotations $name >>` +
-		`<< if eq (index $annotations "example.com/tier") "premium" >>` +
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< if eq (index $bg.Annotations "example.com/tier") "premium" >>` +
 		`<< $name >>:PREMIUM
 << else >>` +
 		`<< $name >>:STANDARD
@@ -826,14 +836,16 @@ func TestRender_BackendAnnotationsConditional(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-		"worker": {{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Annotations: map[string]string{"example.com/tier": "premium"},
+		},
+		"worker": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Annotations: map[string]string{"example.com/tier": "basic"},
+		},
 	}
-	r.SetBackendAnnotations(map[string]map[string]string{
-		"api":    {"example.com/tier": "premium"},
-		"worker": {"example.com/tier": "basic"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -849,8 +861,9 @@ func TestRender_BackendAnnotationsConditional(t *testing.T) {
 
 func TestRender_BackendAnnotationsMissingBackend(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< if hasKey $.BackendAnnotations $name >>` +
+	// A BackendGroup with nil Annotations gets an empty map from Render.
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< if $bg.Annotations >>` +
 		`<< $name >>:HAS_ANNOTATIONS
 << else >>` +
 		`<< $name >>:NO_ANNOTATIONS
@@ -862,14 +875,16 @@ func TestRender_BackendAnnotationsMissingBackend(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api":    {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-		"static": {{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Annotations: map[string]string{"example.com/tier": "backend"},
+		},
+		"static": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+			// No annotations — Render() will set Annotations to empty map.
+		},
 	}
-	// Only "api" has annotations; "static" (explicit --backend) does not.
-	r.SetBackendAnnotations(map[string]map[string]string{
-		"api": {"example.com/tier": "backend"},
-	})
 
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -885,9 +900,8 @@ func TestRender_BackendAnnotationsMissingBackend(t *testing.T) {
 
 func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< $annotations := index $.BackendAnnotations $name >>` +
-		`<< $name >>:version=<< index $annotations "example.com/version" >>
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< $name >>:version=<< index $bg.Annotations "example.com/version" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -895,14 +909,13 @@ func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
-	}
-
 	// First render with v1.
-	r.SetBackendAnnotations(map[string]map[string]string{
-		"api": {"example.com/version": "v1"},
-	})
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Annotations: map[string]string{"example.com/version": "v1"},
+		},
+	}
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
@@ -912,9 +925,12 @@ func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 	}
 
 	// Second render with updated annotations.
-	r.SetBackendAnnotations(map[string]map[string]string{
-		"api": {"example.com/version": "v2"},
-	})
+	backends = map[string]BackendGroup{
+		"api": {
+			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Annotations: map[string]string{"example.com/version": "v2"},
+		},
+	}
 	out, err = r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
@@ -926,16 +942,19 @@ func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 
 func TestRender_SprigGetOverride(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< get .BackendLabels "api" >>`
+	tmpl := `<< (get .Backends "api").Labels >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	r.SetBackendLabels(map[string]map[string]string{
-		"api": {"tier": "backend"},
-	})
-	out, err := r.Render(nil, nil, nil, nil)
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -946,16 +965,19 @@ func TestRender_SprigGetOverride(t *testing.T) {
 
 func TestRender_SprigGetOverrideMissing(t *testing.T) {
 	t.Parallel()
-	tmpl := `[<< get .BackendLabels "missing" >>]`
+	tmpl := `[<< get .Backends "missing" >>]`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	r.SetBackendLabels(map[string]map[string]string{
-		"api": {"tier": "backend"},
-	})
-	out, err := r.Render(nil, nil, nil, nil)
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -966,14 +988,14 @@ func TestRender_SprigGetOverrideMissing(t *testing.T) {
 
 func TestRender_SprigValuesOverride(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $v := values .Backends >><< range $ep := $v >><< $ep.IP >>,<< end >><< end >>`
+	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.IP >>,<< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	backends := map[string][]watcher.Endpoint{
-		"api": {{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
 	}
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -986,17 +1008,23 @@ func TestRender_SprigValuesOverride(t *testing.T) {
 
 func TestRender_SprigPickOverride(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $k, $v := pick .BackendLabels "api" >><< $k >><< end >>`
+	tmpl := `<< range $k, $v := pick .Backends "api" >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	r.SetBackendLabels(map[string]map[string]string{
-		"api":    {"tier": "backend"},
-		"worker": {"tier": "queue"},
-	})
-	out, err := r.Render(nil, nil, nil, nil)
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+		"worker": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Labels:    map[string]string{"tier": "queue"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1007,17 +1035,23 @@ func TestRender_SprigPickOverride(t *testing.T) {
 
 func TestRender_SprigOmitOverride(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $k, $v := omit .BackendLabels "worker" >><< $k >><< end >>`
+	tmpl := `<< range $k, $v := omit .Backends "worker" >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	r.SetBackendLabels(map[string]map[string]string{
-		"api":    {"tier": "backend"},
-		"worker": {"tier": "queue"},
-	})
-	out, err := r.Render(nil, nil, nil, nil)
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+		"worker": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Labels:    map[string]string{"tier": "queue"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -1194,9 +1228,9 @@ sub vcl_init {
     << end >>
     cluster.reconfigure();
 <<- end >>
-<<- range $name, $eps := .Backends >>
+<<- range $name, $bg := .Backends >>
     new backend_<< $name >> = directors.round_robin();
-    <<- range $eps >>
+    <<- range $bg.Endpoints >>
     backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
     <<- end >>
 <<- end >>
@@ -1225,8 +1259,8 @@ sub vcl_recv {
 }
 
 <<- if .Backends >>
-<<- range $name, $eps := .Backends >>
-<< range $eps >>
+<<- range $name, $bg := .Backends >>
+<< range $bg.Endpoints >>
 backend << .Name >>_<< $name >> {
     .host = "<< .IP >>";
     .port = "<< .Port >>";
@@ -1309,11 +1343,11 @@ sub vcl_backend_response {
 
 	t.Run("with_backends", func(t *testing.T) {
 		t.Parallel()
-		backends := map[string][]watcher.Endpoint{
-			"api": {
+		backends := map[string]BackendGroup{
+			"api": {Endpoints: []watcher.Endpoint{
 				{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
 				{IP: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
-			},
+			}},
 		}
 		out, err := r.Render(nil, backends, nil, nil)
 		if err != nil {
@@ -1382,8 +1416,8 @@ func TestRenderToFile(t *testing.T) {
 
 func TestRender_WithBackends(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $name, $eps := .Backends >>` +
-		`<< range $eps >>backend << .Name >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< range $bg.Endpoints >>backend << .Name >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -1391,14 +1425,14 @@ func TestRender_WithBackends(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
 			{IP: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
-		},
-		"auth": {
+		}},
+		"auth": {Endpoints: []watcher.Endpoint{
 			{IP: "10.2.0.1", Port: 8080, Name: "auth-pod-0"},
-		},
+		}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -1495,7 +1529,7 @@ func TestRollback_NoOp(t *testing.T) {
 func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	t.Parallel()
 	tmpl := `frontends:<< range .Frontends >> << .IP >><< end >>` +
-		` backends:<< range $name, $eps := .Backends >><< range $eps >> << .IP >>/<< $name >><< end >><< end >>`
+		` backends:<< range $name, $bg := .Backends >><< range $bg.Endpoints >> << .IP >>/<< $name >><< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
@@ -1505,10 +1539,10 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	frontends := []watcher.Frontend{
 		{IP: "10.0.0.1", Port: 8080, Name: "web-0"},
 	}
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.1.0.1", Port: 3000, Name: "api-0"},
-		},
+		}},
 	}
 
 	out, err := r.Render(frontends, backends, nil, nil)
@@ -1576,8 +1610,8 @@ func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
 	}
 
 	frontends := []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	backends := map[string][]watcher.Endpoint{
-		"api": {{IP: "10.1.0.1", Port: 3000, Name: "api-0"}},
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{{IP: "10.1.0.1", Port: 3000, Name: "api-0"}}},
 	}
 	values := map[string]map[string]any{
 		"config": {"ttl": "120"},
@@ -2422,8 +2456,8 @@ func TestNew_Secrets(t *testing.T) {
 func TestNew_LocalZoneAndEndpointZone(t *testing.T) {
 	t.Parallel()
 	tmpl := `zone=<< .LocalZone >>
-<<- range $name, $eps := .Backends >>
-<<- range $eps >>
+<<- range $name, $bg := .Backends >>
+<<- range $bg.Endpoints >>
 << .Name >>:zone=<< .Zone >>,node=<< .NodeName >>,forZones=<< join "," .ForZones >>
 <<- end >>
 <<- end >>`
@@ -2434,11 +2468,11 @@ func TestNew_LocalZoneAndEndpointZone(t *testing.T) {
 	}
 	r.SetLocalZone("europe-west3-a")
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a", NodeName: "node-1", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
 			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b", NodeName: "node-2"},
-		},
+		}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -2459,7 +2493,7 @@ func TestNew_LocalZoneAndEndpointZone(t *testing.T) {
 func TestNew_LocalZoneWeightedDirector(t *testing.T) {
 	t.Parallel()
 	// Simulate a weighted director pattern that gives higher weight to same-zone backends.
-	tmpl := `<<- range $name, $eps := .Backends >><<- range $eps >>weight=<< if eq .Zone $.LocalZone >>10<< else >>1<< end >>
+	tmpl := `<<- range $name, $bg := .Backends >><<- range $bg.Endpoints >>weight=<< if eq .Zone $.LocalZone >>10<< else >>1<< end >>
 << end >><<- end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -2468,11 +2502,11 @@ func TestNew_LocalZoneWeightedDirector(t *testing.T) {
 	}
 	r.SetLocalZone("europe-west3-a")
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
 			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
-		},
+		}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -2487,10 +2521,10 @@ func TestNew_LocalZoneWeightedDirector(t *testing.T) {
 	}
 }
 
-func TestSplitBackendsByZone(t *testing.T) {
+func TestSplitEndpointsByZone(t *testing.T) {
 	t.Parallel()
 
-	// Exhaustive Zone × ForZones matrix (localZone = "europe-west3-a"):
+	// Exhaustive Zone x ForZones matrix (localZone = "europe-west3-a"):
 	//
 	//   Zone         | ForZones                  | Expected | Name
 	//   -------------|---------------------------|----------|-----
@@ -2505,25 +2539,23 @@ func TestSplitBackendsByZone(t *testing.T) {
 	//   empty        | contains local + others   | local    | zone-empty-hints-local-among-others
 	//   empty        | doesn't contain local     | remote   | zone-empty-hints-other
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
-			// Zone matches localZone
-			{Name: "zone-match-no-hints", Zone: "europe-west3-a"},
-			{Name: "zone-match-hints-contain-local", Zone: "europe-west3-a", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
-			{Name: "zone-match-hints-other", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}},
-			// Zone is different
-			{Name: "zone-diff-no-hints", Zone: "europe-west3-b"},
-			{Name: "zone-diff-hints-local-only", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}},
-			{Name: "zone-diff-hints-local-among-others", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c", "europe-west3-a"}},
-			{Name: "zone-diff-hints-other", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}},
-			// Zone is empty
-			{Name: "zone-empty-no-hints"},
-			{Name: "zone-empty-hints-local-among-others", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
-			{Name: "zone-empty-hints-other", ForZones: []string{"europe-west3-c"}},
-		},
+	eps := []watcher.Endpoint{
+		// Zone matches localZone
+		{Name: "zone-match-no-hints", Zone: "europe-west3-a"},
+		{Name: "zone-match-hints-contain-local", Zone: "europe-west3-a", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
+		{Name: "zone-match-hints-other", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}},
+		// Zone is different
+		{Name: "zone-diff-no-hints", Zone: "europe-west3-b"},
+		{Name: "zone-diff-hints-local-only", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}},
+		{Name: "zone-diff-hints-local-among-others", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c", "europe-west3-a"}},
+		{Name: "zone-diff-hints-other", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}},
+		// Zone is empty
+		{Name: "zone-empty-no-hints"},
+		{Name: "zone-empty-hints-local-among-others", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
+		{Name: "zone-empty-hints-other", ForZones: []string{"europe-west3-c"}},
 	}
 
-	local, remote := splitBackendsByZone(backends, "europe-west3-a")
+	local, remote := splitEndpointsByZone(eps, "europe-west3-a")
 
 	wantLocal := []string{
 		"zone-match-no-hints",
@@ -2533,12 +2565,12 @@ func TestSplitBackendsByZone(t *testing.T) {
 		"zone-diff-hints-local-among-others",
 		"zone-empty-hints-local-among-others",
 	}
-	if len(local["api"]) != len(wantLocal) {
-		t.Fatalf("expected %d local api endpoints, got %d: %v", len(wantLocal), len(local["api"]), local["api"])
+	if len(local) != len(wantLocal) {
+		t.Fatalf("expected %d local endpoints, got %d: %v", len(wantLocal), len(local), local)
 	}
 	for i, name := range wantLocal {
-		if local["api"][i].Name != name {
-			t.Errorf("local[api][%d]: expected %s, got %s", i, name, local["api"][i].Name)
+		if local[i].Name != name {
+			t.Errorf("local[%d]: expected %s, got %s", i, name, local[i].Name)
 		}
 	}
 
@@ -2548,87 +2580,88 @@ func TestSplitBackendsByZone(t *testing.T) {
 		"zone-empty-no-hints",
 		"zone-empty-hints-other",
 	}
-	if len(remote["api"]) != len(wantRemote) {
-		t.Fatalf("expected %d remote api endpoints, got %d: %v", len(wantRemote), len(remote["api"]), remote["api"])
+	if len(remote) != len(wantRemote) {
+		t.Fatalf("expected %d remote endpoints, got %d: %v", len(wantRemote), len(remote), remote)
 	}
 	for i, name := range wantRemote {
-		if remote["api"][i].Name != name {
-			t.Errorf("remote[api][%d]: expected %s, got %s", i, name, remote["api"][i].Name)
+		if remote[i].Name != name {
+			t.Errorf("remote[%d]: expected %s, got %s", i, name, remote[i].Name)
 		}
 	}
 }
 
-func TestSplitBackendsByZone_MultipleGroups(t *testing.T) {
+func TestSplitEndpointsByZone_MultipleGroups(t *testing.T) {
 	t.Parallel()
 
-	backends := map[string][]watcher.Endpoint{
-		"all-local": {
-			{Name: "a", Zone: "europe-west3-a"},
-			{Name: "b", Zone: "europe-west3-a"},
-		},
-		"all-remote": {
-			{Name: "c", Zone: "europe-west3-b"},
-			{Name: "d", Zone: "europe-west3-c"},
-		},
-		"mixed": {
-			{Name: "e", Zone: "europe-west3-a"},
-			{Name: "f", Zone: "europe-west3-b"},
-		},
+	// Test each group independently since splitEndpointsByZone works on a single slice.
+	allLocalEps := []watcher.Endpoint{
+		{Name: "a", Zone: "europe-west3-a"},
+		{Name: "b", Zone: "europe-west3-a"},
+	}
+	local, remote := splitEndpointsByZone(allLocalEps, "europe-west3-a")
+	if len(local) != 2 {
+		t.Errorf("expected 2 local all-local endpoints, got %d", len(local))
+	}
+	if len(remote) != 0 {
+		t.Errorf("expected 0 remote all-local endpoints, got %d", len(remote))
 	}
 
-	local, remote := splitBackendsByZone(backends, "europe-west3-a")
+	allRemoteEps := []watcher.Endpoint{
+		{Name: "c", Zone: "europe-west3-b"},
+		{Name: "d", Zone: "europe-west3-c"},
+	}
+	local, remote = splitEndpointsByZone(allRemoteEps, "europe-west3-a")
+	if len(local) != 0 {
+		t.Errorf("expected 0 local all-remote endpoints, got %d", len(local))
+	}
+	if len(remote) != 2 {
+		t.Errorf("expected 2 remote all-remote endpoints, got %d", len(remote))
+	}
 
-	if len(local["all-local"]) != 2 {
-		t.Errorf("expected 2 local all-local endpoints, got %d", len(local["all-local"]))
+	mixedEps := []watcher.Endpoint{
+		{Name: "e", Zone: "europe-west3-a"},
+		{Name: "f", Zone: "europe-west3-b"},
 	}
-	if len(remote["all-local"]) != 0 {
-		t.Errorf("expected 0 remote all-local endpoints, got %d", len(remote["all-local"]))
+	local, remote = splitEndpointsByZone(mixedEps, "europe-west3-a")
+	if len(local) != 1 || local[0].Name != "e" {
+		t.Errorf("expected [e] in local mixed, got %v", local)
 	}
-	if len(local["all-remote"]) != 0 {
-		t.Errorf("expected 0 local all-remote endpoints, got %d", len(local["all-remote"]))
-	}
-	if len(remote["all-remote"]) != 2 {
-		t.Errorf("expected 2 remote all-remote endpoints, got %d", len(remote["all-remote"]))
-	}
-	if len(local["mixed"]) != 1 || local["mixed"][0].Name != "e" {
-		t.Errorf("expected [e] in local mixed, got %v", local["mixed"])
-	}
-	if len(remote["mixed"]) != 1 || remote["mixed"][0].Name != "f" {
-		t.Errorf("expected [f] in remote mixed, got %v", remote["mixed"])
+	if len(remote) != 1 || remote[0].Name != "f" {
+		t.Errorf("expected [f] in remote mixed, got %v", remote)
 	}
 }
 
-func TestSplitBackendsByZone_EmptyBackends(t *testing.T) {
+func TestSplitEndpointsByZone_EmptySlice(t *testing.T) {
 	t.Parallel()
 
-	local, remote := splitBackendsByZone(map[string][]watcher.Endpoint{}, "europe-west3-a")
+	local, remote := splitEndpointsByZone([]watcher.Endpoint{}, "europe-west3-a")
 
 	if len(local) != 0 {
-		t.Errorf("expected empty local map, got %v", local)
+		t.Errorf("expected empty local slice, got %v", local)
 	}
 	if len(remote) != 0 {
-		t.Errorf("expected empty remote map, got %v", remote)
+		t.Errorf("expected empty remote slice, got %v", remote)
 	}
 }
 
-func TestSplitBackendsByZone_NilBackends(t *testing.T) {
+func TestSplitEndpointsByZone_NilSlice(t *testing.T) {
 	t.Parallel()
 
-	local, remote := splitBackendsByZone(nil, "europe-west3-a")
+	local, remote := splitEndpointsByZone(nil, "europe-west3-a")
 
 	if len(local) != 0 {
-		t.Errorf("expected empty local map, got %v", local)
+		t.Errorf("expected empty local slice, got %v", local)
 	}
 	if len(remote) != 0 {
-		t.Errorf("expected empty remote map, got %v", remote)
+		t.Errorf("expected empty remote slice, got %v", remote)
 	}
 }
 
 func TestRender_LocalRemoteBackends_WithZone(t *testing.T) {
 	t.Parallel()
 
-	tmpl := `local:<<- range $name, $eps := .LocalBackends >><<- range $eps >> << .Name >><< end >><<- end >>
-remote:<<- range $name, $eps := .RemoteBackends >><<- range $eps >> << .Name >><< end >><<- end >>`
+	tmpl := `local:<<- range $name, $bg := .Backends >><<- range $bg.LocalEndpoints >> << .Name >><< end >><<- end >>
+remote:<<- range $name, $bg := .Backends >><<- range $bg.RemoteEndpoints >> << .Name >><< end >><<- end >>`
 
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -2637,11 +2670,11 @@ remote:<<- range $name, $eps := .RemoteBackends >><<- range $eps >> << .Name >><
 	}
 	r.SetLocalZone("europe-west3-a")
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
 			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
-		},
+		}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -2659,19 +2692,20 @@ remote:<<- range $name, $eps := .RemoteBackends >><<- range $eps >> << .Name >><
 func TestRender_LocalRemoteBackends_EmptyLocalZone(t *testing.T) {
 	t.Parallel()
 
-	tmpl := `local=<< len .LocalBackends >> remote=<< len .RemoteBackends >>`
+	// When localZone is not set, LocalEndpoints and RemoteEndpoints should be nil/empty.
+	tmpl := `<< range $name, $bg := .Backends >>local=<< len $bg.LocalEndpoints >> remote=<< len $bg.RemoteEndpoints >><< end >>`
 
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// localZone not set — both maps should be empty.
+	// localZone not set — both slices should be empty.
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-		},
+		}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -2679,19 +2713,19 @@ func TestRender_LocalRemoteBackends_EmptyLocalZone(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 	if !strings.Contains(out, "local=0") {
-		t.Errorf("expected empty LocalBackends when localZone is empty, got: %s", out)
+		t.Errorf("expected empty LocalEndpoints when localZone is empty, got: %s", out)
 	}
 	if !strings.Contains(out, "remote=0") {
-		t.Errorf("expected empty RemoteBackends when localZone is empty, got: %s", out)
+		t.Errorf("expected empty RemoteEndpoints when localZone is empty, got: %s", out)
 	}
 }
 
 func TestRender_LocalRemoteBackends_ByName(t *testing.T) {
 	t.Parallel()
 
-	// Access .LocalBackends and .RemoteBackends by backend name directly.
-	tmpl := `local_api:<<- range .LocalBackends.api >> << .Name >><< end >>
-remote_api:<<- range .RemoteBackends.api >> << .Name >><< end >>`
+	// Access .Backends.api.LocalEndpoints and .Backends.api.RemoteEndpoints directly.
+	tmpl := `local_api:<<- range .Backends.api.LocalEndpoints >> << .Name >><< end >>
+remote_api:<<- range .Backends.api.RemoteEndpoints >> << .Name >><< end >>`
 
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>")
@@ -2700,12 +2734,12 @@ remote_api:<<- range .RemoteBackends.api >> << .Name >><< end >>`
 	}
 	r.SetLocalZone("europe-west3-a")
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
 			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
-			{IP: "10.0.0.3", Port: 8080, Name: "pod-c"}, // empty zone → remote
-		},
+			{IP: "10.0.0.3", Port: 8080, Name: "pod-c"}, // empty zone -> remote
+		}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -2726,20 +2760,20 @@ func TestRender_LocalRemoteBackends_FallbackDirectorPattern(t *testing.T) {
 	// Mirrors the multi-backend fallback director pattern from the README:
 	// uses if $.LocalZone to guard the fallback pattern and falls back to
 	// a plain round-robin when zone info is unavailable.
-	tmpl := `<<- range $name, $eps := .Backends >>
-<<- range $eps >>
+	tmpl := `<<- range $name, $bg := .Backends >>
+<<- range $bg.Endpoints >>
 backend << .Name >>_<< $name >> { .host = "<< .IP >>"; }
 <<- end >>
 <<- end >>
 sub vcl_init {
-<<- range $name, $eps := .Backends >>
+<<- range $name, $bg := .Backends >>
 <<- if $.LocalZone >>
   new local_<< $name >> = directors.round_robin();
-  <<- range index $.LocalBackends $name >>
+  <<- range $bg.LocalEndpoints >>
   local_<< $name >>.add_backend(<< .Name >>_<< $name >>);
   <<- end >>
   new remote_<< $name >> = directors.round_robin();
-  <<- range index $.RemoteBackends $name >>
+  <<- range $bg.RemoteEndpoints >>
   remote_<< $name >>.add_backend(<< .Name >>_<< $name >>);
   <<- end >>
   new backend_<< $name >> = directors.fallback();
@@ -2747,22 +2781,22 @@ sub vcl_init {
   backend_<< $name >>.add_backend(remote_<< $name >>.backend());
 <<- else >>
   new backend_<< $name >> = directors.round_robin();
-  <<- range $eps >>
+  <<- range $bg.Endpoints >>
   backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
   <<- end >>
 <<- end >>
 <<- end >>
 }`
 
-	backends := map[string][]watcher.Endpoint{
-		"api": {
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{
 			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
 			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
-		},
-		"web": {
+		}},
+		"web": {Endpoints: []watcher.Endpoint{
 			{IP: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
 			{IP: "10.0.1.2", Port: 80, Name: "web-b", Zone: "europe-west3-a"},
-		},
+		}},
 	}
 
 	t.Run("with_zone", func(t *testing.T) {
@@ -2881,11 +2915,11 @@ sub vcl_init {
 		}
 		r.SetLocalZone("europe-west3-a")
 
-		allLocal := map[string][]watcher.Endpoint{
-			"api": {
+		allLocal := map[string]BackendGroup{
+			"api": {Endpoints: []watcher.Endpoint{
 				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
 				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-a"},
-			},
+			}},
 		}
 
 		out, err := r.Render(nil, allLocal, nil, nil)
@@ -2924,11 +2958,11 @@ sub vcl_init {
 		}
 		r.SetLocalZone("europe-west3-a")
 
-		allRemote := map[string][]watcher.Endpoint{
-			"api": {
+		allRemote := map[string]BackendGroup{
+			"api": {Endpoints: []watcher.Endpoint{
 				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b"},
 				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-c"},
-			},
+			}},
 		}
 
 		out, err := r.Render(nil, allRemote, nil, nil)
@@ -2967,14 +3001,14 @@ sub vcl_init {
 		}
 		r.SetLocalZone("europe-west3-a")
 
-		hinted := map[string][]watcher.Endpoint{
-			"api": {
-				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}}, // remote zone, but hinted for local → local
-				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},                                       // remote zone, no hint → remote
-				{IP: "10.0.0.3", Port: 8080, Name: "pod-c", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}}, // remote zone, hint for other → remote
-				{IP: "10.0.0.4", Port: 8080, Name: "pod-d", ForZones: []string{"europe-west3-a", "europe-west3-b"}},       // empty zone, hint contains local → local
-				{IP: "10.0.0.5", Port: 8080, Name: "pod-e", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}}, // local zone, hint for other → local (zone match wins)
-			},
+		hinted := map[string]BackendGroup{
+			"api": {Endpoints: []watcher.Endpoint{
+				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}}, // remote zone, but hinted for local -> local
+				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},                                       // remote zone, no hint -> remote
+				{IP: "10.0.0.3", Port: 8080, Name: "pod-c", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}}, // remote zone, hint for other -> remote
+				{IP: "10.0.0.4", Port: 8080, Name: "pod-d", ForZones: []string{"europe-west3-a", "europe-west3-b"}},       // empty zone, hint contains local -> local
+				{IP: "10.0.0.5", Port: 8080, Name: "pod-e", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}}, // local zone, hint for other -> local (zone match wins)
+			}},
 		}
 
 		out, err := r.Render(nil, hinted, nil, nil)
@@ -3014,13 +3048,13 @@ sub vcl_init {
 		r.SetLocalZone("europe-west3-a")
 
 		// One group is all-local, another is all-remote.
-		mixed := map[string][]watcher.Endpoint{
-			"api": {
+		mixed := map[string]BackendGroup{
+			"api": {Endpoints: []watcher.Endpoint{
 				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-			},
-			"web": {
+			}},
+			"web": {Endpoints: []watcher.Endpoint{
 				{IP: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
-			},
+			}},
 		}
 
 		out, err := r.Render(nil, mixed, nil, nil)
@@ -3044,6 +3078,146 @@ sub vcl_init {
 			t.Errorf("local_web should be empty, got:\n%s", out)
 		}
 	})
+}
+
+func TestRender_DoesNotMutateInputBackendGroup(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $bg := .Backends >>` +
+		`<< len $bg.Labels >>,<< len $bg.Annotations >>,<< len $bg.LocalEndpoints >>,<< len $bg.RemoteEndpoints >>` +
+		`<< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetLocalZone("europe-west3-a")
+
+	// Input BackendGroup with nil Labels, nil Annotations, and no
+	// LocalEndpoints/RemoteEndpoints (those are computed by Render).
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{
+				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+			},
+			// Labels and Annotations intentionally nil.
+		},
+	}
+
+	_, err = r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	bg := backends["api"]
+
+	// Render() must NOT have mutated the caller's nil Labels/Annotations
+	// to non-nil empty maps — the enrichment should be internal only.
+	if bg.Labels != nil {
+		t.Errorf("Render() mutated input BackendGroup.Labels from nil to %v", bg.Labels)
+	}
+	if bg.Annotations != nil {
+		t.Errorf("Render() mutated input BackendGroup.Annotations from nil to %v", bg.Annotations)
+	}
+
+	// Render() must NOT have written LocalEndpoints/RemoteEndpoints back
+	// to the caller's BackendGroup — those are enrichment-only fields.
+	if bg.LocalEndpoints != nil {
+		t.Errorf("Render() leaked LocalEndpoints back to input: %v", bg.LocalEndpoints)
+	}
+	if bg.RemoteEndpoints != nil {
+		t.Errorf("Render() leaked RemoteEndpoints back to input: %v", bg.RemoteEndpoints)
+	}
+
+	// The Endpoints slice itself must be unchanged.
+	if len(bg.Endpoints) != 2 {
+		t.Errorf("Render() mutated input Endpoints, expected 2, got %d", len(bg.Endpoints))
+	}
+}
+
+func TestRender_InputLabelsMutationDoesNotAffectPreviousOutput(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $bg := .Backends >>version=<< index $bg.Labels "version" >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	labels := map[string]string{"version": "v1"}
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "pod-a"}},
+			Labels:    labels,
+		},
+	}
+
+	out1, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out1, "version=v1") {
+		t.Fatalf("expected version=v1 in first render, got: %s", out1)
+	}
+
+	// Mutate the labels map after the first render. Because Render() is
+	// synchronous the first output is already finalised, but this verifies
+	// the second render picks up the mutation (shared reference).
+	labels["version"] = "v2"
+
+	out2, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out2, "version=v2") {
+		t.Errorf("expected version=v2 in second render after mutation, got: %s", out2)
+	}
+}
+
+func TestRender_ReplacingBackendGroupIsIndependent(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $name, $bg := .Backends >>version=<< index $bg.Labels "version" >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "pod-a"}},
+			Labels:    map[string]string{"version": "v1"},
+		},
+	}
+
+	out1, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out1, "version=v1") {
+		t.Fatalf("expected version=v1 in first render, got: %s", out1)
+	}
+
+	// Replace the entire BackendGroup (as the event loop does). The old
+	// Labels map should be completely independent of the new one.
+	oldLabels := backends["api"].Labels
+	backends["api"] = BackendGroup{
+		Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "pod-a"}},
+		Labels:    map[string]string{"version": "v2"},
+	}
+
+	out2, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out2, "version=v2") {
+		t.Errorf("expected version=v2 in second render, got: %s", out2)
+	}
+
+	// Old labels map must be unaffected by the replacement.
+	if oldLabels["version"] != "v1" {
+		t.Errorf("replacing BackendGroup mutated old labels: version=%q, want v1", oldLabels["version"])
+	}
 }
 
 func TestRender_SprigOverridesNonMapInput(t *testing.T) {

@@ -477,7 +477,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			&cli.StringSliceFlag{
 				Name:        "exclude-annotations",
 				Category:    "Listen, backend, and values:",
-				Usage:       "Annotation keys or prefixes to exclude from .BackendAnnotations (repeatable; trailing * for prefix match, e.g. kubectl.kubernetes.io/*)",
+				Usage:       "Annotation keys or prefixes to exclude from backend annotations (repeatable; trailing * for prefix match, e.g. kubectl.kubernetes.io/*)",
 				Destination: &c.ExcludeAnnotations,
 			},
 
