@@ -727,7 +727,6 @@ All [Sprig](https://masterminds.github.io/sprig/) template functions are availab
 
 See the [full Sprig function reference](https://masterminds.github.io/sprig/) for the complete list.
 
-
 ### Runtime reload and rollback
 
 The VCL template file is watched for changes. When a change is detected, k8s-httpcache re-renders the template and reloads Varnish. If the new template fails to compile, the previous working template is restored automatically so that endpoint updates continue to work.
