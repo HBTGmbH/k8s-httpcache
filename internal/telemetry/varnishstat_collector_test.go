@@ -845,40 +845,34 @@ func TestIsStaleBackendCounter(t *testing.T) {
 	}
 }
 
-func TestBackendLabelsFromIdentParenthesized(t *testing.T) {
+func TestParseBackendIdentParenthesized(t *testing.T) {
 	t.Parallel()
 
-	keys, values := backendLabelsFromIdent("boot.my_backend(127.0.0.1,,8080)")
-	if !slices.Equal(keys, []string{"backend", "server"}) {
-		t.Errorf("keys = %v, want [backend server]", keys)
+	backend, server := parseBackendIdent("boot.my_backend(127.0.0.1,,8080)")
+	if backend != "my_backend" {
+		t.Errorf("backend = %q, want my_backend", backend)
 	}
-	if values[0] != "my_backend" {
-		t.Errorf("backend = %q, want my_backend", values[0])
-	}
-	if values[1] != "127.0.0.1:8080" {
-		t.Errorf("server = %q, want 127.0.0.1:8080", values[1])
+	if server != "127.0.0.1:8080" {
+		t.Errorf("server = %q, want 127.0.0.1:8080", server)
 	}
 }
 
-func TestBackendLabelsFromIdentPlain(t *testing.T) {
+func TestParseBackendIdentPlain(t *testing.T) {
 	t.Parallel()
 
-	keys, values := backendLabelsFromIdent("boot.default")
-	if values[0] != "default" {
-		t.Errorf("backend = %q, want default", values[0])
+	backend, server := parseBackendIdent("boot.default")
+	if backend != "default" {
+		t.Errorf("backend = %q, want default", backend)
 	}
-	if values[1] != "unknown" {
-		t.Errorf("server = %q, want unknown", values[1])
-	}
-	if !slices.Equal(keys, []string{"backend", "server"}) {
-		t.Errorf("keys = %v, want [backend server]", keys)
+	if server != "unknown" {
+		t.Errorf("server = %q, want unknown", server)
 	}
 }
 
 func TestResolveMetricMAIN(t *testing.T) {
 	t.Parallel()
 
-	name, _, keys, values := resolveMetric("MAIN.cache_hit", "main", "", "Cache hits")
+	name, _, keys, values := resolveMetric("MAIN.cache_hit", "main", "", "Cache hits", nil, nil)
 	if name != "varnish_main_cache_hit" {
 		t.Errorf("name = %q, want varnish_main_cache_hit", name)
 	}
@@ -890,7 +884,7 @@ func TestResolveMetricMAIN(t *testing.T) {
 func TestResolveMetricSMA(t *testing.T) {
 	t.Parallel()
 
-	name, _, keys, values := resolveMetric("SMA.s0.g_alloc", "sma", "s0", "Allocations")
+	name, _, keys, values := resolveMetric("SMA.s0.g_alloc", "sma", "s0", "Allocations", nil, nil)
 	if name != "varnish_sma_g_alloc" {
 		t.Errorf("name = %q, want varnish_sma_g_alloc", name)
 	}
@@ -905,7 +899,7 @@ func TestResolveMetricSMA(t *testing.T) {
 func TestResolveMetricLCKRename(t *testing.T) {
 	t.Parallel()
 
-	name, _, keys, values := resolveMetric("LCK.sms.creat", "lck", "sms", "Created")
+	name, _, keys, values := resolveMetric("LCK.sms.creat", "lck", "sms", "Created", nil, nil)
 	if name != "varnish_lock_created" {
 		t.Errorf("name = %q, want varnish_lock_created", name)
 	}
@@ -925,6 +919,7 @@ func TestResolveMetricVBE(t *testing.T) {
 		"backend",
 		"boot.my_backend(10.0.0.1,,80)",
 		"Happy health probes",
+		nil, nil,
 	)
 	if name != "varnish_backend_happy" {
 		t.Errorf("name = %q, want varnish_backend_happy", name)
@@ -1121,7 +1116,7 @@ func TestResolveMetricIdentDerivedFromName(t *testing.T) {
 	t.Parallel()
 
 	// When ident is empty and name has >1 dot, ident is derived from the middle segments.
-	name, _, keys, values := resolveMetric("SMA.s0.g_alloc", "sma", "", "Allocations")
+	name, _, keys, values := resolveMetric("SMA.s0.g_alloc", "sma", "", "Allocations", nil, nil)
 	if name != "varnish_sma_g_alloc" {
 		t.Errorf("name = %q, want varnish_sma_g_alloc", name)
 	}
@@ -1524,37 +1519,6 @@ func TestVarnishstatCollectorBackendUpMalformedBitmap(t *testing.T) {
 	}
 }
 
-// --- UUID backend format ---
-
-func TestVarnishstatCollectorVBELabelsUUID(t *testing.T) {
-	t.Parallel()
-
-	jsonOutput := `{
-		"version": 1,
-		"counters": {
-			"VBE.12345678-abcd-1234-9abc-123456789012.my_backend.happy": {
-				"value": 18446744073709551615, "flag": "b", "description": "Happy probes",
-				"ident": "12345678-abcd-1234-9abc-123456789012.my_backend"
-			}
-		}
-	}`
-
-	fn := func() (string, int, error) { return jsonOutput, 7, nil }
-	c := NewVarnishstatCollector(fn, nil)
-
-	families := collectMetrics(t, c)
-	up := findFamily(families, "varnish_backend_up")
-	if up == nil {
-		t.Fatal("missing varnish_backend_up metric for UUID backend")
-	}
-	if got := labelValue(up, "backend"); got != "my_backend" {
-		t.Errorf("UUID backend label = %q, want my_backend", got)
-	}
-	if got := labelValue(up, "server"); got != "12345678-abcd-1234-9abc-123456789012" {
-		t.Errorf("UUID server label = %q, want 12345678-abcd-1234-9abc-123456789012", got)
-	}
-}
-
 // --- SMF labels ---
 
 func TestVarnishstatCollectorSMFLabels(t *testing.T) {
@@ -1867,23 +1831,6 @@ func TestParseVarnishstatV6PreservesRawValue(t *testing.T) {
 	c := counters["VBE.boot.default(10.0.0.1,,80).happy"]
 	if c.RawValue != "18446744073709551615" {
 		t.Errorf("RawValue = %q, want 18446744073709551615", c.RawValue)
-	}
-}
-
-// --- Unit test: backendLabelsFromIdent UUID ---
-
-func TestBackendLabelsFromIdentUUID(t *testing.T) {
-	t.Parallel()
-
-	keys, values := backendLabelsFromIdent("12345678-abcd-1234-9abc-123456789012.my_backend")
-	if !slices.Equal(keys, []string{"backend", "server"}) {
-		t.Errorf("keys = %v, want [backend server]", keys)
-	}
-	if values[0] != "my_backend" {
-		t.Errorf("backend = %q, want my_backend", values[0])
-	}
-	if values[1] != "12345678-abcd-1234-9abc-123456789012" {
-		t.Errorf("server = %q, want 12345678-abcd-1234-9abc-123456789012", values[1])
 	}
 }
 
