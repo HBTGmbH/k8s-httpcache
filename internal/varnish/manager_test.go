@@ -31,11 +31,11 @@ type mockRunner struct {
 	calls   [][]string // records [name, arg1, arg2, ...] for each Run call
 }
 
-func (r *mockRunner) Start(name string, args []string) (proc, error) {
+func (r *mockRunner) start(name string, args []string) (proc, error) {
 	return r.startFn(name, args)
 }
 
-func (r *mockRunner) Run(name string, args []string) (string, error) {
+func (r *mockRunner) run(name string, args []string) (string, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string{name}, args...))
 	r.mu.Unlock()
@@ -195,7 +195,7 @@ func TestStartAdminTimeout(t *testing.T) {
 	m := newTestManager(r)
 
 	// Use a very short timeout by calling waitForAdmin directly.
-	p, err := m.run.Start(m.varnishdPath, nil)
+	p, err := m.run.start(m.varnishdPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2456,7 +2456,7 @@ func TestSetRedactorWrapsExecRunner(t *testing.T) {
 	}
 
 	// Simulate varnishd writing secret-containing output to stdout and stderr.
-	// This mimics what happens when execRunner.Start() wires cmd.Stdout/cmd.Stderr.
+	// This mimics what happens when execRunner.start() wires cmd.Stdout/cmd.Stderr.
 	_, _ = er.stdout.Write([]byte("child (12345): Error: token varnishd-leaked-token on line 42\n"))
 	_, _ = er.stderr.Write([]byte("Warning: varnishd-leaked-token found in bereq\n"))
 
@@ -2964,7 +2964,7 @@ func TestHelperVarnishd(_ *testing.T) { //nolint:paralleltest // subprocess help
 
 // TestSubprocessOutputRedacted launches a real child process that writes
 // secret-containing output to stdout and stderr, routed through redacting
-// writers. This is the same mechanism that execRunner.Start() uses for the
+// writers. This is the same mechanism that execRunner.start() uses for the
 // long-running varnishd process: cmd.Stdout and cmd.Stderr are set to
 // redactingWriter instances.
 func TestSubprocessOutputRedacted(t *testing.T) {
@@ -3065,7 +3065,7 @@ func TestRedactorDynamicUpdateWithExecRunner(t *testing.T) {
 // --- varnishd -V: DetectVersion does not expose secrets ---
 
 // TestDetectVersionSafeFromSecrets verifies that DetectVersion() cannot leak
-// secrets. It calls m.run.Run(varnishd, -V) directly (bypassing adm()), but:
+// secrets. It calls m.run.run(varnishd, -V) directly (bypassing adm()), but:
 //   - In production, DetectVersion runs BEFORE secrets are loaded (main.go:366
 //     runs before main.go:496 which calls secretRedactor.Update).
 //   - The output is only parsed for a version number, never returned raw.
@@ -3131,7 +3131,7 @@ func TestDetectVersionErrorDoesNotLeakOutput(t *testing.T) {
 // --- varnishstat: ActiveSessions does not expose raw output ---
 
 // TestActiveSessionsSafeFromSecrets verifies that ActiveSessions() cannot
-// leak secrets. It calls m.run.Run(varnishstat) directly (bypassing adm()),
+// leak secrets. It calls m.run.run(varnishstat) directly (bypassing adm()),
 // but the raw JSON output is parsed into uint64 counters and then discarded.
 // The raw string is never returned to the caller.
 func TestActiveSessionsSafeFromSecrets(t *testing.T) {
@@ -3366,7 +3366,7 @@ func TestParseActiveSessionsV7MalformedCounter(t *testing.T) {
 
 // --- execRunner / execProc: real subprocess tests ---
 
-// TestExecRunnerRun exercises the real execRunner.Run implementation with a
+// TestExecRunnerRun exercises the real execRunner.run implementation with a
 // subprocess. Run uses CombinedOutput internally, so we verify it returns
 // the trimmed combined stdout+stderr and a nil error on success.
 func TestExecRunnerRun(t *testing.T) {
@@ -3375,7 +3375,7 @@ func TestExecRunnerRun(t *testing.T) {
 	er := execRunner{stdout: os.Stdout, stderr: os.Stderr}
 	// Run the test binary itself with a non-matching test name so it
 	// exits 0 immediately. The output will contain "PASS" or "ok".
-	out, err := er.Run(os.Args[0], []string{"-test.run=^$"})
+	out, err := er.run(os.Args[0], []string{"-test.run=^$"})
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -3390,13 +3390,13 @@ func TestExecRunnerRunError(t *testing.T) {
 	t.Parallel()
 
 	er := execRunner{stdout: os.Stdout, stderr: os.Stderr}
-	_, err := er.Run("/nonexistent/binary", nil)
+	_, err := er.run("/nonexistent/binary", nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent binary")
 	}
 }
 
-// TestExecRunnerStart exercises execRunner.Start and all execProc methods
+// TestExecRunnerStart exercises execRunner.start and all execProc methods
 // (Wait, Pid, Signal) with a real subprocess.
 func TestExecRunnerStart(t *testing.T) {
 	t.Parallel()
@@ -3407,10 +3407,10 @@ func TestExecRunnerStart(t *testing.T) {
 	cmd := os.Args[0]
 	args := []string{"-test.run=^TestHelperVarnishd$"}
 
-	// We need to pass the env var. execRunner.Start doesn't support env,
+	// We need to pass the env var. execRunner.start doesn't support env,
 	// so we test the real implementation directly via exec.Command to
 	// cover the exact same code path.
-	p, err := er.Start(cmd, args)
+	p, err := er.start(cmd, args)
 	if err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -3437,7 +3437,7 @@ func TestExecRunnerStartError(t *testing.T) {
 	t.Parallel()
 
 	er := execRunner{stdout: os.Stdout, stderr: os.Stderr}
-	_, err := er.Start("/nonexistent/binary", nil)
+	_, err := er.start("/nonexistent/binary", nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent binary")
 	}

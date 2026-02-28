@@ -1,4 +1,4 @@
-// k8s-httpcache is a Kubernetes-native HTTP caching proxy built on Varnish.
+// Package main is a Kubernetes-native HTTP caching proxy built on Varnish.
 package main
 
 import (
@@ -572,7 +572,7 @@ func main() {
 		go func() {
 			err := fvw.Run(ctx)
 			if err != nil {
-				slog.Error("values-dir watcher error", "values-dir", name, "error", err)
+				slog.Error("values-dir watcher error", "values_dir", name, "error", err)
 			}
 		}()
 		fvwNames = append(fvwNames, name)

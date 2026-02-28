@@ -265,11 +265,9 @@ func TestDebugLogging(t *testing.T) {
 		namespace:   "ns",
 		serviceName: "svc",
 		log:         logger,
-		synced:      true,
 		previous: []Endpoint{
 			{IP: "10.0.0.1", Port: 80, Name: "pod-a"},
 		},
-		ch: make(chan []Endpoint, 1),
 	}
 
 	// Simulate what sync() does for the diff logging path.
@@ -338,11 +336,9 @@ func TestDebugLoggingDisabled(t *testing.T) {
 		namespace:   "ns",
 		serviceName: "svc",
 		log:         logger,
-		synced:      true,
 		previous: []Endpoint{
 			{IP: "10.0.0.1", Port: 80, Name: "pod-a"},
 		},
-		ch: make(chan []Endpoint, 1),
 	}
 
 	endpoints := []Endpoint{

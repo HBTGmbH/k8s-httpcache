@@ -26,10 +26,10 @@ import (
 
 // runner abstracts external command execution for testing.
 type runner interface {
-	// Start starts a long-running process and returns a handle.
-	Start(name string, args []string) (proc, error)
-	// Run runs a command to completion and returns its combined output.
-	Run(name string, args []string) (string, error)
+	// start starts a long-running process and returns a handle.
+	start(name string, args []string) (proc, error)
+	// run runs a command to completion and returns its combined output.
+	run(name string, args []string) (string, error)
 }
 
 // proc represents a running process.
@@ -110,7 +110,7 @@ type execRunner struct {
 	stderr io.Writer
 }
 
-func (r execRunner) Start(name string, args []string) (proc, error) {
+func (r execRunner) start(name string, args []string) (proc, error) {
 	cmd := exec.Command(name, args...) //nolint:noctx // varnishd runs for the container's lifetime; cancelled via SIGTERM, not context.
 	cmd.Stdout = r.stdout
 	cmd.Stderr = r.stderr
@@ -123,7 +123,7 @@ func (r execRunner) Start(name string, args []string) (proc, error) {
 	return &execProc{cmd: cmd}, nil
 }
 
-func (execRunner) Run(name string, args []string) (string, error) {
+func (execRunner) run(name string, args []string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:noctx // varnishadm commands are short-lived; timeout is handled by the admin socket.
 	out, err := cmd.CombinedOutput()
 
@@ -251,7 +251,7 @@ const trunkMajorVersion = 99
 // the version has not been detected yet. Trunk builds ("varnish-trunk")
 // are treated as the latest version.
 func (m *Manager) DetectVersion() error {
-	out, err := m.run.Run(m.varnishdPath, []string{"-V"})
+	out, err := m.run.run(m.varnishdPath, []string{"-V"})
 	if err != nil {
 		return fmt.Errorf("running varnishd -V: %w", err)
 	}
@@ -304,7 +304,7 @@ func (m *Manager) Start(initialVCL string) error {
 
 	m.log.Debug("exec", "cmd", m.varnishdPath, "args", args)
 
-	p, err := m.run.Start(m.varnishdPath, args)
+	p, err := m.run.start(m.varnishdPath, args)
 	if err != nil {
 		return fmt.Errorf("starting varnishd: %w", err)
 	}
@@ -433,7 +433,7 @@ func (m *Manager) ActiveSessions() (uint64, error) {
 	if m.workDir != "" {
 		args = []string{"-n", m.workDir, "-1", "-j"}
 	}
-	out, err := m.run.Run(m.varnishstatPath, args)
+	out, err := m.run.run(m.varnishstatPath, args)
 	if err != nil {
 		return 0, fmt.Errorf("varnishstat: %w", err)
 	}
@@ -453,7 +453,7 @@ func (m *Manager) VarnishstatFunc() func() (string, int, error) {
 		if m.workDir != "" {
 			args = []string{"-n", m.workDir, "-1", "-j"}
 		}
-		out, err := m.run.Run(m.varnishstatPath, args)
+		out, err := m.run.run(m.varnishstatPath, args)
 		if err != nil {
 			return "", 0, fmt.Errorf("varnishstat: %w", err)
 		}
@@ -469,7 +469,7 @@ func (m *Manager) monitorNCSA() {
 
 	for {
 		m.log.Debug("exec", "cmd", m.ncsaPath, "args", m.ncsaArgs)
-		p, err := m.ncsaRun.Start(m.ncsaPath, m.ncsaArgs)
+		p, err := m.ncsaRun.start(m.ncsaPath, m.ncsaArgs)
 		if err != nil {
 			m.log.Error("failed to start varnishncsa", "error", err)
 			m.sendNCSAEvent("Warning", "VarnishncsaStartFailed",
@@ -671,12 +671,12 @@ func (m *Manager) adm(args ...string) (string, error) {
 
 	m.log.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
 
-	resp, err := m.run.Run(m.varnishadmPath, cmdArgs)
+	resp, err := m.run.run(m.varnishadmPath, cmdArgs)
 	if m.redactor != nil {
 		resp = m.redactor.Redact(resp)
 	}
 
-	return resp, err //nolint:wrapcheck // internal helper; callers add context
+	return resp, err
 }
 
 // vclSuffix parses the numeric suffix from a VCL name matching the
