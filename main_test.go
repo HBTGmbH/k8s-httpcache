@@ -4148,7 +4148,11 @@ func TestWatchFileNonBlockingSendDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
+
+	// Let the ticker catch up so `last` matches the final file content.
+	// Without this, a slow CI runner may still have last="v2" at drain
+	// time, causing a spurious second notification.
+	time.Sleep(100 * time.Millisecond)
 
 	// Drain the single notification.
 	select {
@@ -4254,6 +4258,12 @@ func TestWatchFileNonBlockingSendDefaultStrict(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+
+	// Let the ticker catch up so `last` matches the final file content.
+	// In a slow CI runner the ticker may lag behind the writes; without
+	// this pause the drain below can empty the channel before `last` has
+	// converged, causing a spurious second notification.
+	time.Sleep(100 * time.Millisecond)
 
 	// Drain the single buffered notification.
 	select {
