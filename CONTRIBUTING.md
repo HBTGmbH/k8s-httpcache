@@ -98,8 +98,8 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache .
    mkdir -p .docker-context
    cp k8s-httpcache .docker-context/
-   docker build -f .github/test/varnish8/Dockerfile -t k8s-httpcache:test .docker-context
-   kind load docker-image k8s-httpcache:test --name test
+   docker build -f .github/test/varnish8/Dockerfile -t localhost/k8s-httpcache:test .docker-context
+   kind load docker-image localhost/k8s-httpcache:test --name test
    ```
 
 3. Install ingress-nginx and deploy:
@@ -145,8 +145,8 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    mkdir -p .docker-context \
      && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-s -w -extldflags "-static" -buildid=' -o k8s-httpcache . \
      && cp k8s-httpcache .docker-context/ \
-     && docker build -t k8s-httpcache:test .docker-context -f .github/test/varnish8/Dockerfile \
-     && kind load docker-image k8s-httpcache:test --name test \
+     && docker build -t localhost/k8s-httpcache:test .docker-context -f .github/test/varnish8/Dockerfile \
+     && kind load docker-image localhost/k8s-httpcache:test --name test \
      && kubectl rollout restart deployment/k8s-httpcache \
      && kubectl rollout status deployment/k8s-httpcache --timeout=120s
    ```

@@ -313,7 +313,7 @@ jobs:
         cp k8s-httpcache-linux-amd64 .docker-context/
         docker build -f .github/test/${{ matrix.dockerfile }} \
           --build-arg BINARY=k8s-httpcache-linux-amd64 \
-          -t k8s-httpcache:test .docker-context
+          -t localhost/k8s-httpcache:test .docker-context
     - name: Create kind cluster
       uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
       with:
@@ -325,7 +325,7 @@ jobs:
         kubectl wait -n ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s > /dev/null
         kubectl patch configmap -n ingress-nginx ingress-nginx-controller --type merge -p '{"data":{"upstream-keepalive-timeout":"5"}}' > /dev/null
     - name: Load image into kind
-      run: kind load docker-image k8s-httpcache:test --name test -q
+      run: kind load docker-image localhost/k8s-httpcache:test --name test -q
     - name: Deploy
       run: kubectl apply -f .github/test/manifest.yaml > /dev/null
     - name: Wait for rollout

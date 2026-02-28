@@ -259,7 +259,7 @@ spec:
       terminationGracePeriodSeconds: 90
       containers:
       - name: k8s-httpcache
-        image: k8s-httpcache:test
+        image: localhost/k8s-httpcache:test
         imagePullPolicy: Never
         securityContext:
           allowPrivilegeEscalation: false
