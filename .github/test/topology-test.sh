@@ -60,6 +60,10 @@ for attempt in $(seq 1 5); do
   unset zone_pods
 done
 
+# Wait for k8s-httpcache to pick up endpoint changes and reload VCL
+# (debounce-max=5s + VCL compile/load time).
+sleep 8
+
 # --- Build zone maps --------------------------------------------------------
 
 # Map each backend pod name to its zone.
