@@ -13,19 +13,19 @@ spec:
   restartPolicy: Never
   containers:
     - name: metrics
-      image: busybox:stable
+      image: curlimages/curl:latest
       command: ["sh", "-c"]
       args:
         - |
           set -e
           echo "Testing /healthz..."
-          wget --quiet --output-document=- --timeout=5 \
+          curl --silent --show-error --fail --max-time 5 \
             http://{{ include "k8s-httpcache.fullname" . }}:9101/healthz
           echo "Testing /readyz..."
-          wget --quiet --output-document=- --timeout=5 \
+          curl --silent --show-error --fail --max-time 5 \
             http://{{ include "k8s-httpcache.fullname" . }}:9101/readyz
           echo "Testing /metrics contains k8s_httpcache_varnishd_up..."
-          wget --quiet --output-document=- --timeout=5 \
+          curl --silent --show-error --fail --max-time 5 \
             http://{{ include "k8s-httpcache.fullname" . }}:9101/metrics \
           | grep -q 'k8s_httpcache_varnishd_up'
           echo "All metrics checks passed."

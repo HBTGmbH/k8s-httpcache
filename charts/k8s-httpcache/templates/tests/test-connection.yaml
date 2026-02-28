@@ -11,11 +11,13 @@ metadata:
 spec:
   restartPolicy: Never
   containers:
-    - name: wget
-      image: busybox:stable
-      command: ["wget"]
+    - name: curl
+      image: curlimages/curl:latest
+      command: ["curl"]
       args:
-        - --quiet
-        - --output-document=-
-        - --timeout=5
+        - --silent
+        - --show-error
+        - --fail
+        - --max-time
+        - "5"
         - http://{{ include "k8s-httpcache.fullname" . }}:{{ .Values.service.httpPort }}/ready

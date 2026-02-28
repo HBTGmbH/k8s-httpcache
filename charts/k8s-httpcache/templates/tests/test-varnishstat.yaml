@@ -13,13 +13,13 @@ spec:
   restartPolicy: Never
   containers:
     - name: varnishstat
-      image: busybox:stable
+      image: curlimages/curl:latest
       command: ["sh", "-c"]
       args:
         - |
           set -e
           echo "Testing /metrics contains varnish_up..."
-          wget --quiet --output-document=- --timeout=5 \
+          curl --silent --show-error --fail --max-time 5 \
             http://{{ include "k8s-httpcache.fullname" . }}:9101/metrics \
           | grep -q 'varnish_up'
           echo "varnishstat export check passed."
