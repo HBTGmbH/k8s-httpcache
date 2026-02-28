@@ -3504,3 +3504,254 @@ func TestParseExcludeAnnotationsEmpty(t *testing.T) {
 		t.Errorf("ExcludeAnnotations = %v, want empty", cfg.ExcludeAnnotations)
 	}
 }
+
+func TestParseNamespaceInvalidDNSLabel(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=My_Namespace",
+		"--vcl-template=" + vcl,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid --namespace DNS label")
+	}
+	if !strings.Contains(err.Error(), "not a valid RFC 1123 DNS label") {
+		t.Errorf("error = %q, want substring 'not a valid RFC 1123 DNS label'", err)
+	}
+}
+
+func TestParseValuesDirPollIntervalNegative(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values-dir-poll-interval=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --values-dir-poll-interval")
+	}
+	if !strings.Contains(err.Error(), "--values-dir-poll-interval must be > 0") {
+		t.Errorf("error = %q, want substring '--values-dir-poll-interval must be > 0'", err)
+	}
+}
+
+func TestParseValuesDirPollIntervalZero(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--values-dir-poll-interval=0",
+	})
+	if err == nil {
+		t.Fatal("expected error for zero --values-dir-poll-interval")
+	}
+	if !strings.Contains(err.Error(), "--values-dir-poll-interval must be > 0") {
+		t.Errorf("error = %q, want substring '--values-dir-poll-interval must be > 0'", err)
+	}
+}
+
+func TestParseVCLTemplateWatchIntervalZero(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vcl-template-watch-interval=0",
+	})
+	if err == nil {
+		t.Fatal("expected error for zero --vcl-template-watch-interval")
+	}
+	if !strings.Contains(err.Error(), "--vcl-template-watch-interval must be > 0") {
+		t.Errorf("error = %q, want substring '--vcl-template-watch-interval must be > 0'", err)
+	}
+}
+
+func TestParseDrainPollIntervalZero(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--drain-poll-interval=0",
+	})
+	if err == nil {
+		t.Fatal("expected error for zero --drain-poll-interval")
+	}
+	if !strings.Contains(err.Error(), "--drain-poll-interval must be > 0") {
+		t.Errorf("error = %q, want substring '--drain-poll-interval must be > 0'", err)
+	}
+}
+
+func TestParseMetricsReadHeaderTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--metrics-read-header-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --metrics-read-header-timeout")
+	}
+	if !strings.Contains(err.Error(), "--metrics-read-header-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--metrics-read-header-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseBroadcastReadHeaderTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-read-header-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --broadcast-read-header-timeout")
+	}
+	if !strings.Contains(err.Error(), "--broadcast-read-header-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--broadcast-read-header-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseBroadcastServerIdleTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-server-idle-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --broadcast-server-idle-timeout")
+	}
+	if !strings.Contains(err.Error(), "--broadcast-server-idle-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--broadcast-server-idle-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseDebounceNegative(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --debounce")
+	}
+	if !strings.Contains(err.Error(), "--debounce must be >= 0") {
+		t.Errorf("error = %q, want substring '--debounce must be >= 0'", err)
+	}
+}
+
+func TestParseAdminTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--admin-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --admin-timeout")
+	}
+	if !strings.Contains(err.Error(), "--admin-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--admin-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseShutdownTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--shutdown-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --shutdown-timeout")
+	}
+	if !strings.Contains(err.Error(), "--shutdown-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--shutdown-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseBroadcastDrainTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-drain-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --broadcast-drain-timeout")
+	}
+	if !strings.Contains(err.Error(), "--broadcast-drain-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--broadcast-drain-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseBroadcastShutdownTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-shutdown-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --broadcast-shutdown-timeout")
+	}
+	if !strings.Contains(err.Error(), "--broadcast-shutdown-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--broadcast-shutdown-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseBackendSelectorEmptySelector(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=myns//:8080",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty selector expression")
+	}
+	if !strings.Contains(err.Error(), "empty selector") {
+		t.Errorf("error = %q, want substring 'empty selector'", err)
+	}
+}
+
+func TestParseInvalidSecretsFormat(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--secrets=no-colon",
+	})
+	if err == nil {
+		t.Fatal("expected error for secrets without colon separator")
+	}
+}

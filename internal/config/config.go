@@ -23,6 +23,18 @@ import (
 // (in seconds) for the debounce_latency_seconds metric.
 var DefaultDebounceLatencyBuckets = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
+var (
+	errEmptyName          = errors.New("empty name")
+	errInvalidFormat      = errors.New("invalid format")
+	errInvalidPort        = errors.New("invalid port")
+	errPortOutOfRange     = errors.New("port out of range")
+	errEmptyField         = errors.New("empty required field")
+	errEmptyServiceRef    = errors.New("empty service reference")
+	errInvalidDNSLabel    = errors.New("invalid RFC 1123 DNS label")
+	errEmptySelector      = errors.New("empty selector")
+	errListenAddrNotFound = errors.New("does not match any --listen-addr name")
+)
+
 // BackendSpec describes one upstream backend service to watch.
 type BackendSpec struct {
 	Name        string // template key (e.g. "api")
@@ -80,7 +92,7 @@ func (l *listenAddrFlags) Set(val string) error {
 	if name, after, ok := strings.Cut(val, "="); ok {
 		spec.Name = name
 		if spec.Name == "" {
-			return fmt.Errorf("empty name in --listen-addr %q", val)
+			return fmt.Errorf("--listen-addr %q: %w", val, errEmptyName)
 		}
 		rest = after
 	}
@@ -95,7 +107,7 @@ func (l *listenAddrFlags) Set(val string) error {
 	spec.Host = host
 	p, err := strconv.ParseInt(portStr, 10, 32)
 	if err != nil || p <= 0 || p > 65535 {
-		return fmt.Errorf("invalid port in --listen-addr %q", val)
+		return fmt.Errorf("--listen-addr %q: %w", val, errInvalidPort)
 	}
 	spec.Port = int32(p)
 
@@ -112,13 +124,13 @@ func (v *valuesFlags) String() string { return fmt.Sprintf("%v", *v) }
 func (v *valuesFlags) Set(val string) error {
 	name, ref, ok := strings.Cut(val, ":")
 	if !ok {
-		return fmt.Errorf("invalid --values %q: expected name:[namespace/]configmap", val)
+		return fmt.Errorf("--values %q: expected name:[namespace/]configmap: %w", val, errInvalidFormat)
 	}
 	if name == "" {
-		return fmt.Errorf("empty name in --values %q", val)
+		return fmt.Errorf("--values %q: %w", val, errEmptyName)
 	}
 	if ref == "" {
-		return fmt.Errorf("empty configmap in --values %q", val)
+		return fmt.Errorf("--values %q: empty configmap: %w", val, errEmptyField)
 	}
 	*v = append(*v, ValuesSpec{
 		Name:          name,
@@ -136,13 +148,13 @@ func (s *secretsFlags) String() string { return fmt.Sprintf("%v", *s) }
 func (s *secretsFlags) Set(val string) error {
 	name, ref, ok := strings.Cut(val, ":")
 	if !ok {
-		return fmt.Errorf("invalid --secrets %q: expected name:[namespace/]secret", val)
+		return fmt.Errorf("--secrets %q: expected name:[namespace/]secret: %w", val, errInvalidFormat)
 	}
 	if name == "" {
-		return fmt.Errorf("empty name in --secrets %q", val)
+		return fmt.Errorf("--secrets %q: %w", val, errEmptyName)
 	}
 	if ref == "" {
-		return fmt.Errorf("empty secret in --secrets %q", val)
+		return fmt.Errorf("--secrets %q: empty secret: %w", val, errEmptyField)
 	}
 	*s = append(*s, SecretsSpec{
 		Name:       name,
@@ -160,13 +172,13 @@ func (v *valuesDirFlags) String() string { return fmt.Sprintf("%v", *v) }
 func (v *valuesDirFlags) Set(val string) error {
 	name, path, ok := strings.Cut(val, ":")
 	if !ok {
-		return fmt.Errorf("invalid --values-dir %q: expected name:/path/to/dir", val)
+		return fmt.Errorf("--values-dir %q: expected name:/path/to/dir: %w", val, errInvalidFormat)
 	}
 	if name == "" {
-		return fmt.Errorf("empty name in --values-dir %q", val)
+		return fmt.Errorf("--values-dir %q: %w", val, errEmptyName)
 	}
 	if path == "" {
-		return fmt.Errorf("empty path in --values-dir %q", val)
+		return fmt.Errorf("--values-dir %q: empty path: %w", val, errEmptyField)
 	}
 	*v = append(*v, ValuesDirSpec{
 		Name: name,
@@ -184,13 +196,13 @@ func (b *backendFlags) String() string { return fmt.Sprintf("%v", *b) }
 func (b *backendFlags) Set(val string) error {
 	parts := strings.SplitN(val, ":", 3)
 	if len(parts) < 2 {
-		return fmt.Errorf("invalid --backend %q: expected name:service-name[:port]", val)
+		return fmt.Errorf("--backend %q: expected name:service-name[:port]: %w", val, errInvalidFormat)
 	}
 	if parts[0] == "" {
-		return fmt.Errorf("empty name in --backend %q", val)
+		return fmt.Errorf("--backend %q: %w", val, errEmptyName)
 	}
 	if parts[1] == "" {
-		return fmt.Errorf("empty service in --backend %q", val)
+		return fmt.Errorf("--backend %q: empty service: %w", val, errEmptyField)
 	}
 	spec := BackendSpec{
 		Name:        parts[0],
@@ -198,13 +210,13 @@ func (b *backendFlags) Set(val string) error {
 	}
 	if len(parts) == 3 {
 		if parts[2] == "" {
-			return fmt.Errorf("empty port in --backend %q", val)
+			return fmt.Errorf("--backend %q: empty port: %w", val, errEmptyField)
 		}
 		// If it looks numeric, validate the range.
 		p, parseErr := strconv.ParseInt(parts[2], 10, 32)
 		if parseErr == nil {
 			if p <= 0 || p > 65535 {
-				return fmt.Errorf("port out of range in --backend %q", val)
+				return fmt.Errorf("--backend %q: %w", val, errPortOutOfRange)
 			}
 		}
 		spec.Port = parts[2]
@@ -304,27 +316,27 @@ func isValidDNSLabel(s string) bool {
 // Both namespace and service must be valid RFC 1123 DNS labels.
 func parseNamespacedService(s, defaultNS string) (string, string, error) {
 	if s == "" {
-		return "", "", errors.New("empty service reference")
+		return "", "", errEmptyServiceRef
 	}
 	namespace, service, hasSep := strings.Cut(s, "/")
 	if !hasSep {
 		if !isValidDNSLabel(s) {
-			return "", "", fmt.Errorf("invalid service name %q: must be a valid RFC 1123 DNS label", s)
+			return "", "", fmt.Errorf("service name %q: %w", s, errInvalidDNSLabel)
 		}
 
 		return defaultNS, s, nil
 	}
 	if namespace == "" {
-		return "", "", fmt.Errorf("empty namespace in %q", s)
+		return "", "", fmt.Errorf("%q: empty namespace: %w", s, errEmptyField)
 	}
 	if service == "" {
-		return "", "", fmt.Errorf("empty service name in %q", s)
+		return "", "", fmt.Errorf("%q: empty service name: %w", s, errEmptyField)
 	}
 	if !isValidDNSLabel(namespace) {
-		return "", "", fmt.Errorf("invalid namespace %q in %q: must be a valid RFC 1123 DNS label", namespace, s)
+		return "", "", fmt.Errorf("namespace %q in %q: %w", namespace, s, errInvalidDNSLabel)
 	}
 	if !isValidDNSLabel(service) {
-		return "", "", fmt.Errorf("invalid service name %q in %q: must be a valid RFC 1123 DNS label", service, s)
+		return "", "", fmt.Errorf("service name %q in %q: %w", service, s, errInvalidDNSLabel)
 	}
 
 	return namespace, service, nil
@@ -338,7 +350,7 @@ var ErrHelp = errors.New("help requested")
 // It prints the error message and help before Parse returns, so callers
 // can rely on output already being written.
 func validationError(cmd *cli.Command, format string, args ...any) error {
-	err := fmt.Errorf(format, args...)
+	err := fmt.Errorf(format, args...) //nolint:err113 // dynamic validation messages; callers format context-specific user-facing text
 	_, _ = fmt.Fprintf(cmd.Root().ErrWriter, "error: %v\n\n", err)
 	_ = cli.ShowRootCommandHelp(cmd)
 
@@ -357,7 +369,7 @@ func resolveBroadcastTargetPort(addrs []ListenAddrSpec, targetName string) (int3
 		}
 	}
 
-	return 0, fmt.Errorf("--broadcast-target-listen-addr %q does not match any --listen-addr name", targetName)
+	return 0, fmt.Errorf("--broadcast-target-listen-addr %q: %w", targetName, errListenAddrNotFound)
 }
 
 // Parse parses command-line flags from args and returns a validated Config.
@@ -809,6 +821,11 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 				return nil
 			}
+			if !isValidDNSLabel(c.Namespace) {
+				actionErr = validationError(cmd, "--namespace %q is not a valid RFC 1123 DNS label", c.Namespace)
+
+				return nil
+			}
 			if c.VCLTemplate == "" {
 				actionErr = validationError(cmd, "--vcl-template is required")
 
@@ -838,6 +855,13 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			case "text", "json":
 			default:
 				actionErr = validationError(cmd, "--log-format must be \"text\" or \"json\", got %q", c.LogFormat)
+
+				return nil
+			}
+
+			// Validate debounce (negative breaks time.NewTimer semantics).
+			if c.Debounce < 0 {
+				actionErr = validationError(cmd, "--debounce must be >= 0, got %v", c.Debounce)
 
 				return nil
 			}
@@ -903,6 +927,62 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Validate VCL kept.
 			if c.VCLKept < 0 {
 				actionErr = validationError(cmd, "--vcl-kept must be >= 0, got %d", c.VCLKept)
+
+				return nil
+			}
+
+			// Validate ticker-based intervals (time.NewTicker panics on <= 0).
+			if c.ValuesDirPollInterval <= 0 {
+				actionErr = validationError(cmd, "--values-dir-poll-interval must be > 0, got %v", c.ValuesDirPollInterval)
+
+				return nil
+			}
+			if c.VCLTemplateWatchInterval <= 0 {
+				actionErr = validationError(cmd, "--vcl-template-watch-interval must be > 0, got %v", c.VCLTemplateWatchInterval)
+
+				return nil
+			}
+			if c.DrainPollInterval <= 0 {
+				actionErr = validationError(cmd, "--drain-poll-interval must be > 0, got %v", c.DrainPollInterval)
+
+				return nil
+			}
+
+			// Validate HTTP server timeouts (negative breaks http.Server).
+			if c.MetricsReadHeaderTimeout < 0 {
+				actionErr = validationError(cmd, "--metrics-read-header-timeout must be >= 0, got %v", c.MetricsReadHeaderTimeout)
+
+				return nil
+			}
+			if c.BroadcastReadHeaderTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-read-header-timeout must be >= 0, got %v", c.BroadcastReadHeaderTimeout)
+
+				return nil
+			}
+			if c.BroadcastServerIdleTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-server-idle-timeout must be >= 0, got %v", c.BroadcastServerIdleTimeout)
+
+				return nil
+			}
+
+			// Validate remaining timeouts (negative causes broken behavior).
+			if c.AdminTimeout < 0 {
+				actionErr = validationError(cmd, "--admin-timeout must be >= 0, got %v", c.AdminTimeout)
+
+				return nil
+			}
+			if c.ShutdownTimeout < 0 {
+				actionErr = validationError(cmd, "--shutdown-timeout must be >= 0, got %v", c.ShutdownTimeout)
+
+				return nil
+			}
+			if c.BroadcastDrainTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-drain-timeout must be >= 0, got %v", c.BroadcastDrainTimeout)
+
+				return nil
+			}
+			if c.BroadcastShutdownTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-shutdown-timeout must be >= 0, got %v", c.BroadcastShutdownTimeout)
 
 				return nil
 			}
@@ -1157,7 +1237,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 // may contain a single "/" for domain-prefixed keys (e.g. app.kubernetes.io/name).
 func parseBackendSelector(raw, defaultNS string) (BackendSelectorSpec, error) {
 	if raw == "" {
-		return BackendSelectorSpec{}, errors.New("empty selector")
+		return BackendSelectorSpec{}, errEmptySelector
 	}
 
 	spec := BackendSelectorSpec{}
@@ -1170,10 +1250,10 @@ func parseBackendSelector(raw, defaultNS string) (BackendSelectorSpec, error) {
 	} else if idx := strings.Index(rest, "//"); idx >= 0 {
 		ns := rest[:idx]
 		if ns == "" {
-			return BackendSelectorSpec{}, errors.New("empty namespace prefix")
+			return BackendSelectorSpec{}, fmt.Errorf("empty namespace prefix: %w", errEmptyField)
 		}
 		if !isValidDNSLabel(ns) {
-			return BackendSelectorSpec{}, fmt.Errorf("invalid namespace %q: must be a valid RFC 1123 DNS label", ns)
+			return BackendSelectorSpec{}, fmt.Errorf("namespace %q: %w", ns, errInvalidDNSLabel)
 		}
 		spec.Namespace = ns
 		rest = rest[idx+2:]
@@ -1187,12 +1267,12 @@ func parseBackendSelector(raw, defaultNS string) (BackendSelectorSpec, error) {
 	if idx := strings.LastIndex(rest, ":"); idx >= 0 {
 		portStr := rest[idx+1:]
 		if portStr == "" {
-			return BackendSelectorSpec{}, errors.New("empty port suffix")
+			return BackendSelectorSpec{}, fmt.Errorf("empty port suffix: %w", errEmptyField)
 		}
 		p, parseErr := strconv.ParseInt(portStr, 10, 32)
 		if parseErr == nil {
 			if p < 1 || p > 65535 {
-				return BackendSelectorSpec{}, fmt.Errorf("port out of range: %s", portStr)
+				return BackendSelectorSpec{}, fmt.Errorf("%s: %w", portStr, errPortOutOfRange)
 			}
 		}
 		spec.Port = portStr
@@ -1200,7 +1280,7 @@ func parseBackendSelector(raw, defaultNS string) (BackendSelectorSpec, error) {
 	}
 
 	if rest == "" {
-		return BackendSelectorSpec{}, errors.New("empty selector expression")
+		return BackendSelectorSpec{}, fmt.Errorf("empty selector expression: %w", errEmptySelector)
 	}
 
 	// Validate selector string.

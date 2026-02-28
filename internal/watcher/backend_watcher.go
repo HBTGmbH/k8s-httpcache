@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -16,6 +17,8 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
+
+var errNamedPortExternalName = errors.New("named port not supported for ExternalName service")
 
 // BackendWatcher watches a Service object and emits endpoints. For ExternalName
 // services it emits the hostname directly. For all other types it delegates to
@@ -233,8 +236,8 @@ func (bw *BackendWatcher) resolveExternalPort() (int32, error) {
 		return int32(p), nil
 	}
 
-	return 0, fmt.Errorf("named port %q is not supported for ExternalName service %s/%s: ExternalName services have no EndpointSlice to resolve named ports from",
-		bw.portOverride, bw.namespace, bw.serviceName)
+	return 0, fmt.Errorf("port %q for ExternalName service %s/%s: %w",
+		bw.portOverride, bw.namespace, bw.serviceName, errNamedPortExternalName)
 }
 
 func (bw *BackendWatcher) startEndpointSliceWatcherLocked(ctx context.Context) {

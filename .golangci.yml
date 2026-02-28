@@ -20,6 +20,7 @@ linters:
     - dupl
     - dupword
     - durationcheck
+    - err113
     - embeddedstructfieldcheck
     - errcheck
     - errchkjson
@@ -182,6 +183,7 @@ linters:
       - path: _test\.go
         linters:
           - dupl
+          - err113
           - goconst
           - noctx
       - path: _test\.go

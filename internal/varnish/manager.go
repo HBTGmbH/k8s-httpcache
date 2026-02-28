@@ -24,6 +24,11 @@ import (
 	"k8s-httpcache/internal/telemetry"
 )
 
+var (
+	errVersionParse = errors.New("cannot parse varnish version")
+	errAdminTimeout = errors.New("timeout waiting for varnish admin")
+)
+
 // runner abstracts external command execution for testing.
 type runner interface {
 	// start starts a long-running process and returns a handle.
@@ -263,7 +268,7 @@ func (m *Manager) DetectVersion() error {
 	}
 	matches := versionRe.FindStringSubmatch(out)
 	if len(matches) < 2 {
-		return fmt.Errorf("cannot parse varnish version from: %q", out)
+		return fmt.Errorf("%w from: %q", errVersionParse, out)
 	}
 	v, err := strconv.Atoi(matches[1])
 	if err != nil {
@@ -659,7 +664,7 @@ func (m *Manager) waitForAdmin(timeout time.Duration) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 
-	return errors.New("timeout waiting for varnish admin")
+	return errAdminTimeout
 }
 
 func (m *Manager) adm(args ...string) (string, error) {
