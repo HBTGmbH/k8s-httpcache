@@ -1,11 +1,20 @@
 package telemetry
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
+
+// errorGatherer is a prometheus.Gatherer that always returns an error.
+type errorGatherer struct{}
+
+func (errorGatherer) Gather() ([]*dto.MetricFamily, error) {
+	return nil, errors.New("simulated gather error")
+}
 
 // gatherFiltered is a test helper that gathers through a ZeroCounterFilter.
 func gatherFiltered(t *testing.T, reg *prometheus.Registry) []*dto.MetricFamily {
@@ -180,5 +189,18 @@ func TestZeroCounterFilterEmptyRegistry(t *testing.T) {
 	families := gatherFiltered(t, reg)
 	if len(families) != 0 {
 		t.Errorf("expected 0 families from empty registry, got %d", len(families))
+	}
+}
+
+func TestZeroCounterFilterInnerGatherError(t *testing.T) {
+	t.Parallel()
+
+	filter := &ZeroCounterFilter{Inner: errorGatherer{}}
+	_, err := filter.Gather()
+	if err == nil {
+		t.Fatal("expected error from inner gatherer")
+	}
+	if !strings.Contains(err.Error(), "gathering metrics") {
+		t.Errorf("error = %q, want substring 'gathering metrics'", err)
 	}
 }

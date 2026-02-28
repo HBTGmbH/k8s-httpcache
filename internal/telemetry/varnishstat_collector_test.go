@@ -975,6 +975,32 @@ func TestParseVarnishstatV7InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseVarnishstatV7SkipsMalformedValue(t *testing.T) {
+	t.Parallel()
+
+	// Counter with a non-numeric value should be skipped (Float64 error),
+	// while the valid counter is still returned.
+	data := `{
+		"counters": {
+			"MAIN.bad_value": {"value": "not_a_number", "flag": "c", "description": "bad"},
+			"MAIN.good_value": {"value": 42, "flag": "c", "description": "good"}
+		}
+	}`
+
+	counters, err := parseVarnishstatV7(data)
+	if err != nil {
+		t.Fatalf("parseVarnishstatV7() error: %v", err)
+	}
+
+	if _, ok := counters["MAIN.bad_value"]; ok {
+		t.Error("expected malformed counter to be skipped")
+	}
+
+	if _, ok := counters["MAIN.good_value"]; !ok {
+		t.Error("expected valid counter to be present")
+	}
+}
+
 func TestParseVarnishstatV6(t *testing.T) {
 	t.Parallel()
 
@@ -1022,6 +1048,53 @@ func TestParseVarnishstatV6InvalidJSON(t *testing.T) {
 	_, err := parseVarnishstatV6("not json")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestParseVarnishstatV6SkipsMalformedEntry(t *testing.T) {
+	t.Parallel()
+
+	// An entry whose JSON structure doesn't match the expected schema
+	// should be skipped, while valid entries are still returned.
+	data := `{
+		"MAIN.bad_entry": "not an object",
+		"MAIN.good_entry": {"value": 10, "flag": "c", "description": "good"}
+	}`
+
+	counters, err := parseVarnishstatV6(data)
+	if err != nil {
+		t.Fatalf("parseVarnishstatV6() error: %v", err)
+	}
+
+	if _, ok := counters["MAIN.bad_entry"]; ok {
+		t.Error("expected malformed entry to be skipped")
+	}
+
+	if _, ok := counters["MAIN.good_entry"]; !ok {
+		t.Error("expected valid entry to be present")
+	}
+}
+
+func TestParseVarnishstatV6SkipsMalformedValue(t *testing.T) {
+	t.Parallel()
+
+	// An entry with a non-numeric value should be skipped (Float64 error).
+	data := `{
+		"MAIN.bad_value": {"value": "not_a_number", "flag": "c", "description": "bad"},
+		"MAIN.good_value": {"value": 7, "flag": "c", "description": "good"}
+	}`
+
+	counters, err := parseVarnishstatV6(data)
+	if err != nil {
+		t.Fatalf("parseVarnishstatV6() error: %v", err)
+	}
+
+	if _, ok := counters["MAIN.bad_value"]; ok {
+		t.Error("expected counter with malformed value to be skipped")
+	}
+
+	if _, ok := counters["MAIN.good_value"]; !ok {
+		t.Error("expected valid counter to be present")
 	}
 }
 
@@ -1418,6 +1491,36 @@ func TestVarnishstatCollectorBackendUpEdgeValues(t *testing.T) {
 		if got := m.GetGauge().GetValue(); got != expected {
 			t.Errorf("backend_up{backend=%s} = %v, want %v", backend, got, expected)
 		}
+	}
+}
+
+func TestVarnishstatCollectorBackendUpMalformedBitmap(t *testing.T) {
+	t.Parallel()
+
+	// A happy bitmap with a floating-point RawValue passes Float64() but
+	// fails ParseUint, so the code should default to up=0.
+	jsonOutput := `{
+		"version": 1,
+		"counters": {
+			"VBE.boot.bad(10.0.0.1,,80).happy": {
+				"value": 1.5, "flag": "b", "description": "",
+				"ident": "boot.bad(10.0.0.1,,80)"
+			}
+		}
+	}`
+
+	fn := func() (string, int, error) { return jsonOutput, 7, nil }
+	c := NewVarnishstatCollector(fn, nil)
+
+	families := collectMetrics(t, c)
+	up := findFamily(families, "varnish_backend_up")
+	if up == nil {
+		t.Fatal("missing varnish_backend_up metric")
+	}
+
+	m := up.GetMetric()[0]
+	if got := m.GetGauge().GetValue(); got != 0 {
+		t.Errorf("backend_up = %v, want 0 for malformed bitmap", got)
 	}
 }
 

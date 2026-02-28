@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -27,10 +26,30 @@ type BackendGroup struct {
 
 type templateData struct {
 	Frontends []watcher.Frontend
-	Backends  map[string]BackendGroup
-	Values    map[string]map[string]any
-	Secrets   map[string]map[string]any
+	Backends  map[string]any
+	Values    map[string]any
+	Secrets   map[string]any
 	LocalZone string // zone of the Varnish pod (empty if unknown)
+}
+
+// templateBackendGroup mirrors BackendGroup with map[string]any fields so that
+// Sprig dict functions (keys, hasKey, …) work without custom overrides.
+type templateBackendGroup struct {
+	Endpoints       []watcher.Endpoint
+	Labels          map[string]any
+	Annotations     map[string]any
+	LocalEndpoints  []watcher.Endpoint
+	RemoteEndpoints []watcher.Endpoint
+}
+
+// toAnyMap converts a typed map[string]V to map[string]any.
+func toAnyMap[V any](m map[string]V) map[string]any {
+	r := make(map[string]any, len(m))
+	for k, v := range m {
+		r[k] = v
+	}
+
+	return r
 }
 
 // splitEndpointsByZone partitions endpoints into local (same-zone) and remote
@@ -78,88 +97,6 @@ func (r *Renderer) SetLocalZone(zone string) {
 // New parses the template file and returns a Renderer.
 func New(templatePath, delimLeft, delimRight string) (*Renderer, error) {
 	funcMap := sprig.TxtFuncMap()
-
-	// Override Sprig dict functions with reflect-based versions that handle
-	// typed maps like map[string]BackendGroup and map[string]string. Sprig's
-	// originals only accept map[string]interface{}, and Go's type system
-	// does not consider typed maps assignable to that type.
-	funcMap["keys"] = func(v any) []string {
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Map {
-			return nil
-		}
-		out := make([]string, 0, rv.Len())
-		for _, k := range rv.MapKeys() {
-			out = append(out, k.String())
-		}
-
-		return out
-	}
-	funcMap["hasKey"] = func(v any, key string) bool {
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Map {
-			return false
-		}
-
-		return rv.MapIndex(reflect.ValueOf(key)).IsValid()
-	}
-	funcMap["get"] = func(v any, key string) any {
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Map {
-			return ""
-		}
-		val := rv.MapIndex(reflect.ValueOf(key))
-		if !val.IsValid() {
-			return ""
-		}
-
-		return val.Interface()
-	}
-	funcMap["values"] = func(v any) []any {
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Map {
-			return nil
-		}
-		out := make([]any, 0, rv.Len())
-		for _, k := range rv.MapKeys() {
-			out = append(out, rv.MapIndex(k).Interface())
-		}
-
-		return out
-	}
-	funcMap["pick"] = func(v any, ks ...string) map[string]any {
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Map {
-			return map[string]any{}
-		}
-		res := make(map[string]any, len(ks))
-		for _, k := range ks {
-			val := rv.MapIndex(reflect.ValueOf(k))
-			if val.IsValid() {
-				res[k] = val.Interface()
-			}
-		}
-
-		return res
-	}
-	funcMap["omit"] = func(v any, ks ...string) map[string]any {
-		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Map {
-			return map[string]any{}
-		}
-		omitSet := make(map[string]bool, len(ks))
-		for _, k := range ks {
-			omitSet[k] = true
-		}
-		res := make(map[string]any, rv.Len())
-		for _, k := range rv.MapKeys() {
-			if !omitSet[k.String()] {
-				res[k.String()] = rv.MapIndex(k).Interface()
-			}
-		}
-
-		return res
-	}
 
 	raw, err := os.ReadFile(templatePath)
 	if err != nil {
@@ -213,7 +150,9 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 		secrets = make(map[string]map[string]any)
 	}
 
-	enriched := make(map[string]BackendGroup, len(backends))
+	// Convert typed maps to map[string]any so Sprig dict functions (keys,
+	// hasKey, get, values, pick, omit) work without custom overrides.
+	backendsAny := make(map[string]any, len(backends))
 	for name, bg := range backends {
 		labels := bg.Labels
 		if labels == nil {
@@ -227,10 +166,10 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 		if r.localZone != "" {
 			local, remote = splitEndpointsByZone(bg.Endpoints, r.localZone)
 		}
-		enriched[name] = BackendGroup{
+		backendsAny[name] = templateBackendGroup{
 			Endpoints:       bg.Endpoints,
-			Labels:          labels,
-			Annotations:     annotations,
+			Labels:          toAnyMap(labels),
+			Annotations:     toAnyMap(annotations),
 			LocalEndpoints:  local,
 			RemoteEndpoints: remote,
 		}
@@ -240,9 +179,9 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 
 	err := r.tmpl.Execute(&buf, templateData{
 		Frontends: frontends,
-		Backends:  enriched,
-		Values:    values,
-		Secrets:   secrets,
+		Backends:  backendsAny,
+		Values:    toAnyMap(values),
+		Secrets:   toAnyMap(secrets),
 		LocalZone: r.localZone,
 	})
 	if err != nil {

@@ -727,7 +727,6 @@ All [Sprig](https://masterminds.github.io/sprig/) template functions are availab
 
 See the [full Sprig function reference](https://masterminds.github.io/sprig/) for the complete list.
 
-**Sprig overrides:** The six dict functions listed above (`keys`, `hasKey`, `get`, `values`, `pick`, `omit`) are overridden with reflect-based versions. Sprig's originals have a `map[string]interface{}` parameter type, and Go's type system does not consider typed maps like `map[string]BackendGroup` or `map[string]string` assignable to `map[string]interface{}`, so the template engine rejects the call before the function is even invoked. The overrides accept any map type.
 
 ### Runtime reload and rollback
 

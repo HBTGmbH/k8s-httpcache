@@ -90,6 +90,12 @@ func TestParseNamespacedService(t *testing.T) {
 			wantErr:   true,
 		},
 		{
+			name:      "namespace ends with hyphen",
+			input:     "ns-/svc",
+			defaultNS: "default",
+			wantErr:   true,
+		},
+		{
 			name:      "service contains underscore",
 			input:     "my_svc",
 			defaultNS: "default",
@@ -1077,6 +1083,23 @@ func TestParseDebounceLatencyBucketsNegativeValue(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for negative bucket value")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("error = %q, want it to mention positive", err)
+	}
+}
+
+func TestParseDebounceLatencyBucketsZeroValue(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-latency-buckets=0",
+	})
+	if err == nil {
+		t.Fatal("expected error for zero bucket value")
 	}
 	if !strings.Contains(err.Error(), "positive") {
 		t.Errorf("error = %q, want it to mention positive", err)
@@ -3467,6 +3490,20 @@ func TestParseBackendSelectorPortOutOfRange(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for port out of range")
+	}
+}
+
+func TestParseBackendSelectorPortZero(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend-selector=app=myapp:0",
+	})
+	if err == nil {
+		t.Fatal("expected error for port 0")
 	}
 }
 

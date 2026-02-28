@@ -940,7 +940,7 @@ func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 	}
 }
 
-func TestRender_SprigGetOverride(t *testing.T) {
+func TestRender_SprigGetTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< (get .Backends "api").Labels >>`
 	path := writeTempTemplate(t, tmpl)
@@ -963,7 +963,7 @@ func TestRender_SprigGetOverride(t *testing.T) {
 	}
 }
 
-func TestRender_SprigGetOverrideMissing(t *testing.T) {
+func TestRender_SprigGetTypedMapMissing(t *testing.T) {
 	t.Parallel()
 	tmpl := `[<< get .Backends "missing" >>]`
 	path := writeTempTemplate(t, tmpl)
@@ -986,7 +986,7 @@ func TestRender_SprigGetOverrideMissing(t *testing.T) {
 	}
 }
 
-func TestRender_SprigValuesOverride(t *testing.T) {
+func TestRender_SprigValuesTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.IP >>,<< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
@@ -1006,7 +1006,7 @@ func TestRender_SprigValuesOverride(t *testing.T) {
 	}
 }
 
-func TestRender_SprigPickOverride(t *testing.T) {
+func TestRender_SprigPickTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $k, $v := pick .Backends "api" >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
@@ -1033,7 +1033,7 @@ func TestRender_SprigPickOverride(t *testing.T) {
 	}
 }
 
-func TestRender_SprigOmitOverride(t *testing.T) {
+func TestRender_SprigOmitTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $k, $v := omit .Backends "worker" >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
@@ -1062,7 +1062,7 @@ func TestRender_SprigOmitOverride(t *testing.T) {
 
 // TestRender_SprigOriginalsDictFunctionsFailOnTypedMaps verifies that the
 // original Sprig dict functions fail when called with typed maps, confirming
-// that our reflect-based overrides are necessary.
+// that the map[string]any conversion in Render() is necessary.
 func TestRender_SprigOriginalsDictFunctionsFailOnTypedMaps(t *testing.T) {
 	t.Parallel()
 
@@ -1082,7 +1082,7 @@ func TestRender_SprigOriginalsDictFunctionsFailOnTypedMaps(t *testing.T) {
 				expr = "{{ " + fn + " .M \"api\" }}"
 			}
 
-			// Build a template with the original Sprig function (no override).
+			// Build a template with the original Sprig function and a typed map.
 			sprigFuncs := sprig.TxtFuncMap()
 			tmpl, err := template.New("test").Funcs(sprigFuncs).Parse(expr)
 			if err != nil {
@@ -3218,36 +3218,224 @@ func TestRender_ReplacingBackendGroupIsIndependent(t *testing.T) {
 	}
 }
 
-func TestRender_SprigOverridesNonMapInput(t *testing.T) {
+func TestRender_SprigDictEdgeCases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		tmpl string
-		want string
+		name   string
+		tmpl   string
+		values map[string]map[string]any
+		want   string
 	}{
-		{"keys", `<< len (keys "x") >>`, "0"},
-		{"hasKey", `<< hasKey "x" "k" >>`, "false"},
-		{"get", `[<< get "x" "k" >>]`, "[]"},
-		{"values", `<< len (values "x") >>`, "0"},
-		{"pick", `<< len (pick "x" "k") >>`, "0"},
-		{"omit", `<< len (omit "x" "k") >>`, "0"},
+		{
+			name:   "get_nil_value",
+			tmpl:   `[<< get .Values.data "k" >>]`,
+			values: map[string]map[string]any{"data": {"k": nil}},
+			want:   `[<no value>]`,
+		},
+		{
+			name:   "get_missing_key",
+			tmpl:   `[<< get .Values.data "missing" >>]`,
+			values: map[string]map[string]any{"data": {"a": 1}},
+			want:   `[]`,
+		},
+		{
+			name:   "hasKey_nil_value",
+			tmpl:   `<< hasKey .Values.data "k" >>`,
+			values: map[string]map[string]any{"data": {"k": nil}},
+			want:   `true`,
+		},
+		{
+			name:   "pick_no_keys",
+			tmpl:   `<< len (pick .Values.data) >>`,
+			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
+			want:   `0`,
+		},
+		{
+			name:   "pick_nonexistent_key",
+			tmpl:   `<< len (pick .Values.data "missing") >>`,
+			values: map[string]map[string]any{"data": {"a": 1}},
+			want:   `0`,
+		},
+		{
+			name:   "pick_duplicate_keys",
+			tmpl:   `<< len (pick .Values.data "a" "a") >>`,
+			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
+			want:   `1`,
+		},
+		{
+			name:   "omit_no_keys",
+			tmpl:   `<< len (omit .Values.data) >>`,
+			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
+			want:   `2`,
+		},
+		{
+			name:   "omit_all_keys",
+			tmpl:   `<< len (omit .Values.data "a" "b") >>`,
+			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
+			want:   `0`,
+		},
+		{
+			name:   "omit_nonexistent_key",
+			tmpl:   `<< len (omit .Values.data "missing") >>`,
+			values: map[string]map[string]any{"data": {"a": 1}},
+			want:   `1`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			path := writeTempTemplate(t, tt.tmpl)
 			r, err := New(path, "<<", ">>")
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			out, err := r.Render(nil, nil, nil, nil)
+
+			out, err := r.Render(nil, nil, tt.values, nil)
 			if err != nil {
 				t.Fatalf("Render: %v", err)
 			}
 			if out != tt.want {
 				t.Errorf("got %q, want %q", out, tt.want)
+			}
+		})
+	}
+}
+
+func TestImportStdPositions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		vcl  string
+		want [][2]int
+	}{
+		{
+			name: "empty_input",
+			vcl:  "",
+			want: nil,
+		},
+		{
+			name: "no_imports",
+			vcl:  "vcl 4.1;\nbackend default { }",
+			want: nil,
+		},
+		{
+			name: "single_import",
+			vcl:  "vcl 4.1;\nimport std;\n",
+			want: [][2]int{{9, 21}},
+		},
+		{
+			name: "multiple_imports",
+			vcl:  "import std;\nbackend x { }\nimport std;\n",
+			want: [][2]int{{0, 12}, {26, 38}},
+		},
+		{
+			name: "import_inside_block_comment",
+			vcl:  "vcl 4.1;\n/* import std; */\nimport std;\n",
+			want: [][2]int{{27, 39}},
+		},
+		{
+			name: "import_after_closed_block_comment",
+			vcl:  "/* comment */\nimport std;\n",
+			want: [][2]int{{14, 26}},
+		},
+		{
+			name: "import_inside_unclosed_block_comment",
+			vcl:  "/* start\nimport std;\n",
+			want: nil,
+		},
+		{
+			name: "leading_whitespace",
+			vcl:  "vcl 4.1;\n\timport std;\n",
+			want: [][2]int{{9, 22}},
+		},
+		{
+			name: "mixed_inside_and_outside_comments",
+			vcl:  "import std;\n/* import std; */\nimport std;\n",
+			want: [][2]int{{0, 12}, {30, 42}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := importStdPositions(tt.vcl)
+			if len(got) != len(tt.want) {
+				t.Fatalf("importStdPositions() returned %d positions, want %d: %v", len(got), len(tt.want), got)
+			}
+			for i, g := range got {
+				if g != tt.want[i] {
+					t.Errorf("position[%d] = %v, want %v", i, g, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCommentOutImportStdFrom(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		vcl  string
+		from int
+		want string
+	}{
+		{
+			name: "no_imports",
+			vcl:  "vcl 4.1;\nbackend default { }\n",
+			from: 0,
+			want: "vcl 4.1;\nbackend default { }\n",
+		},
+		{
+			name: "comment_single_import",
+			vcl:  "vcl 4.1;\nimport std;\nbackend x { }\n",
+			from: 0,
+			want: "vcl 4.1;\n// Commented out by k8s-httpcache; moved to the top of the VCL.\n// import std;\nbackend x { }\n",
+		},
+		{
+			name: "preserve_import_before_threshold",
+			vcl:  "import std;\nbackend x { }\nimport std;\n",
+			from: 12,
+			want: "import std;\nbackend x { }\n// Commented out by k8s-httpcache; moved to the top of the VCL.\n// import std;\n",
+		},
+		{
+			name: "from_beyond_all_imports",
+			vcl:  "import std;\n",
+			from: 100,
+			want: "import std;\n",
+		},
+		{
+			name: "from_zero_comments_all",
+			vcl:  "import std;\nimport std;\n",
+			from: 0,
+			want: "// Commented out by k8s-httpcache; moved to the top of the VCL.\n// import std;\n// Commented out by k8s-httpcache; moved to the top of the VCL.\n// import std;\n",
+		},
+		{
+			name: "import_inside_block_comment_preserved",
+			vcl:  "/* import std; */\nimport std;\n",
+			from: 0,
+			want: "/* import std; */\n// Commented out by k8s-httpcache; moved to the top of the VCL.\n// import std;\n",
+		},
+		{
+			name: "from_exactly_at_import_start",
+			vcl:  "import std;\n",
+			from: 0,
+			want: "// Commented out by k8s-httpcache; moved to the top of the VCL.\n// import std;\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := commentOutImportStdFrom(tt.vcl, tt.from)
+			if got != tt.want {
+				t.Errorf("commentOutImportStdFrom():\ngot:  %q\nwant: %q", got, tt.want)
 			}
 		})
 	}

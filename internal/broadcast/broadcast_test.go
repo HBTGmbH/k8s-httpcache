@@ -776,6 +776,49 @@ func TestConcurrentSetFrontends(t *testing.T) {
 	wg.Wait()
 }
 
+func TestForwardResponseBodyReadError(t *testing.T) {
+	t.Parallel()
+
+	// Create a backend that declares a large Content-Length but closes
+	// the connection after sending only a few bytes, causing io.ReadAll
+	// to return an unexpected EOF error.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "999999")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial"))
+
+		// Hijack and close the connection immediately.
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+		}
+	}))
+	defer backend.Close()
+
+	s := newTestServer()
+	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
+
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	var results map[string]PodResult
+
+	err := json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	r, ok := results["pod-0"]
+	if !ok {
+		t.Fatal("missing pod-0 in results")
+	}
+
+	if !strings.Contains(r.Body, "read error:") {
+		t.Errorf("expected 'read error:' in body, got %q", r.Body)
+	}
+}
+
 func TestNewPanicsOnNilMetrics(t *testing.T) {
 	t.Parallel()
 	defer func() {

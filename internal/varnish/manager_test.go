@@ -3712,6 +3712,34 @@ func TestStartNCSARestartedEventAfterDelay(t *testing.T) {
 	}
 }
 
+func TestSendNCSAEventChannelFull(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	r := &mockRunner{
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.log = logger
+	m.ncsaEvents = make(chan NCSAEvent, 8)
+
+	// Fill the channel to capacity.
+	for range 8 {
+		m.sendNCSAEvent("Warning", "VarnishncsaExited", "process exited")
+	}
+
+	// This send should hit the default branch and log a warning.
+	m.sendNCSAEvent("Warning", "VarnishncsaExited", "dropped event")
+
+	if !strings.Contains(buf.String(), "ncsa event channel full") {
+		t.Errorf("expected 'ncsa event channel full' warning, got:\n%s", buf.String())
+	}
+}
+
 func TestStartNCSANoWorkDir(t *testing.T) {
 	t.Parallel()
 
