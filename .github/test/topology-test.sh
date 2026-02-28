@@ -116,9 +116,11 @@ for vpod in "${!varnish_zone[@]}"; do
   done
 
   # Send multiple requests with X-No-Shard to bypass shard routing.
+  # Use a unique query parameter per request to bust the Varnish cache,
+  # ensuring each request actually hits the backend director.
   all_local=true
-  for _ in $(seq 1 20); do
-    body=$(curl -sf -H "X-No-Shard: true" "http://localhost:18080/backend/")
+  for i in $(seq 1 20); do
+    body=$(curl -sf -H "X-No-Shard: true" "http://localhost:18080/backend/?_topo=${vpod}&_i=${i}")
     # Trim trailing newline.
     backend_pod=$(echo "$body" | tr -d '\n')
 
