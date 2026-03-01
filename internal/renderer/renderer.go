@@ -11,6 +11,8 @@ import (
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
+	"github.com/go-sprout/sprout"
+	"github.com/go-sprout/sprout/group/all"
 
 	"k8s-httpcache/internal/watcher"
 )
@@ -94,9 +96,21 @@ func (r *Renderer) SetLocalZone(zone string) {
 	r.localZone = zone
 }
 
+// buildFuncMap returns the template function map for the given library name.
+func buildFuncMap(templateFuncs string) template.FuncMap {
+	switch templateFuncs {
+	case "sprout":
+		handler := sprout.New(sprout.WithGroups(all.RegistryGroup()))
+
+		return handler.Build()
+	default:
+		return sprig.TxtFuncMap()
+	}
+}
+
 // New parses the template file and returns a Renderer.
-func New(templatePath, delimLeft, delimRight string) (*Renderer, error) {
-	funcMap := sprig.TxtFuncMap()
+func New(templatePath, delimLeft, delimRight, templateFuncs string) (*Renderer, error) {
+	funcMap := buildFuncMap(templateFuncs)
 
 	raw, err := os.ReadFile(templatePath)
 	if err != nil {

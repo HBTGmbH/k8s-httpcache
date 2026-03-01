@@ -27,7 +27,7 @@ func writeTempTemplate(t *testing.T, content string) string {
 
 func TestNew_InvalidPath(t *testing.T) {
 	t.Parallel()
-	_, err := New("/nonexistent/path.tmpl", "<<", ">>")
+	_, err := New("/nonexistent/path.tmpl", "<<", ">>", "sprig")
 	if err == nil {
 		t.Fatal("expected error for nonexistent template path")
 	}
@@ -36,7 +36,7 @@ func TestNew_InvalidPath(t *testing.T) {
 func TestNew_InvalidTemplate(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `<< if >>`)
-	_, err := New(path, "<<", ">>")
+	_, err := New(path, "<<", ">>", "sprig")
 	if err == nil {
 		t.Fatal("expected error for invalid template syntax")
 	}
@@ -46,7 +46,7 @@ func TestNew_CustomDelimiters(t *testing.T) {
 	t.Parallel()
 	// Ensure {{ }} is treated as literal text, not Go template syntax.
 	path := writeTempTemplate(t, `{{ .Helm }} << .Frontends >>`)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestNew_ConfigurableDelimiters(t *testing.T) {
 	t.Parallel()
 	// Use {{ }} delimiters instead of << >>.
 	path := writeTempTemplate(t, `hello {{ .Frontends }} world`)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestNew_ConfigurableDelimitersLiteralPassthrough(t *testing.T) {
 	t.Parallel()
 	// When using {{ }} delimiters, << >> should pass through as literal text.
 	path := writeTempTemplate(t, `<< literal >> {{ len .Frontends }}`)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
 	tmpl := `{{ range .Frontends }}backend {{ .Name }} { .host = "{{ .IP }}"; .port = "{{ .Port }}"; }
 {{ end }}`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
 	t.Parallel()
 	tmpl := `{{ range $name, $bg := .Backends }}{{ range $bg.Endpoints }}{{ .Name }}_{{ $name }}={{ .IP }}:{{ .Port }} {{ end }}{{ end }}`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestNew_ConfigurableDelimitersWithValues(t *testing.T) {
 	t.Parallel()
 	tmpl := `ttl={{ index .Values.config "ttl" }}`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestNew_ConfigurableDelimitersSprigFunctions(t *testing.T) {
 	t.Parallel()
 	tmpl := `{{ "hello world" | upper | replace " " "_" }}`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
 	t.Parallel()
 	tmpl := `vcl 4.1; {{ range .Frontends }}{{ .IP }} {{ end }}`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
 func TestNew_ConfigurableDelimitersReload(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `BEFORE {{ .Frontends }}`)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestNew_ConfigurableDelimitersReload(t *testing.T) {
 func TestNew_ConfigurableDelimitersRollback(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `OLD {{ len .Frontends }}`)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestNew_ConfigurableDelimitersRollback(t *testing.T) {
 func TestNew_ConfigurableDelimitersInvalidTemplate(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `{{ if }}`)
-	_, err := New(path, "{{", "}}")
+	_, err := New(path, "{{", "}}", "sprig")
 	if err == nil {
 		t.Fatal("expected error for invalid template syntax with custom delimiters")
 	}
@@ -295,7 +295,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "{{", "}}")
+	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestNew_UnusualDelimiters(t *testing.T) {
 	// Verify that arbitrary multi-character delimiters work.
 	tmpl := `result=[% len .Frontends %]`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "[%", "%]")
+	r, err := New(path, "[%", "%]", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestRender_EmptyFrontends(t *testing.T) {
 	tmpl := `vcl 4.1;
 << if .Frontends >>HAS_BACKENDS<< else >>NO_BACKENDS<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestRender_WithFrontends(t *testing.T) {
 	tmpl := `<< range .Frontends >>backend << .Name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestRender_SprigFunctions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			path := writeTempTemplate(t, tt.tmpl)
-			r, err := New(path, "<<", ">>")
+			r, err := New(path, "<<", ">>", "sprig")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -538,7 +538,7 @@ func TestRender_BackendLabels(t *testing.T) {
 		`<< $name >>:version=<< index $bg.Labels "version" >>,tier=<< index $bg.Labels "tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestRender_BackendLabelsMultipleBackends(t *testing.T) {
 		`<< $name >>:tier=<< index $bg.Labels "tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestRender_BackendLabelsConditional(t *testing.T) {
 << end >>` +
 		`<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -638,7 +638,7 @@ func TestRender_BackendLabelsUpdate(t *testing.T) {
 		`<< $name >>:version=<< index $bg.Labels "version" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestRender_BackendLabelsMissingBackend(t *testing.T) {
 << end >>` +
 		`<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestRender_BackendLabelsEmpty(t *testing.T) {
 	// A BackendGroup with nil Labels should get an empty map from Render.
 	tmpl := `<< range $name, $bg := .Backends >>labels_len=<< len $bg.Labels >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -743,7 +743,7 @@ func TestRender_BackendAnnotations(t *testing.T) {
 		`<< $name >>:version=<< index $bg.Annotations "example.com/version" >>,tier=<< index $bg.Annotations "example.com/tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -769,7 +769,7 @@ func TestRender_BackendAnnotationsEmpty(t *testing.T) {
 	// A BackendGroup with nil Annotations should get an empty map from Render.
 	tmpl := `<< range $name, $bg := .Backends >>annotations_len=<< len $bg.Annotations >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -793,7 +793,7 @@ func TestRender_BackendAnnotationsMultipleBackends(t *testing.T) {
 		`<< $name >>:tier=<< index $bg.Annotations "example.com/tier" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -831,7 +831,7 @@ func TestRender_BackendAnnotationsConditional(t *testing.T) {
 << end >>` +
 		`<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -870,7 +870,7 @@ func TestRender_BackendAnnotationsMissingBackend(t *testing.T) {
 << end >>` +
 		`<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -904,7 +904,7 @@ func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 		`<< $name >>:version=<< index $bg.Annotations "example.com/version" >>
 << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -944,7 +944,7 @@ func TestRender_SprigGetTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< (get .Backends "api").Labels >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -967,7 +967,7 @@ func TestRender_SprigGetTypedMapMissing(t *testing.T) {
 	t.Parallel()
 	tmpl := `[<< get .Backends "missing" >>]`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -990,7 +990,7 @@ func TestRender_SprigValuesTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.IP >>,<< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1010,7 +1010,7 @@ func TestRender_SprigPickTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $k, $v := pick .Backends "api" >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1037,7 +1037,7 @@ func TestRender_SprigOmitTypedMap(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $k, $v := omit .Backends "worker" >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1057,6 +1057,342 @@ func TestRender_SprigOmitTypedMap(t *testing.T) {
 	}
 	if out != "api" {
 		t.Errorf("expected only 'api', got: %s", out)
+	}
+}
+
+func TestRender_SproutFunctions(t *testing.T) {
+	t.Parallel()
+	frontends := []watcher.Frontend{
+		{IP: "10.0.0.1", Port: 80, Name: "my-cool-pod"},
+	}
+
+	tests := []struct {
+		name     string
+		tmpl     string
+		expected string
+	}{
+		{
+			name:     "replace",
+			tmpl:     `<< range .Frontends >><< replace "-" "_" .Name >><< end >>`,
+			expected: "my_cool_pod",
+		},
+		{
+			name:     "toUpper",
+			tmpl:     `<< range .Frontends >><< toUpper .Name >><< end >>`,
+			expected: "MY-COOL-POD",
+		},
+		{
+			name:     "toLower",
+			tmpl:     `<< range .Frontends >><< toLower .Name >><< end >>`,
+			expected: "my-cool-pod",
+		},
+		{
+			name:     "toTitleCase",
+			tmpl:     `<< range .Frontends >><< toTitleCase .Name >><< end >>`,
+			expected: "My-Cool-Pod",
+		},
+		{
+			name:     "contains",
+			tmpl:     `<< range .Frontends >><< if contains "cool" .Name >>yes<< end >><< end >>`,
+			expected: "yes",
+		},
+		{
+			name:     "hasPrefix",
+			tmpl:     `<< range .Frontends >><< if hasPrefix "my-" .Name >>yes<< end >><< end >>`,
+			expected: "yes",
+		},
+		{
+			name:     "hasSuffix",
+			tmpl:     `<< range .Frontends >><< if hasSuffix "-pod" .Name >>yes<< end >><< end >>`,
+			expected: "yes",
+		},
+		{
+			name:     "trimPrefix",
+			tmpl:     `<< range .Frontends >><< trimPrefix "my-" .Name >><< end >>`,
+			expected: "cool-pod",
+		},
+		{
+			name:     "trimSuffix",
+			tmpl:     `<< range .Frontends >><< trimSuffix "-pod" .Name >><< end >>`,
+			expected: "my-cool",
+		},
+		{
+			name:     "trim",
+			tmpl:     `<< "  hello  " | trim >>`,
+			expected: "hello",
+		},
+		{
+			name:     "default",
+			tmpl:     `<< "" | default "fallback" >>`,
+			expected: "fallback",
+		},
+		{
+			name:     "default_nonempty",
+			tmpl:     `<< range .Frontends >><< .Name | default "fallback" >><< end >>`,
+			expected: "my-cool-pod",
+		},
+		{
+			name:     "quote",
+			tmpl:     `<< range .Frontends >><< .IP | quote >><< end >>`,
+			expected: `"10.0.0.1"`,
+		},
+		{
+			name:     "squote",
+			tmpl:     `<< range .Frontends >><< .IP | squote >><< end >>`,
+			expected: `'10.0.0.1'`,
+		},
+		{
+			name:     "ternary",
+			tmpl:     `<< range .Frontends >><< ternary "found" "missing" (contains "cool" .Name) >><< end >>`,
+			expected: "found",
+		},
+		{
+			name:     "add",
+			tmpl:     `<< range .Frontends >><< add .Port 1000 >><< end >>`,
+			expected: "1080",
+		},
+		{
+			name:     "mul",
+			tmpl:     `<< range .Frontends >><< mul .Port 2 >><< end >>`,
+			expected: "160",
+		},
+		{
+			name:     "len",
+			tmpl:     `<< len .Frontends >>`,
+			expected: "1",
+		},
+		{
+			name:     "substr",
+			tmpl:     `<< range .Frontends >><< substr 0 7 .Name >><< end >>`,
+			expected: "my-cool",
+		},
+		{
+			name:     "repeat",
+			tmpl:     `<< "ab" | repeat 3 >>`,
+			expected: "ababab",
+		},
+		{
+			name:     "nospace",
+			tmpl:     `<< "a b c" | nospace >>`,
+			expected: "abc",
+		},
+		{
+			name:     "pipeline",
+			tmpl:     `<< range .Frontends >><< .Name | trimPrefix "my-" | toUpper >><< end >>`,
+			expected: "COOL-POD",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := writeTempTemplate(t, tt.tmpl)
+			r, err := New(path, "<<", ">>", "sprout")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			out, err := r.Render(frontends, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("render error: %v", err)
+			}
+			if !strings.Contains(out, tt.expected) {
+				t.Errorf("expected %q in output, got: %s", tt.expected, out)
+			}
+		})
+	}
+}
+
+func TestRender_SproutGetTypedMap(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< (get .Backends "api").Labels >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprout")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "tier:backend") {
+		t.Errorf("expected label map in output, got: %s", out)
+	}
+}
+
+func TestRender_SproutGetTypedMapMissing(t *testing.T) {
+	t.Parallel()
+	tmpl := `[<< get .Backends "missing" >>]`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprout")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "[]" {
+		t.Errorf("expected empty string for missing key, got: %s", out)
+	}
+}
+
+func TestRender_SproutValuesTypedMap(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.IP >>,<< end >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprout")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	backends := map[string]BackendGroup{
+		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if !strings.Contains(out, "10.0.0.1") {
+		t.Errorf("expected IP in output, got: %s", out)
+	}
+}
+
+func TestRender_SproutPickTypedMap(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $k, $v := pick .Backends "api" >><< $k >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprout")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+		"worker": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Labels:    map[string]string{"tier": "queue"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "api" {
+		t.Errorf("expected only 'api', got: %s", out)
+	}
+}
+
+func TestRender_SproutOmitTypedMap(t *testing.T) {
+	t.Parallel()
+	tmpl := `<< range $k, $v := omit .Backends "worker" >><< $k >><< end >>`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprout")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	backends := map[string]BackendGroup{
+		"api": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Labels:    map[string]string{"tier": "backend"},
+		},
+		"worker": {
+			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Labels:    map[string]string{"tier": "queue"},
+		},
+	}
+	out, err := r.Render(nil, backends, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "api" {
+		t.Errorf("expected only 'api', got: %s", out)
+	}
+}
+
+func TestRender_SproutDictEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		tmpl   string
+		values map[string]map[string]any
+		want   string
+	}{
+		{
+			name:   "get_nil_value",
+			tmpl:   `[<< get .Values.data "k" >>]`,
+			values: map[string]map[string]any{"data": {"k": nil}},
+			want:   `[<no value>]`,
+		},
+		{
+			name:   "get_missing_key",
+			tmpl:   `[<< get .Values.data "missing" >>]`,
+			values: map[string]map[string]any{"data": {"a": 1}},
+			want:   `[]`,
+		},
+		{
+			name:   "hasKey_nil_value",
+			tmpl:   `<< hasKey .Values.data "k" >>`,
+			values: map[string]map[string]any{"data": {"k": nil}},
+			want:   `true`,
+		},
+		{
+			name:   "pick_nonexistent_key",
+			tmpl:   `<< len (pick .Values.data "missing") >>`,
+			values: map[string]map[string]any{"data": {"a": 1}},
+			want:   `0`,
+		},
+		{
+			name:   "pick_duplicate_keys",
+			tmpl:   `<< len (pick .Values.data "a" "a") >>`,
+			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
+			want:   `1`,
+		},
+		{
+			name:   "omit_all_keys",
+			tmpl:   `<< len (omit .Values.data "a" "b") >>`,
+			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
+			want:   `0`,
+		},
+		{
+			name:   "omit_nonexistent_key",
+			tmpl:   `<< len (omit .Values.data "missing") >>`,
+			values: map[string]map[string]any{"data": {"a": 1}},
+			want:   `1`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := writeTempTemplate(t, tt.tmpl)
+			r, err := New(path, "<<", ">>", "sprout")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			out, err := r.Render(nil, nil, tt.values, nil)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if out != tt.want {
+				t.Errorf("got %q, want %q", out, tt.want)
+			}
+		})
 	}
 }
 
@@ -1103,7 +1439,7 @@ func TestRender_SprigOriginalsDictFunctionsFailOnTypedMaps(t *testing.T) {
 func TestReload(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `BEFORE`)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1133,7 +1469,7 @@ func TestReload(t *testing.T) {
 func TestRollback(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `OLD`)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1165,7 +1501,7 @@ func TestRollback(t *testing.T) {
 func TestReload_InvalidTemplate(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `VALID`)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1272,7 +1608,7 @@ sub vcl_backend_response {
     set beresp.grace = 60s;
 }`
 	path := writeTempTemplate(t, exampleVCL)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("failed to load example template: %v", err)
 	}
@@ -1388,7 +1724,7 @@ func TestRenderToFile(t *testing.T) {
 	t.Parallel()
 	tmpl := `vcl 4.1; << range .Frontends >><< .IP >> << end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1418,7 +1754,7 @@ func TestRender_WithBackends(t *testing.T) {
 		`<< range $bg.Endpoints >>backend << .Name >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
 << end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1460,7 +1796,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 	// Template that will fail during execution (call undefined method).
 	tmpl := `<< range .Frontends >><< .Nonexistent >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1478,7 +1814,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 func TestReload_FileRemoved(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `VALID`)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1507,7 +1843,7 @@ func TestReload_FileRemoved(t *testing.T) {
 func TestRollback_NoOp(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `ONLY`)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1529,7 +1865,7 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	tmpl := `frontends:<< range .Frontends >> << .IP >><< end >>` +
 		` backends:<< range $name, $bg := .Backends >><< range $bg.Endpoints >> << .IP >>/<< $name >><< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1560,7 +1896,7 @@ func TestRender_WithValues(t *testing.T) {
 	t.Parallel()
 	tmpl := `greeting=<< index .Values.tuning "greeting" >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1582,7 +1918,7 @@ func TestRender_EmptyValues(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< if .Values >>HAS_VALUES<< else >>NO_VALUES<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1602,7 +1938,7 @@ func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
 	t.Parallel()
 	tmpl := `ttl=<< index .Values.config "ttl" >> frontends=<< len .Frontends >> backends=<< len .Backends >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1643,7 +1979,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1686,7 +2022,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1717,7 +2053,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1745,7 +2081,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1784,7 +2120,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1836,7 +2172,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1887,7 +2223,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1947,7 +2283,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1993,7 +2329,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2284,7 +2620,7 @@ sub vcl_deliver {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2344,7 +2680,7 @@ sub vcl_recv {
 }
 `
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2377,7 +2713,7 @@ func TestRender_DrainVCLImportStdWhitespace(t *testing.T) {
 			t.Parallel()
 			tmpl := "vcl 4.1;\n" + tt.line + "\n\nsub vcl_recv {\n  set req.backend_hint = origin;\n}\n"
 			path := writeTempTemplate(t, tmpl)
-			r, err := New(path, "<<", ">>")
+			r, err := New(path, "<<", ">>", "sprig")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -2404,7 +2740,7 @@ func TestRender_NestedValues(t *testing.T) {
 	t.Parallel()
 	tmpl := `host=<< index .Values.server "host" >> port=<< index .Values.server "port" >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2431,7 +2767,7 @@ func TestRender_NestedValues(t *testing.T) {
 func TestNew_Secrets(t *testing.T) {
 	t.Parallel()
 	path := writeTempTemplate(t, `apikey=<< .Secrets.myapp.apikey >>`)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2460,7 +2796,7 @@ func TestNew_LocalZoneAndEndpointZone(t *testing.T) {
 <<- end >>
 <<- end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2494,7 +2830,7 @@ func TestNew_LocalZoneWeightedDirector(t *testing.T) {
 	tmpl := `<<- range $name, $bg := .Backends >><<- range $bg.Endpoints >>weight=<< if eq .Zone $.LocalZone >>10<< else >>1<< end >>
 << end >><<- end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2662,7 +2998,7 @@ func TestRender_LocalRemoteBackends_WithZone(t *testing.T) {
 remote:<<- range $name, $bg := .Backends >><<- range $bg.RemoteEndpoints >> << .Name >><< end >><<- end >>`
 
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2694,7 +3030,7 @@ func TestRender_LocalRemoteBackends_EmptyLocalZone(t *testing.T) {
 	tmpl := `<< range $name, $bg := .Backends >>local=<< len $bg.LocalEndpoints >> remote=<< len $bg.RemoteEndpoints >><< end >>`
 
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2726,7 +3062,7 @@ func TestRender_LocalRemoteBackends_ByName(t *testing.T) {
 remote_api:<<- range .Backends.api.RemoteEndpoints >> << .Name >><< end >>`
 
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2800,7 +3136,7 @@ sub vcl_init {
 	t.Run("with_zone", func(t *testing.T) {
 		t.Parallel()
 		path := writeTempTemplate(t, tmpl)
-		r, err := New(path, "<<", ">>")
+		r, err := New(path, "<<", ">>", "sprig")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -2856,7 +3192,7 @@ sub vcl_init {
 	t.Run("without_zone", func(t *testing.T) {
 		t.Parallel()
 		path := writeTempTemplate(t, tmpl)
-		r, err := New(path, "<<", ">>")
+		r, err := New(path, "<<", ">>", "sprig")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -2907,7 +3243,7 @@ sub vcl_init {
 	t.Run("all_local", func(t *testing.T) {
 		t.Parallel()
 		path := writeTempTemplate(t, tmpl)
-		r, err := New(path, "<<", ">>")
+		r, err := New(path, "<<", ">>", "sprig")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -2950,7 +3286,7 @@ sub vcl_init {
 	t.Run("all_remote", func(t *testing.T) {
 		t.Parallel()
 		path := writeTempTemplate(t, tmpl)
-		r, err := New(path, "<<", ">>")
+		r, err := New(path, "<<", ">>", "sprig")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -2993,7 +3329,7 @@ sub vcl_init {
 	t.Run("forZones_hint", func(t *testing.T) {
 		t.Parallel()
 		path := writeTempTemplate(t, tmpl)
-		r, err := New(path, "<<", ">>")
+		r, err := New(path, "<<", ">>", "sprig")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -3039,7 +3375,7 @@ sub vcl_init {
 	t.Run("mixed_groups", func(t *testing.T) {
 		t.Parallel()
 		path := writeTempTemplate(t, tmpl)
-		r, err := New(path, "<<", ">>")
+		r, err := New(path, "<<", ">>", "sprig")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -3084,7 +3420,7 @@ func TestRender_DoesNotMutateInputBackendGroup(t *testing.T) {
 		`<< len $bg.Labels >>,<< len $bg.Annotations >>,<< len $bg.LocalEndpoints >>,<< len $bg.RemoteEndpoints >>` +
 		`<< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3137,7 +3473,7 @@ func TestRender_InputLabelsMutationDoesNotAffectPreviousOutput(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $name, $bg := .Backends >>version=<< index $bg.Labels "version" >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3176,7 +3512,7 @@ func TestRender_ReplacingBackendGroupIsIndependent(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $name, $bg := .Backends >>version=<< index $bg.Labels "version" >><< end >>`
 	path := writeTempTemplate(t, tmpl)
-	r, err := New(path, "<<", ">>")
+	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3288,7 +3624,7 @@ func TestRender_SprigDictEdgeCases(t *testing.T) {
 			t.Parallel()
 
 			path := writeTempTemplate(t, tt.tmpl)
-			r, err := New(path, "<<", ">>")
+			r, err := New(path, "<<", ">>", "sprig")
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}

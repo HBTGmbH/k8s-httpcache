@@ -460,7 +460,7 @@ func main() {
 	}
 
 	// Parse VCL template.
-	rend, err := renderer.New(cfg.VCLTemplate, cfg.TemplateDelimLeft, cfg.TemplateDelimRight)
+	rend, err := renderer.New(cfg.VCLTemplate, cfg.TemplateDelimLeft, cfg.TemplateDelimRight, cfg.TemplateFuncs)
 	if err != nil {
 		log.Fatalf("renderer: %v", err)
 	}

@@ -272,6 +272,7 @@ type Config struct {
 	VarnishstatPath            string
 	TemplateDelimLeft          string
 	TemplateDelimRight         string
+	TemplateFuncs              string
 	VCLReloadRetries           int
 	VCLReloadRetryInterval     time.Duration
 	VCLKept                    int
@@ -691,6 +692,13 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &templateDelims,
 			},
 			&cli.StringFlag{
+				Name:        "template-funcs",
+				Category:    "Template:",
+				Usage:       `Template function library ("sprig" or "sprout")`,
+				Value:       "sprig",
+				Destination: &c.TemplateFuncs,
+			},
+			&cli.StringFlag{
 				Name:        "zone",
 				Category:    "Template:",
 				Usage:       "Topology zone of this Varnish pod (overrides auto-detection from NODE_NAME)",
@@ -841,6 +849,15 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 			c.TemplateDelimLeft = parts[0]
 			c.TemplateDelimRight = parts[1]
+
+			// Validate template function library.
+			switch c.TemplateFuncs {
+			case "sprig", "sprout":
+			default:
+				actionErr = validationError(cmd, "--template-funcs must be \"sprig\" or \"sprout\", got %q", c.TemplateFuncs)
+
+				return nil
+			}
 
 			// Validate log level.
 			err := c.LogLevel.UnmarshalText([]byte(logLevel))

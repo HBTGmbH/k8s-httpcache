@@ -34,7 +34,7 @@ A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) w
 - Template values from Kubernetes ConfigMaps ([`--values`](#values-specification)), Secrets ([`--secrets`](#secrets-specification)), or mounted directories ([`--values-dir`](#values-from-directories)), dynamically reloaded on changes
 - Secret values are automatically [redacted](#security-considerations) from varnishd process output, varnishadm responses, and error logs
 - Cross-namespace backends and values via `namespace/service` syntax
-- All [Sprig](http://masterminds.github.io/sprig/) template functions available in VCL templates (including [`env`](http://masterminds.github.io/sprig/os.html) for environment variables)
+- All [Sprig](http://masterminds.github.io/sprig/) template functions available in VCL templates (including [`env`](http://masterminds.github.io/sprig/os.html) for environment variables), with optional [Sprout](https://docs.atom.codes/sprout) support via `--template-funcs=sprout`
   - https://github.com/mittwald/kube-httpcache/issues/53
 - Automatic Varnish version detection with support for Varnish 6, 7, 8, and trunk builds
 - Structured logging with configurable format (text/json) and log level
@@ -319,6 +319,7 @@ Events require RBAC permission to `create` and `patch` the `events` resource (se
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--template-delims` | `<< >>` | Template delimiters as a space-separated pair (e.g. `"<< >>"` or `"{{ }}"`) |
+| `--template-funcs` | `sprig` | Template function library: `"sprig"` ([Sprig](https://masterminds.github.io/sprig/)) or `"sprout"` ([Sprout](https://docs.atom.codes/sprout)) |
 | `--zone` | | Topology zone of this Varnish pod (overrides auto-detection from `NODE_NAME`). See [Topology-aware routing](#topology-aware-routing). |
 
 ### Timing and logging flags
@@ -707,7 +708,9 @@ Each `Frontend` / `Endpoint` has:
 
 ### Template functions
 
-All [Sprig](https://masterminds.github.io/sprig/) template functions are available (the same library used by Helm). A few commonly useful ones for VCL templates:
+All [Sprig](https://masterminds.github.io/sprig/) template functions are available by default (the same library used by Helm). Alternatively, pass `--template-funcs=sprout` to use [Sprout](https://docs.atom.codes/sprout), a modernized fork with additional registries. Note that some function names differ in Sprout (e.g. `toUpper`/`toLower` instead of `upper`/`lower`); see the [Sprout documentation](https://docs.atom.codes/sprout) for details.
+
+A few commonly useful template functions for VCL templates:
 
 | Function | Description |
 |----------|-------------|
@@ -725,7 +728,7 @@ All [Sprig](https://masterminds.github.io/sprig/) template functions are availab
 | `pick` | `pick .Backends "api" "worker"` — subset of a map by key names |
 | `omit` | `omit .Backends "internal"` — map without the named keys |
 
-See the [full Sprig function reference](https://masterminds.github.io/sprig/) for the complete list.
+See the [full Sprig function reference](https://masterminds.github.io/sprig/) or the [Sprout documentation](https://docs.atom.codes/sprout) for the complete list.
 
 ### Runtime reload and rollback
 

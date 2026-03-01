@@ -2330,6 +2330,58 @@ func TestParseTemplateDelimsThreeTokens(t *testing.T) {
 	}
 }
 
+// --- --template-funcs flag tests ---
+
+func TestParseTemplateFuncsDefault(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TemplateFuncs != "sprig" {
+		t.Errorf("TemplateFuncs = %q, want %q", cfg.TemplateFuncs, "sprig")
+	}
+}
+
+func TestParseTemplateFuncsSprout(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--template-funcs=sprout",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TemplateFuncs != "sprout" {
+		t.Errorf("TemplateFuncs = %q, want %q", cfg.TemplateFuncs, "sprout")
+	}
+}
+
+func TestParseTemplateFuncsInvalid(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--template-funcs=invalid",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid --template-funcs")
+	}
+	if !strings.Contains(err.Error(), "--template-funcs must be") {
+		t.Errorf("error = %q, want substring '--template-funcs must be'", err)
+	}
+}
+
 func TestParseVCLReloadRetriesDefaults(t *testing.T) {
 	t.Parallel()
 	vcl := makeTempVCL(t)
