@@ -81,10 +81,27 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 
 		return total, nil
 	}
+
+	// Fast path: single complete line with no buffered fragment.
+	// This is the common case for varnishncsa (one line per write).
+	// Skips the loop setup, empty-buf append, and reslicing.
+	if len(w.buf) == 0 && nl == len(p)-1 {
+		w.scratch = append(w.scratch, w.prefix...)
+		w.scratch = append(w.scratch, p...)
+		_, err := w.out.Write(w.scratch)
+		if err != nil {
+			return total, err //nolint:wrapcheck // pass through underlying writer error
+		}
+
+		return total, nil
+	}
+
 	w.scratch = append(w.scratch, w.prefix...)
-	w.scratch = append(w.scratch, w.buf...)
+	if len(w.buf) > 0 {
+		w.scratch = append(w.scratch, w.buf...)
+		w.buf = w.buf[:0]
+	}
 	w.scratch = append(w.scratch, p[:nl+1]...)
-	w.buf = w.buf[:0]
 	p = p[nl+1:]
 
 	// Remaining lines: no buffered fragment, one Write call for the

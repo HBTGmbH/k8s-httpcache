@@ -4207,3 +4207,92 @@ func BenchmarkPrefixWriter_Fragmented(b *testing.B) {
 		_, _ = pw.Write(frag2)
 	}
 }
+
+// BenchmarkPrefixWriter_LongLine benchmarks a single ~1 KB log line with a
+// long URL path and long User-Agent string. Tests that scratch buffer growth
+// for oversized lines doesn't cause repeated allocations.
+// After warm-up this must report 0 allocs/op.
+func BenchmarkPrefixWriter_LongLine(b *testing.B) {
+	pw := newPrefixWriter(io.Discard, "[access] ")
+	line := []byte(`127.0.0.1 - user42 [01/Mar/2026:08:15:30 +0000] "GET /api/v2/organizations/acme-corp/projects/my-long-project-name/environments/production/deployments/rollout-2026-03-01/containers/web-frontend/logs?since=2026-02-28T00:00:00Z&until=2026-03-01T00:00:00Z&limit=5000&follow=true&timestamps=true&filter=severity%3EERROR HTTP/2.0" 200 48731 "https://dashboard.example.com/orgs/acme-corp/projects/my-long-project-name/envs/production" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.2982.0 OpenTelemetry-Instrumentation/0.49.1"` + "\n")
+
+	// Warm up the scratch buffer with one write.
+	_, _ = pw.Write(line)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(line)))
+	b.ResetTimer()
+	for range b.N {
+		_, _ = pw.Write(line)
+	}
+}
+
+// BenchmarkPrefixWriter_PipeBatch benchmarks an ~8 KB batch of mixed-length
+// log lines (short health probes, medium page requests, long API requests)
+// assembled into a single []byte — simulates a realistic pipe buffer delivery.
+// After warm-up this must report 0 allocs/op.
+func BenchmarkPrefixWriter_PipeBatch(b *testing.B) {
+	pw := newPrefixWriter(io.Discard, "[access] ")
+
+	// Short health probe (~100 B).
+	short := `127.0.0.1 - - [01/Mar/2026:08:15:30 +0000] "GET /healthz HTTP/1.1" 200 2 "-" "kube-probe/1.30"` + "\n"
+	// Medium page request (~250 B).
+	medium := `10.244.3.17 - - [01/Mar/2026:08:15:31 +0000] "GET /app/dashboard/overview?org=acme-corp HTTP/1.1" 200 18432 "https://example.com/login" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"` + "\n"
+	// Long API request (~500 B).
+	long := `10.244.7.22 - admin [01/Mar/2026:08:15:31 +0000] "POST /api/v2/search?q=deployment+status&namespaces=default,kube-system,monitoring,logging,ingress-nginx&labels=app.kubernetes.io/managed-by%3Dhelm,environment%3Dproduction&fields=metadata.name,status.phase,spec.replicas&limit=200&offset=0 HTTP/2.0" 200 65210 "https://dashboard.example.com/search" "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"` + "\n"
+
+	// Build an ~8 KB batch with a realistic mix.
+	var batch []byte
+	for len(batch) < 8192 {
+		batch = append(batch, short...)
+		batch = append(batch, medium...)
+		batch = append(batch, long...)
+		batch = append(batch, short...)
+		batch = append(batch, medium...)
+	}
+
+	// Warm up.
+	_, _ = pw.Write(batch)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(batch)))
+	b.ResetTimer()
+	for range b.N {
+		_, _ = pw.Write(batch)
+	}
+}
+
+// BenchmarkPrefixWriter_TrailingFragment benchmarks complete lines delivered in
+// one Write with the final line split at an arbitrary point: the trailing
+// fragment is completed in a second Write. Simulates the common pipe boundary
+// case where a line straddles two reads.
+// After warm-up this must report 0 allocs/op.
+func BenchmarkPrefixWriter_TrailingFragment(b *testing.B) {
+	pw := newPrefixWriter(io.Discard, "[access] ")
+
+	completeLine := `10.244.3.17 - - [01/Mar/2026:08:15:31 +0000] "GET /app/dashboard HTTP/1.1" 200 18432 "-" "Mozilla/5.0"` + "\n"
+	splitLine := `10.244.7.22 - admin [01/Mar/2026:08:15:32 +0000] "GET /api/v2/namespaces/default/pods?watch=true&resourceVersion=48291 HTTP/2.0" 200 4096 "-" "kubectl/1.30"` + "\n"
+
+	// Build first Write: several complete lines + first half of the split line.
+	splitPoint := len(splitLine) / 2
+	write1 := make([]byte, 0, len(completeLine)*5+splitPoint)
+	for range 5 {
+		write1 = append(write1, completeLine...)
+	}
+	write1 = append(write1, splitLine[:splitPoint]...)
+
+	// Second Write: remainder of the split line.
+	write2 := []byte(splitLine[splitPoint:])
+
+	// Warm up.
+	_, _ = pw.Write(write1)
+	_, _ = pw.Write(write2)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(write1) + len(write2)))
+	b.ResetTimer()
+	for range b.N {
+		_, _ = pw.Write(write1)
+		_, _ = pw.Write(write2)
+	}
+}
