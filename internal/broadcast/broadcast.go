@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -243,10 +244,16 @@ func (s *Server) forward(origReq *http.Request, fe *watcher.Frontend, body []byt
 	if s.targetPort > 0 {
 		port = s.targetPort
 	}
-	url := "http://" + net.JoinHostPort(fe.IP, strconv.FormatInt(int64(port), 10)) + origReq.RequestURI
+	target := url.URL{
+		Scheme:   "http",
+		Host:     net.JoinHostPort(fe.IP, strconv.FormatInt(int64(port), 10)),
+		Path:     origReq.URL.Path,
+		RawPath:  origReq.URL.RawPath,
+		RawQuery: origReq.URL.RawQuery,
+	}
 
 	ctx := origReq.Context()
-	req, err := http.NewRequestWithContext(ctx, origReq.Method, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, origReq.Method, target.String(), http.NoBody)
 	if err != nil {
 		return PodResult{Status: 0, Body: fmt.Sprintf("request error: %v", err)}
 	}

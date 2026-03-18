@@ -1424,6 +1424,7 @@ func TestDiscoveryWatcher_SyncServicesListerError(t *testing.T) {
 			// Pre-populate a backend to verify it survives the lister error.
 			bw := NewBackendWatcher(clientset, "default", "web", "")
 			_, childCancel := context.WithCancel(t.Context())
+			defer childCancel()
 			dw.backends["default/web"] = &managedBackend{
 				watcher:   bw,
 				cancel:    childCancel,
@@ -1457,7 +1458,9 @@ func TestDiscoveryWatcher_RemovalDroppedWhenChannelFull(t *testing.T) {
 	// Pre-populate a backend.
 	bw := NewBackendWatcher(clientset, "default", "web", "")
 	_, childCancel := context.WithCancel(t.Context())
+	defer childCancel()
 	_, fwdCancel := context.WithCancel(t.Context())
+	defer fwdCancel()
 	dw.backends["default/web"] = &managedBackend{
 		watcher:   bw,
 		cancel:    childCancel,

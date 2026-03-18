@@ -226,7 +226,7 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 // BackendWatcher to the discovery watcher's updateCh. Must be called with
 // dw.mu held.
 func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb *managedBackend) {
-	fwdCtx, fwdCancel := context.WithCancel(ctx)
+	fwdCtx, fwdCancel := context.WithCancel(ctx) //nolint:gosec // G118: cancel stored in managedBackend for lifecycle management
 	mb.fwdCancel = fwdCancel
 	svcName := mb.name
 	bw := mb.watcher
@@ -300,14 +300,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 
 		bw := NewBackendWatcher(dw.clientset, svc.Namespace, svc.Name, dw.portOverride)
 		bw.SetExcludeAnnotations(dw.excludeAnnotation)
-		childCtx, childCancel := context.WithCancel(ctx)
-		go func() {
-			runErr := bw.Run(childCtx)
-			if runErr != nil {
-				dw.log.Error("discovered backend watcher error",
-					"namespace", svc.Namespace, "service", svc.Name, "error", runErr)
-			}
-		}()
+		childCtx, childCancel := context.WithCancel(ctx) //nolint:gosec // G118: cancel stored in managedBackend for lifecycle management
 
 		mb := &managedBackend{
 			watcher:   bw,
@@ -315,6 +308,14 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 			namespace: svc.Namespace,
 			name:      svc.Name,
 		}
+
+		go func() {
+			runErr := bw.Run(childCtx)
+			if runErr != nil {
+				dw.log.Error("discovered backend watcher error",
+					"namespace", svc.Namespace, "service", svc.Name, "error", runErr)
+			}
+		}()
 
 		// Only start forwarding after the initial sync phase. During
 		// initial sync, Run() reads the first value directly.

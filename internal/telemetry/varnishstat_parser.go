@@ -310,8 +310,8 @@ func unescapeJSONString(raw string) string {
 				r2 := parseHex4(raw[i+3 : i+7])
 				if r2 >= 0xDC00 && r2 <= 0xDFFF {
 					combined := 0x10000 + (r1-0xD800)*0x400 + (r2 - 0xDC00)
-					_, _ = buf.WriteRune(rune(combined)) //nolint:gosec // combined is bounded by surrogate pair math (max 0x10FFFF)
-					i += 6                               // skip \uXXXX of the low surrogate
+					_, _ = buf.WriteRune(rune(combined))
+					i += 6 // skip \uXXXX of the low surrogate
 					i++
 
 					continue

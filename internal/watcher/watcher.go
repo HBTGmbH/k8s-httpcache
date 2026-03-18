@@ -2,11 +2,11 @@
 package watcher
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -165,12 +165,12 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		}
 	}
 
-	sort.Slice(endpoints, func(i, j int) bool {
-		if endpoints[i].IP != endpoints[j].IP {
-			return endpoints[i].IP < endpoints[j].IP
+	slices.SortFunc(endpoints, func(a, b Endpoint) int {
+		if c := cmp.Compare(a.IP, b.IP); c != 0 {
+			return c
 		}
 
-		return endpoints[i].Port < endpoints[j].Port
+		return cmp.Compare(a.Port, b.Port)
 	})
 
 	w.mu.Lock()

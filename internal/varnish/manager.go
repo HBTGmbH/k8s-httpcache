@@ -4,6 +4,7 @@ package varnish
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,7 +134,7 @@ type execRunner struct {
 }
 
 func (r execRunner) start(name string, args []string) (proc, error) {
-	cmd := exec.Command(name, args...) //nolint:noctx // varnishd runs for the container's lifetime; cancelled via SIGTERM, not context.
+	cmd := exec.Command(name, args...) //nolint:gosec,noctx // G702: paths from CLI flags, not runtime input; noctx: cancelled via SIGTERM.
 	cmd.Stdout = r.stdout
 	cmd.Stderr = r.stderr
 
@@ -146,7 +147,7 @@ func (r execRunner) start(name string, args []string) (proc, error) {
 }
 
 func (execRunner) run(name string, args []string) (string, error) {
-	cmd := exec.Command(name, args...) //nolint:noctx // varnishadm commands are short-lived; timeout is handled by the admin socket.
+	cmd := exec.Command(name, args...) //nolint:gosec,noctx // G702: paths from CLI flags, not runtime input; noctx: timeout handled by admin socket.
 	out, err := cmd.CombinedOutput()
 
 	return strings.TrimSpace(string(out)), err
@@ -750,8 +751,8 @@ func (m *Manager) discardOldVCLs(currentName string) {
 	// When VCLKept > 0, sort descending by suffix (higher = newer) and
 	// only discard the tail beyond the retention limit.
 	if m.VCLKept > 0 {
-		sort.Slice(available, func(i, j int) bool {
-			return vclSuffix(available[i]) > vclSuffix(available[j])
+		slices.SortFunc(available, func(a, b string) int {
+			return cmp.Compare(vclSuffix(b), vclSuffix(a)) // descending
 		})
 		available = available[m.VCLKept:]
 	}
