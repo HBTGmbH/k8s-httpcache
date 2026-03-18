@@ -208,7 +208,7 @@ curl -s http://localhost:9101/status | jq .
 ```json
 {
   "version": "v0.1.0",
-  "goVersion": "go1.26.0",
+  "goVersion": "go1.26.1",
   "varnishMajorVersion": 8,
   "serviceName": "k8s-httpcache",
   "serviceNamespace": "default",
