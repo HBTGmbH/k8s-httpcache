@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -377,7 +378,7 @@ func main() {
 		mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
 		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout}
 		go func() {
-			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
+			slog.Info("starting metrics server", "addr", cfg.MetricsAddr) //nolint:gosec // G706: slog structured logging safely escapes values
 
 			err := metricsSrv.ListenAndServe()
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -417,7 +418,7 @@ func main() {
 		} else {
 			podRef.UID = pod.UID
 		}
-		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace) //nolint:gosec // G706: values from pod spec env/flags, not runtime user input
+		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace) //nolint:gosec // G706: slog structured logging safely escapes values
 	} else {
 		slog.Info("POD_NAME not set, kubernetes event recording disabled")
 	}
@@ -426,7 +427,7 @@ func main() {
 	var localZone string
 	if cfg.Zone != "" {
 		localZone = cfg.Zone
-		slog.Info("using explicit topology zone from --zone", "zone", localZone) //nolint:gosec // G706: zone from CLI flag, not runtime user input
+		slog.Info("using explicit topology zone from --zone", "zone", localZone)
 	} else {
 		localZone = detectLocalZone(slog.Default(), clientset, os.Getenv("NODE_NAME"))
 	}
@@ -456,7 +457,7 @@ func main() {
 	if cfg.VarnishstatExport {
 		vsc := telemetry.NewVarnishstatCollector(mgr.VarnishstatFunc(), cfg.VarnishstatExportFilter)
 		prometheus.DefaultRegisterer.MustRegister(vsc)
-		slog.Info("varnishstat prometheus exporter enabled", "filter", cfg.VarnishstatExportFilter) //nolint:gosec // G706: filter from CLI flag, not runtime user input
+		slog.Info("varnishstat prometheus exporter enabled", "filter", cfg.VarnishstatExportFilter)
 	}
 
 	// Parse VCL template.
@@ -592,7 +593,7 @@ func main() {
 	slog.Info("waiting for initial endpoint data")
 	latestFrontends := <-w.Changes()
 	if len(latestFrontends) == 0 {
-		slog.Warn("frontend Service has no ready endpoints at startup", //nolint:gosec // G706: values from CLI flags, not runtime user input
+		slog.Warn("frontend Service has no ready endpoints at startup",
 			"namespace", cfg.ServiceNamespace, "service", cfg.ServiceName)
 	}
 	latestBackends := make(map[string]renderer.BackendGroup)
@@ -625,7 +626,7 @@ func main() {
 		latestSecrets[swNames[i]] = <-sw.Changes()
 	}
 	secretRedactor.Update(latestSecrets)
-	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues), "secrets", len(latestSecrets)) //nolint:gosec // G706: values are integer counts, not user strings
+	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues), "secrets", len(latestSecrets))
 
 	// Set initial status counts.
 	status.setEndpointCounts(len(latestFrontends), backendCountsMap(latestBackends))
@@ -697,7 +698,7 @@ func main() {
 	// Start varnishncsa access logging subprocess (opt-in).
 	if cfg.VarnishncsaEnabled {
 		mgr.StartNCSA(cfg.VarnishncsaPath, buildNCSAArgs(cfg), cfg.VarnishncsaPrefix)
-		slog.Info("varnishncsa access logging enabled", "path", cfg.VarnishncsaPath) //nolint:gosec // G706: path from CLI flag, not runtime user input
+		slog.Info("varnishncsa access logging enabled", "path", cfg.VarnishncsaPath)
 	}
 
 	// Watch VCL template file for changes.
@@ -854,7 +855,7 @@ func rollbackReload(lc *loopConfig, reasons string) {
 	_ = f.Close()
 	if err != nil {
 		slog.Error("writing temp VCL file after rollback", "error", err)
-		_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
+		_ = os.Remove(vclPath)
 
 		return
 	}
@@ -1026,7 +1027,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		_ = f.Close()
 		if err != nil {
 			slog.Error("writing temp VCL file", "error", err)
-			_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
+			_ = os.Remove(vclPath)
 
 			return
 		}
@@ -1036,7 +1037,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
 			slog.Error("reload error", "error", err)
 			emitEvent(lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
-			_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
+			_ = os.Remove(vclPath)
 
 			if !reloadedTemplate {
 				return
@@ -1062,7 +1063,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			lc.status.recordReload()
 			lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
 		}
-		_ = os.Remove(vclPath) //nolint:gosec // G703: path from os.CreateTemp, not user input
+		_ = os.Remove(vclPath)
 	}
 
 	for {
@@ -1417,6 +1418,7 @@ func buildNCSAArgs(cfg *config.Config) []string {
 // watchFile polls a file for content changes and sends on the returned channel
 // when a change is detected. The goroutine exits when ctx is cancelled.
 func watchFile(ctx context.Context, path string, interval time.Duration) <-chan struct{} {
+	path = filepath.Clean(path)
 	ch := make(chan struct{}, 1)
 
 	go func() {

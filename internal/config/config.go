@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1019,7 +1019,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				}
 				c.DebounceLatencyBuckets = append(c.DebounceLatencyBuckets, v)
 			}
-			sort.Float64s(c.DebounceLatencyBuckets)
+			slices.Sort(c.DebounceLatencyBuckets)
 
 			// Validate VCL template file exists.
 			_, err = os.Stat(c.VCLTemplate)

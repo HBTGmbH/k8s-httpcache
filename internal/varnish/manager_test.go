@@ -2977,7 +2977,7 @@ func TestSubprocessOutputRedacted(t *testing.T) {
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperVarnishd$") //nolint:gosec // test helper binary, not user input
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperVarnishd$") //nolint:gosec // G702: test helper binary, not user input
 	cmd.Env = append(os.Environ(),
 		"GO_HELPER_VARNISHD=varnishd: Error near "+secret+" on line 42",
 	)
@@ -3456,7 +3456,7 @@ func TestExecProcSignal(t *testing.T) {
 	// Start a real process. The helper with GO_HELPER_VARNISHD=start
 	// will print and exit immediately, but we can still call Signal
 	// before or after Wait.
-	ecmd := exec.Command(os.Args[0], "-test.run=^TestHelperVarnishd$") //nolint:gosec // test helper
+	ecmd := exec.Command(os.Args[0], "-test.run=^TestHelperVarnishd$") //nolint:gosec // G702: test helper binary, not user input
 	ecmd.Env = append(os.Environ(), "GO_HELPER_VARNISHD=start")
 	ecmd.Stdout = &buf
 	ecmd.Stderr = &buf

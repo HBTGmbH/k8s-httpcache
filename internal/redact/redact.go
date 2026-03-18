@@ -2,8 +2,9 @@
 package redact
 
 import (
+	"cmp"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -48,8 +49,8 @@ func (r *Redactor) Update(secrets map[string]map[string]any) {
 	}
 
 	// Sort longest first so the replacer greedily matches longer secrets.
-	sort.Slice(unique, func(i, j int) bool {
-		return len(unique[i]) > len(unique[j])
+	slices.SortFunc(unique, func(a, b string) int {
+		return cmp.Compare(len(b), len(a)) // descending by length
 	})
 
 	pairs := make([]string, 0, len(unique)*2)

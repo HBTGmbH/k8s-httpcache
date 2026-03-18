@@ -224,14 +224,14 @@ func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[strin
 	_, err = f.WriteString(vcl)
 	if err != nil {
 		_ = f.Close()
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
+		_ = os.Remove(f.Name())
 
 		return "", fmt.Errorf("writing temp file: %w", err)
 	}
 
 	err = f.Close()
 	if err != nil {
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
+		_ = os.Remove(f.Name())
 
 		return "", fmt.Errorf("closing temp file: %w", err)
 	}
