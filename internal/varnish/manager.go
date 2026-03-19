@@ -26,8 +26,8 @@ import (
 )
 
 var (
-	errVersionParse = errors.New("cannot parse varnish version")
-	errAdminTimeout = errors.New("timeout waiting for varnish admin")
+	errVersionParse = errors.New("cannot parse cache version")
+	errAdminTimeout = errors.New("timeout waiting for cache admin")
 )
 
 // runner abstracts external command execution for testing.
@@ -260,27 +260,29 @@ func (m *Manager) SetRedactor(r *redact.Redactor) {
 // vclReloadPrefix is the naming prefix for VCL objects loaded by k8s-httpcache.
 const vclReloadPrefix = "kv_reload_"
 
-var versionRe = regexp.MustCompile(`varnish-(\d+)\.`)
+// versionRe matches "varnish-<major>." or "vinyl-<major>." version strings.
+var versionRe = regexp.MustCompile(`(?:varnish|vinyl)-(\d+)\.`)
 
-// trunkVersionRe matches "varnish-trunk" (the development branch).
-var trunkVersionRe = regexp.MustCompile(`varnish-trunk\b`)
+// trunkVersionRe matches "varnish-trunk" or "vinyl-trunk" (development branches).
+var trunkVersionRe = regexp.MustCompile(`(?:varnish|vinyl)-trunk\b`)
 
 // trunkMajorVersion is the synthetic major version assigned to trunk builds.
 // It is set high so that trunk is always treated as the latest version.
 const trunkMajorVersion = 99
 
-// DetectVersion runs varnishd -V and stores the major version number.
+// DetectVersion runs the cache daemon with -V and stores the major version number.
+// It recognises both Varnish Cache ("varnish-7.6.1") and Vinyl Cache ("vinyl-9.0.0")
+// version strings. Trunk builds are treated as the latest version.
 // It is safe to call multiple times; Start calls it automatically if
-// the version has not been detected yet. Trunk builds ("varnish-trunk")
-// are treated as the latest version.
+// the version has not been detected yet.
 func (m *Manager) DetectVersion() error {
 	out, err := m.run.run(m.varnishdPath, []string{"-V"})
 	if err != nil {
-		return fmt.Errorf("running varnishd -V: %w", err)
+		return fmt.Errorf("running %s -V: %w", m.varnishdPath, err)
 	}
 	if trunkVersionRe.MatchString(out) {
 		m.majorVersion = trunkMajorVersion
-		m.log.Info("detected varnish version", "major", "trunk")
+		m.log.Info("detected cache version", "major", "trunk")
 
 		return nil
 	}
@@ -293,7 +295,7 @@ func (m *Manager) DetectVersion() error {
 		return fmt.Errorf("parsing major version %q: %w", matches[1], err)
 	}
 	m.majorVersion = v
-	m.log.Info("detected varnish version", "major", m.majorVersion)
+	m.log.Info("detected cache version", "major", m.majorVersion)
 
 	return nil
 }
@@ -304,13 +306,13 @@ func (m *Manager) MajorVersion() int {
 	return m.majorVersion
 }
 
-// Start launches varnishd in foreground mode with the given initial VCL file.
+// Start launches the cache daemon in foreground mode with the given initial VCL file.
 // It blocks until the admin port is ready or a timeout is reached.
 func (m *Manager) Start(initialVCL string) error {
 	if m.majorVersion == 0 {
 		err := m.DetectVersion()
 		if err != nil {
-			return fmt.Errorf("detecting varnish version: %w", err)
+			return fmt.Errorf("detecting cache version: %w", err)
 		}
 	}
 
@@ -329,11 +331,11 @@ func (m *Manager) Start(initialVCL string) error {
 
 	p, err := m.run.start(m.varnishdPath, args)
 	if err != nil {
-		return fmt.Errorf("starting varnishd: %w", err)
+		return fmt.Errorf("starting %s: %w", m.varnishdPath, err)
 	}
 	m.proc = p
 
-	m.log.Info("started varnishd", "pid", m.proc.Pid())
+	m.log.Info("started cache daemon", "cmd", m.varnishdPath, "pid", m.proc.Pid())
 
 	// Monitor the process in the background.
 	go func() {
@@ -344,10 +346,10 @@ func (m *Manager) Start(initialVCL string) error {
 	// Wait for admin port to become ready.
 	err = m.waitForAdmin(m.AdminTimeout)
 	if err != nil {
-		return fmt.Errorf("waiting for varnish admin: %w", err)
+		return fmt.Errorf("waiting for cache admin: %w", err)
 	}
 
-	m.log.Info("varnish admin ready")
+	m.log.Info("cache admin ready")
 
 	return nil
 }

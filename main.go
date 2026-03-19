@@ -432,8 +432,9 @@ func main() {
 		localZone = detectLocalZone(slog.Default(), clientset, os.Getenv("NODE_NAME"))
 	}
 
-	// Create varnish manager and detect version before rendering VCL,
+	// Create cache manager and detect version before rendering VCL,
 	// because the renderer needs the version to generate compatible VCL.
+	slog.Info("using cache binaries", "daemon", cfg.VarnishdPath, "admin", cfg.VarnishadmPath, "stat", cfg.VarnishstatPath)
 	listenAddrs := make([]string, len(cfg.ListenAddrs))
 	for i, la := range cfg.ListenAddrs {
 		listenAddrs[i] = la.Raw
@@ -449,7 +450,7 @@ func main() {
 
 	err = mgr.DetectVersion()
 	if err != nil {
-		log.Fatalf("varnish version: %v", err)
+		log.Fatalf("cache version: %v", err)
 	}
 	status.varnishMajorVersion = mgr.MajorVersion()
 
@@ -695,10 +696,10 @@ func main() {
 		eventRecorder.Event(podRef, v1.EventTypeNormal, "VCLReloaded", "Initial VCL loaded and varnishd started")
 	}
 
-	// Start varnishncsa access logging subprocess (opt-in).
+	// Start access logging subprocess (opt-in).
 	if cfg.VarnishncsaEnabled {
 		mgr.StartNCSA(cfg.VarnishncsaPath, buildNCSAArgs(cfg), cfg.VarnishncsaPrefix)
-		slog.Info("varnishncsa access logging enabled", "path", cfg.VarnishncsaPath)
+		slog.Info("access logging enabled", "path", cfg.VarnishncsaPath)
 	}
 
 	// Watch VCL template file for changes.

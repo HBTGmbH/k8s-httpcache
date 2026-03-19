@@ -57,7 +57,11 @@ kubectl scale deployment/backend --replicas=5
 kubectl rollout status deployment/backend --timeout=60s
 
 # Wait for debounce timer to fire and reload to complete.
-sleep 4
+# EndpointSlice events may keep arriving after rollout status reports
+# Ready (Kubernetes reconciliation), so the first debounce fire may
+# render VCL with the same hash (skipped).  Allow enough time for a
+# second debounce cycle to pick up the final endpoint state.
+sleep 6
 
 after_events=$(metric_value 'k8s_httpcache_debounce_events_total{group="backend"}')
 after_fires=$(metric_value 'k8s_httpcache_debounce_fires_total{group="backend"}')

@@ -1252,6 +1252,294 @@ func TestParseOverrideStringFlags(t *testing.T) {
 	}
 }
 
+func TestParseVinylPathsExplicit(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vinyld-path=/opt/vinyl/bin/vinyld",
+		"--vinyladm-path=/opt/vinyl/bin/vinyladm",
+		"--vinylstat-path=/opt/vinyl/bin/vinylstat",
+		"--vinylncsa-path=/opt/vinyl/bin/vinylncsa",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VarnishdPath != "/opt/vinyl/bin/vinyld" {
+		t.Errorf("VarnishdPath = %q, want /opt/vinyl/bin/vinyld", cfg.VarnishdPath)
+	}
+	if cfg.VarnishadmPath != "/opt/vinyl/bin/vinyladm" {
+		t.Errorf("VarnishadmPath = %q, want /opt/vinyl/bin/vinyladm", cfg.VarnishadmPath)
+	}
+	if cfg.VarnishstatPath != "/opt/vinyl/bin/vinylstat" {
+		t.Errorf("VarnishstatPath = %q, want /opt/vinyl/bin/vinylstat", cfg.VarnishstatPath)
+	}
+	if cfg.VarnishncsaPath != "/opt/vinyl/bin/vinylncsa" {
+		t.Errorf("VarnishncsaPath = %q, want /opt/vinyl/bin/vinylncsa", cfg.VarnishncsaPath)
+	}
+}
+
+func TestParseVinylncsaEnabledAlias(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vinylncsa-enabled",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.VarnishncsaEnabled {
+		t.Error("VarnishncsaEnabled = false, want true (via --vinylncsa-enabled alias)")
+	}
+}
+
+func TestParseVinylPartialDefaultsFilledIn(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--vinyld-path=/opt/vinyld",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.VarnishdPath != "/opt/vinyld" {
+		t.Errorf("VarnishdPath = %q, want /opt/vinyld", cfg.VarnishdPath)
+	}
+	if cfg.VarnishadmPath != "vinyladm" {
+		t.Errorf("VarnishadmPath = %q, want vinyladm", cfg.VarnishadmPath)
+	}
+	if cfg.VarnishstatPath != "vinylstat" {
+		t.Errorf("VarnishstatPath = %q, want vinylstat", cfg.VarnishstatPath)
+	}
+	if cfg.VarnishncsaPath != "vinylncsa" {
+		t.Errorf("VarnishncsaPath = %q, want vinylncsa", cfg.VarnishncsaPath)
+	}
+}
+
+func TestResolveBinaryPaths(t *testing.T) {
+	t.Parallel()
+
+	vinylFound := func(file string) (string, error) {
+		if file == "vinyld" {
+			return "/usr/bin/vinyld", nil
+		}
+
+		return "", errors.New("not found")
+	}
+	vinylNotFound := func(string) (string, error) {
+		return "", errors.New("not found")
+	}
+
+	tests := []struct {
+		name            string
+		vinyld          string
+		vinyladm        string
+		vinylstat       string
+		vinylncsa       string
+		varnishExplicit bool   // simulates cmd.IsSet on any --varnish*-path flag
+		initD           string // initial VarnishdPath (simulates --varnishd-path default or explicit)
+		initAdm         string
+		initStat        string
+		initNcsa        string
+		lookPathFn      func(string) (string, error)
+		wantD           string
+		wantAdm         string
+		wantStat        string
+		wantNcsa        string
+	}{
+		{
+			name:       "auto-detect finds vinyl on PATH",
+			lookPathFn: vinylFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "vinyld",
+			wantAdm:    "vinyladm",
+			wantStat:   "vinylstat",
+			wantNcsa:   "vinylncsa",
+		},
+		{
+			name:       "auto-detect fallback to varnish when vinyl not on PATH",
+			lookPathFn: vinylNotFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "varnishd",
+			wantAdm:    "varnishadm",
+			wantStat:   "varnishstat",
+			wantNcsa:   "varnishncsa",
+		},
+		{
+			name:       "explicit vinyl flags override varnish defaults — all four",
+			vinyld:     "/opt/vinyld",
+			vinyladm:   "/opt/vinyladm",
+			vinylstat:  "/opt/vinylstat",
+			vinylncsa:  "/opt/vinylncsa",
+			lookPathFn: vinylNotFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "/opt/vinyld",
+			wantAdm:    "/opt/vinyladm",
+			wantStat:   "/opt/vinylstat",
+			wantNcsa:   "/opt/vinylncsa",
+		},
+		{
+			name:       "partial vinyl — only vinyld-path set, others default to vinyl names",
+			vinyld:     "/opt/vinyld",
+			lookPathFn: vinylNotFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "/opt/vinyld",
+			wantAdm:    "vinyladm",
+			wantStat:   "vinylstat",
+			wantNcsa:   "vinylncsa",
+		},
+		{
+			name:       "partial vinyl — only vinyladm-path set",
+			vinyladm:   "/opt/vinyladm",
+			lookPathFn: vinylNotFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "vinyld",
+			wantAdm:    "/opt/vinyladm",
+			wantStat:   "vinylstat",
+			wantNcsa:   "vinylncsa",
+		},
+		{
+			name:       "partial vinyl — only vinylstat-path set",
+			vinylstat:  "/opt/vinylstat",
+			lookPathFn: vinylNotFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "vinyld",
+			wantAdm:    "vinyladm",
+			wantStat:   "/opt/vinylstat",
+			wantNcsa:   "vinylncsa",
+		},
+		{
+			name:       "partial vinyl — only vinylncsa-path set",
+			vinylncsa:  "/opt/vinylncsa",
+			lookPathFn: vinylNotFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "vinyld",
+			wantAdm:    "vinyladm",
+			wantStat:   "vinylstat",
+			wantNcsa:   "/opt/vinylncsa",
+		},
+		{
+			name:       "explicit vinyl takes priority even when vinyl is also on PATH",
+			vinyld:     "/custom/vinyld",
+			lookPathFn: vinylFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "/custom/vinyld",
+			wantAdm:    "vinyladm",
+			wantStat:   "vinylstat",
+			wantNcsa:   "vinylncsa",
+		},
+		{
+			name:            "explicit varnish flags prevent auto-detect even when vinyl is on PATH",
+			varnishExplicit: true,
+			lookPathFn:      vinylFound,
+			initD:           "/usr/sbin/varnishd",
+			initAdm:         "/usr/sbin/varnishadm",
+			initStat:        "/usr/sbin/varnishstat",
+			initNcsa:        "/usr/sbin/varnishncsa",
+			wantD:           "/usr/sbin/varnishd",
+			wantAdm:         "/usr/sbin/varnishadm",
+			wantStat:        "/usr/sbin/varnishstat",
+			wantNcsa:        "/usr/sbin/varnishncsa",
+		},
+		{
+			name:            "explicit varnish flags kept when vinyl not on PATH",
+			varnishExplicit: true,
+			lookPathFn:      vinylNotFound,
+			initD:           "/usr/sbin/varnishd",
+			initAdm:         "/usr/sbin/varnishadm",
+			initStat:        "/usr/sbin/varnishstat",
+			initNcsa:        "/usr/sbin/varnishncsa",
+			wantD:           "/usr/sbin/varnishd",
+			wantAdm:         "/usr/sbin/varnishadm",
+			wantStat:        "/usr/sbin/varnishstat",
+			wantNcsa:        "/usr/sbin/varnishncsa",
+		},
+		{
+			name:       "defaults kept when vinyl not on PATH and no explicit flags",
+			lookPathFn: vinylNotFound,
+			initD:      "varnishd",
+			initAdm:    "varnishadm",
+			initStat:   "varnishstat",
+			initNcsa:   "varnishncsa",
+			wantD:      "varnishd",
+			wantAdm:    "varnishadm",
+			wantStat:   "varnishstat",
+			wantNcsa:   "varnishncsa",
+		},
+		{
+			name:            "vinyl flags win over varnishExplicit",
+			vinyld:          "/opt/vinyld",
+			varnishExplicit: true,
+			lookPathFn:      vinylNotFound,
+			initD:           "/usr/sbin/varnishd",
+			initAdm:         "/usr/sbin/varnishadm",
+			initStat:        "/usr/sbin/varnishstat",
+			initNcsa:        "/usr/sbin/varnishncsa",
+			wantD:           "/opt/vinyld",
+			wantAdm:         "vinyladm",
+			wantStat:        "vinylstat",
+			wantNcsa:        "vinylncsa",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := &Config{
+				VarnishdPath:    tt.initD,
+				VarnishadmPath:  tt.initAdm,
+				VarnishstatPath: tt.initStat,
+				VarnishncsaPath: tt.initNcsa,
+			}
+			resolveBinaryPaths(c, tt.vinyld, tt.vinyladm, tt.vinylstat, tt.vinylncsa, tt.varnishExplicit, tt.lookPathFn)
+			if c.VarnishdPath != tt.wantD {
+				t.Errorf("VarnishdPath = %q, want %q", c.VarnishdPath, tt.wantD)
+			}
+			if c.VarnishadmPath != tt.wantAdm {
+				t.Errorf("VarnishadmPath = %q, want %q", c.VarnishadmPath, tt.wantAdm)
+			}
+			if c.VarnishstatPath != tt.wantStat {
+				t.Errorf("VarnishstatPath = %q, want %q", c.VarnishstatPath, tt.wantStat)
+			}
+			if c.VarnishncsaPath != tt.wantNcsa {
+				t.Errorf("VarnishncsaPath = %q, want %q", c.VarnishncsaPath, tt.wantNcsa)
+			}
+		})
+	}
+}
+
 func TestParseOverrideDurationFlags(t *testing.T) {
 	t.Parallel()
 	vcl := makeTempVCL(t)

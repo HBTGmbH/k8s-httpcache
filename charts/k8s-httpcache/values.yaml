@@ -90,17 +90,30 @@ valuesDirs: []
 valuesDirPollInterval: ""
 
 # ---------------------------------------------------------------------------
-# Varnish binary paths
+# Cache binary paths (Varnish Cache / Vinyl Cache)
 # ---------------------------------------------------------------------------
+# When neither varnish nor vinyl paths are set, auto-detection is used:
+# if "vinyld" is found on PATH, Vinyl Cache binaries are preferred,
+# otherwise Varnish Cache binaries are used.
 varnish:
-  # -- Path to varnishd binary (empty = app default "varnishd")
+  # -- Path to varnishd binary (empty = auto-detect)
   varnishdPath: ""
-  # -- Path to varnishadm binary (empty = app default "varnishadm")
+  # -- Path to varnishadm binary (empty = auto-detect)
   varnishadmPath: ""
-  # -- Path to varnishstat binary (empty = app default "varnishstat")
+  # -- Path to varnishstat binary (empty = auto-detect)
   varnishstatPath: ""
-  # -- Max time to wait for the varnish admin CLI to become ready (empty = app default 30s)
+  # -- Max time to wait for the cache admin CLI to become ready (empty = app default 30s)
   adminTimeout: ""
+
+vinyl:
+  # -- Path to vinyld binary (Vinyl Cache 9+; takes precedence over varnish paths)
+  vinyldPath: ""
+  # -- Path to vinyladm binary (Vinyl Cache 9+; takes precedence over varnish paths)
+  vinyladmPath: ""
+  # -- Path to vinylstat binary (Vinyl Cache 9+; takes precedence over varnish paths)
+  vinylstatPath: ""
+  # -- Path to vinylncsa binary (Vinyl Cache 9+; takes precedence over varnishncsa.path)
+  vinylncsaPath: ""
 
 # ---------------------------------------------------------------------------
 # Broadcast settings

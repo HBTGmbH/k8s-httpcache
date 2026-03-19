@@ -142,6 +142,223 @@ func TestStartArgs(t *testing.T) {
 	}
 }
 
+func TestStartVinylBinaryPaths(t *testing.T) {
+	t.Parallel()
+
+	var startName string
+	var runNames []string
+	var mu sync.Mutex
+
+	mp := &mockProc{pid: 42, waitCh: make(chan struct{})}
+	defer close(mp.waitCh)
+
+	r := &mockRunner{
+		startFn: func(name string, _ []string) (proc, error) {
+			mu.Lock()
+			startName = name
+			mu.Unlock()
+
+			return mp, nil
+		},
+		runFn: func(name string, args []string) (string, error) {
+			mu.Lock()
+			runNames = append(runNames, name)
+			mu.Unlock()
+
+			if slices.Contains(args, "-V") {
+				return "vinyld (vinyl-9.0.0 revision abc123)", nil
+			}
+			if slices.Contains(args, "ping") {
+				return "200", nil
+			}
+			// varnishstat -1 -j
+			if slices.Contains(args, "-1") {
+				return `{"version": 1, "counters": {}}`, nil
+			}
+
+			return "", nil
+		},
+	}
+
+	m := &Manager{
+		varnishdPath:    "vinyld",
+		varnishadmPath:  "vinyladm",
+		varnishstatPath: "vinylstat",
+		listenAddrs:     []string{":8080"},
+		log:             slog.New(slog.DiscardHandler),
+		run:             r,
+		done:            make(chan struct{}),
+		metrics:         telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+		AdminTimeout:    30 * time.Second,
+	}
+
+	err := m.Start("/etc/vinyl-cache/default.vcl")
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if m.MajorVersion() != 9 {
+		t.Errorf("MajorVersion() = %d, want 9", m.MajorVersion())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if startName != "vinyld" {
+		t.Errorf("start command = %q, want vinyld", startName)
+	}
+	// DetectVersion should have called "vinyld -V", and admin ping should have called "vinyladm".
+	foundVersionCall := false
+	foundAdmCall := false
+	for _, n := range runNames {
+		if n == "vinyld" {
+			foundVersionCall = true
+		}
+		if n == "vinyladm" {
+			foundAdmCall = true
+		}
+	}
+	if !foundVersionCall {
+		t.Error("expected run call to vinyld (for -V), not found")
+	}
+	if !foundAdmCall {
+		t.Error("expected run call to vinyladm (for ping), not found")
+	}
+}
+
+func TestStartNCSAVinylBinaryPath(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotName string
+
+	mp := &mockProc{pid: 99, waitCh: make(chan struct{})}
+
+	r := &mockRunner{
+		startFn: func(name string, _ []string) (proc, error) {
+			mu.Lock()
+			gotName = name
+			mu.Unlock()
+
+			return mp, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("vinylncsa", []string{"-b"}, "[access] ")
+	defer func() {
+		close(mp.waitCh)
+		m.StopNCSA()
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := gotName
+		mu.Unlock()
+		if n != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for Start call")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotName != "vinylncsa" {
+		t.Errorf("name = %q, want vinylncsa", gotName)
+	}
+}
+
+func TestActiveSessionsVinylBinaryPath(t *testing.T) {
+	t.Parallel()
+
+	var gotName string
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(name string, args []string) (string, error) {
+			if slices.Contains(args, "-1") {
+				gotName = name
+
+				return `{"version": 1, "counters": {"MEMPOOL.sess0.live": {"value": 3}}}`, nil
+			}
+
+			return "", nil
+		},
+	}
+
+	m := &Manager{
+		varnishdPath:    "vinyld",
+		varnishadmPath:  "vinyladm",
+		varnishstatPath: "vinylstat",
+		log:             slog.New(slog.DiscardHandler),
+		run:             r,
+		done:            make(chan struct{}),
+		metrics:         telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+		majorVersion:    9,
+	}
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if gotName != "vinylstat" {
+		t.Errorf("command = %q, want vinylstat", gotName)
+	}
+	if sessions != 3 {
+		t.Errorf("sessions = %d, want 3", sessions)
+	}
+}
+
+func TestVarnishstatFuncVinylBinaryPath(t *testing.T) {
+	t.Parallel()
+
+	var gotName string
+
+	r := &mockRunner{
+		runFn: func(name string, args []string) (string, error) {
+			if slices.Contains(args, "-1") {
+				gotName = name
+
+				return `{"version": 1, "counters": {}}`, nil
+			}
+
+			return "", nil
+		},
+	}
+
+	m := &Manager{
+		varnishstatPath: "vinylstat",
+		log:             slog.New(slog.DiscardHandler),
+		run:             r,
+		done:            make(chan struct{}),
+		metrics:         telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+		majorVersion:    9,
+	}
+
+	fn := m.VarnishstatFunc()
+	out, ver, err := fn()
+	if err != nil {
+		t.Fatalf("VarnishstatFunc() error: %v", err)
+	}
+	if gotName != "vinylstat" {
+		t.Errorf("command = %q, want vinylstat", gotName)
+	}
+	if ver != 9 {
+		t.Errorf("version = %d, want 9", ver)
+	}
+	if out == "" {
+		t.Error("expected non-empty output")
+	}
+}
+
 func TestStartAdminWait(t *testing.T) {
 	t.Parallel()
 	pingCount := 0
@@ -572,8 +789,8 @@ func TestStartDetectVersionError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Start, got nil")
 	}
-	if !strings.Contains(err.Error(), "detecting varnish version") {
-		t.Errorf("error = %q, want substring 'detecting varnish version'", err.Error())
+	if !strings.Contains(err.Error(), "detecting cache version") {
+		t.Errorf("error = %q, want substring 'detecting cache version'", err.Error())
 	}
 }
 
@@ -603,8 +820,8 @@ func TestStartAdminTimeoutViaStart(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Start due to admin timeout, got nil")
 	}
-	if !strings.Contains(err.Error(), "waiting for varnish admin") {
-		t.Errorf("error = %q, want substring 'waiting for varnish admin'", err.Error())
+	if !strings.Contains(err.Error(), "waiting for cache admin") {
+		t.Errorf("error = %q, want substring 'waiting for cache admin'", err.Error())
 	}
 }
 
@@ -629,8 +846,8 @@ func TestStartRunnerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Start, got nil")
 	}
-	if !strings.Contains(err.Error(), "starting varnishd") {
-		t.Errorf("error = %q, want substring 'starting varnishd'", err.Error())
+	if !strings.Contains(err.Error(), "starting /usr/sbin/varnishd") {
+		t.Errorf("error = %q, want substring 'starting /usr/sbin/varnishd'", err.Error())
 	}
 }
 
@@ -1080,6 +1297,16 @@ func TestDetectVersion(t *testing.T) {
 		{
 			name:    "varnish trunk",
 			output:  "varnishd (varnish-trunk revision 382ea77157290253a93203dc60a289925b7bebea)",
+			wantVer: trunkMajorVersion,
+		},
+		{
+			name:    "vinyl 9",
+			output:  "vinyld (vinyl-9.0.0 revision abc123)",
+			wantVer: 9,
+		},
+		{
+			name:    "vinyl trunk",
+			output:  "vinyld (vinyl-trunk revision abc123)",
 			wantVer: trunkMajorVersion,
 		},
 		{
@@ -3123,7 +3350,7 @@ func TestDetectVersionErrorDoesNotLeakOutput(t *testing.T) {
 	}
 	// The error DOES include the raw output (for debugging). This is safe
 	// because DetectVersion runs before secrets are loaded.
-	if !strings.Contains(err.Error(), "cannot parse varnish version") {
+	if !strings.Contains(err.Error(), "cannot parse cache version") {
 		t.Errorf("unexpected error format: %v", err)
 	}
 }
@@ -3740,6 +3967,49 @@ func TestSendNCSAEventChannelFull(t *testing.T) {
 	}
 }
 
+func TestSendNCSAEventNilChannel(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(&mockRunner{})
+	// ncsaEvents is nil because StartNCSA was never called.
+	// sendNCSAEvent must not panic.
+	m.sendNCSAEvent("Warning", "VarnishncsaExited", "should be dropped silently")
+}
+
+func TestSendNCSAEventSuccess(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(&mockRunner{})
+	m.ncsaEvents = make(chan NCSAEvent, 1)
+
+	m.sendNCSAEvent("Normal", "VarnishncsaRestarted", "restarted")
+
+	select {
+	case ev := <-m.ncsaEvents:
+		if ev.Reason != "VarnishncsaRestarted" {
+			t.Errorf("Reason = %q, want VarnishncsaRestarted", ev.Reason)
+		}
+	default:
+		t.Error("expected event on channel, got none")
+	}
+}
+
+func TestStartNCSANilRunnerCreatesExecRunner(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(&mockRunner{})
+	// Do not pre-set m.ncsaRun — StartNCSA should create a real execRunner.
+	// We cannot actually exec a binary, so just verify the runner was set.
+	// Use a non-existent path; monitorNCSA will fail to start it, but the
+	// runner assignment is what we're testing.
+	m.NCSAMaxCrashes = 1
+	m.NCSARestartDelay = time.Millisecond
+	m.StartNCSA("/nonexistent/binary", nil, "[test] ")
+	<-m.NCSACrashed()
+	m.StopNCSA()
+
+	if m.ncsaRun == nil {
+		t.Error("ncsaRun should have been set by StartNCSA")
+	}
+}
+
 func TestStartNCSANoWorkDir(t *testing.T) {
 	t.Parallel()
 
@@ -4060,6 +4330,18 @@ func TestPrefixWriterErrorPropagation(t *testing.T) {
 	pw := newPrefixWriter(errWriter{err: writeErr}, "[x] ")
 
 	_, err := pw.Write([]byte("hello\n"))
+	if !errors.Is(err, writeErr) {
+		t.Errorf("error = %v, want %v", err, writeErr)
+	}
+}
+
+func TestPrefixWriterErrorPropagationMultiLine(t *testing.T) {
+	t.Parallel()
+	writeErr := errors.New("disk full")
+	pw := newPrefixWriter(errWriter{err: writeErr}, "[x] ")
+
+	// Multi-line input takes the slow path, not the fast path.
+	_, err := pw.Write([]byte("line1\nline2\n"))
 	if !errors.Is(err, writeErr) {
 		t.Errorf("error = %v, want %v", err, writeErr)
 	}

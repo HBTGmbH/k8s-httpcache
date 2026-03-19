@@ -2,6 +2,7 @@
 package config
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -408,6 +410,10 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 		rawBackendDebounce        = time.Duration(-1)
 		rawBackendDebounceMax     = time.Duration(-1)
 		rawDebounceLatencyBuckets string
+		rawVinyldPath             string
+		rawVinyladmPath           string
+		rawVinylstatPath          string
+		rawVinylncsaPath          string
 		parsed                    bool
 		actionErr                 error
 	)
@@ -497,29 +503,55 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Varnish paths
 			&cli.StringFlag{
 				Name:        "varnishd-path",
-				Category:    "Varnish paths:",
-				Usage:       "Path to varnishd binary",
+				Category:    "Cache binary paths:",
+				Usage:       "Path to varnishd binary (Varnish Cache)",
 				Value:       "varnishd",
 				Destination: &c.VarnishdPath,
 			},
 			&cli.StringFlag{
 				Name:        "varnishadm-path",
-				Category:    "Varnish paths:",
-				Usage:       "Path to varnishadm binary",
+				Category:    "Cache binary paths:",
+				Usage:       "Path to varnishadm binary (Varnish Cache)",
 				Value:       "varnishadm",
 				Destination: &c.VarnishadmPath,
 			},
 			&cli.StringFlag{
 				Name:        "varnishstat-path",
-				Category:    "Varnish paths:",
-				Usage:       "Path to varnishstat binary",
+				Category:    "Cache binary paths:",
+				Usage:       "Path to varnishstat binary (Varnish Cache)",
 				Value:       "varnishstat",
 				Destination: &c.VarnishstatPath,
 			},
+
+			// Vinyl Cache paths
+			&cli.StringFlag{
+				Name:        "vinyld-path",
+				Category:    "Cache binary paths:",
+				Usage:       "Path to vinyld binary (Vinyl Cache 9+; takes precedence over --varnishd-path)",
+				Destination: &rawVinyldPath,
+			},
+			&cli.StringFlag{
+				Name:        "vinyladm-path",
+				Category:    "Cache binary paths:",
+				Usage:       "Path to vinyladm binary (Vinyl Cache 9+; takes precedence over --varnishadm-path)",
+				Destination: &rawVinyladmPath,
+			},
+			&cli.StringFlag{
+				Name:        "vinylstat-path",
+				Category:    "Cache binary paths:",
+				Usage:       "Path to vinylstat binary (Vinyl Cache 9+; takes precedence over --varnishstat-path)",
+				Destination: &rawVinylstatPath,
+			},
+			&cli.StringFlag{
+				Name:        "vinylncsa-path",
+				Category:    "Cache binary paths:",
+				Usage:       "Path to vinylncsa binary (Vinyl Cache 9+; takes precedence over --varnishncsa-path)",
+				Destination: &rawVinylncsaPath,
+			},
 			&cli.DurationFlag{
 				Name:        "admin-timeout",
-				Category:    "Varnish paths:",
-				Usage:       "Max time to wait for the varnish admin CLI to become ready",
+				Category:    "Cache binary paths:",
+				Usage:       "Max time to wait for the cache admin CLI to become ready",
 				Value:       30 * time.Second,
 				Destination: &c.AdminTimeout,
 			},
@@ -612,14 +644,15 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Access logging
 			&cli.BoolFlag{
 				Name:        "varnishncsa-enabled",
+				Aliases:     []string{"vinylncsa-enabled"},
 				Category:    "Access logging:",
-				Usage:       "Enable varnishncsa access logging subprocess",
+				Usage:       "Enable access logging subprocess (varnishncsa / vinylncsa)",
 				Destination: &c.VarnishncsaEnabled,
 			},
 			&cli.StringFlag{
 				Name:        "varnishncsa-path",
 				Category:    "Access logging:",
-				Usage:       "Path to varnishncsa binary",
+				Usage:       "Path to varnishncsa binary (Varnish Cache)",
 				Value:       "varnishncsa",
 				Destination: &c.VarnishncsaPath,
 			},
@@ -1226,6 +1259,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 			c.ValuesDirs = []ValuesDirSpec(valuesDirs)
 
+			// Resolve cache binary paths.
+			// Priority per binary: explicit vinyl flag > explicit varnish flag > auto-detect.
+			// Auto-detect: if vinyld is found on PATH, use vinyl defaults; otherwise keep varnish defaults.
+			varnishExplicit := cmd.IsSet("varnishd-path") || cmd.IsSet("varnishadm-path") || cmd.IsSet("varnishstat-path") || cmd.IsSet("varnishncsa-path")
+			resolveBinaryPaths(c, rawVinyldPath, rawVinyladmPath, rawVinylstatPath, rawVinylncsaPath, varnishExplicit, exec.LookPath)
+
 			// Extra varnishd args (after --).
 			c.ExtraVarnishd = cmd.Args().Slice()
 
@@ -1245,6 +1284,45 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 	}
 
 	return c, nil
+}
+
+// resolveBinaryPaths determines the final cache binary paths to use.
+// varnishExplicit indicates that at least one --varnish*-path flag was
+// explicitly provided by the user (not just the default).
+// lookPathFn probes whether a binary name exists on PATH.
+//
+// Priority:
+//  1. Explicit vinyl flag (--vinyld-path, etc.) — always wins.
+//  2. Explicit varnish flag (--varnishd-path, etc.) — honoured; skips auto-detect.
+//  3. Auto-detect: if lookPathFn("vinyld") succeeds, use vinyl defaults; otherwise
+//     keep the varnish defaults.
+func resolveBinaryPaths(c *Config, vinyldPath, vinyladmPath, vinylstatPath, vinylncsaPath string, varnishExplicit bool, lookPathFn func(string) (string, error)) {
+	vinylSet := vinyldPath != "" || vinyladmPath != "" || vinylstatPath != "" || vinylncsaPath != ""
+
+	if vinylSet {
+		// Use explicit vinyl paths, defaulting to standard vinyl binary names for unset ones.
+		c.VarnishdPath = cmp.Or(vinyldPath, "vinyld")
+		c.VarnishadmPath = cmp.Or(vinyladmPath, "vinyladm")
+		c.VarnishstatPath = cmp.Or(vinylstatPath, "vinylstat")
+		c.VarnishncsaPath = cmp.Or(vinylncsaPath, "vinylncsa")
+
+		return
+	}
+
+	if varnishExplicit {
+		// User explicitly set --varnish*-path; honour their choice.
+		return
+	}
+
+	// Auto-detect: prefer Vinyl Cache if vinyld is found on PATH.
+	_, err := lookPathFn("vinyld")
+	if err == nil {
+		c.VarnishdPath = "vinyld"
+		c.VarnishadmPath = "vinyladm"
+		c.VarnishstatPath = "vinylstat"
+		c.VarnishncsaPath = "vinylncsa"
+	}
+	// Otherwise keep varnish defaults from Destination binding.
 }
 
 // parseBackendSelector parses a --backend-selector value of the form

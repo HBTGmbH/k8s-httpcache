@@ -92,7 +92,7 @@ spec:
             - --service-name={{ default (include "k8s-httpcache.fullname" .) .Values.serviceName }}
             - --namespace={{ default "$(NAMESPACE)" .Values.namespace }}
             - --vcl-template={{ .Values.vclTemplate }}
-            {{- /* --- Varnish paths --- */}}
+            {{- /* --- Cache binary paths --- */}}
             {{- with .Values.varnish.varnishdPath }}
             - --varnishd-path={{ . }}
             {{- end }}
@@ -101,6 +101,18 @@ spec:
             {{- end }}
             {{- with .Values.varnish.varnishstatPath }}
             - --varnishstat-path={{ . }}
+            {{- end }}
+            {{- with .Values.vinyl.vinyldPath }}
+            - --vinyld-path={{ . }}
+            {{- end }}
+            {{- with .Values.vinyl.vinyladmPath }}
+            - --vinyladm-path={{ . }}
+            {{- end }}
+            {{- with .Values.vinyl.vinylstatPath }}
+            - --vinylstat-path={{ . }}
+            {{- end }}
+            {{- with .Values.vinyl.vinylncsaPath }}
+            - --vinylncsa-path={{ . }}
             {{- end }}
             {{- with .Values.varnish.adminTimeout }}
             - --admin-timeout={{ . }}
