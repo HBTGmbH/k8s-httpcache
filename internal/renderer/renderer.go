@@ -4,6 +4,7 @@ package renderer
 import (
 	"bytes"
 	"fmt"
+	"k8s-httpcache/internal/watcher"
 	"os"
 	"regexp"
 	"slices"
@@ -13,8 +14,6 @@ import (
 	"github.com/Masterminds/sprig/v3"
 	"github.com/go-sprout/sprout"
 	"github.com/go-sprout/sprout/group/all"
-
-	"k8s-httpcache/internal/watcher"
 )
 
 // BackendGroup holds all data for a single backend group, exposed to VCL templates.

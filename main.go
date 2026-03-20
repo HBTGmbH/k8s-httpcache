@@ -9,6 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"k8s-httpcache/internal/broadcast"
+	"k8s-httpcache/internal/config"
+	"k8s-httpcache/internal/redact"
+	"k8s-httpcache/internal/renderer"
+	"k8s-httpcache/internal/telemetry"
+	"k8s-httpcache/internal/varnish"
+	"k8s-httpcache/internal/watcher"
 	"log"
 	"log/slog"
 	"maps"
@@ -37,14 +44,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
-
-	"k8s-httpcache/internal/broadcast"
-	"k8s-httpcache/internal/config"
-	"k8s-httpcache/internal/redact"
-	"k8s-httpcache/internal/renderer"
-	"k8s-httpcache/internal/telemetry"
-	"k8s-httpcache/internal/varnish"
-	"k8s-httpcache/internal/watcher"
 )
 
 // version is set at build time via -ldflags.

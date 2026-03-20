@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"k8s-httpcache/internal/telemetry"
+	"k8s-httpcache/internal/watcher"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,9 +16,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-
-	"k8s-httpcache/internal/telemetry"
-	"k8s-httpcache/internal/watcher"
 )
 
 // errorReader is an io.Reader that always returns an error.
@@ -256,7 +255,7 @@ func TestMethodAndHeadersPreserved(t *testing.T) {
 func TestRequestBodyForwarded(t *testing.T) {
 	t.Parallel()
 	var bodies []string
-	var mu = &sync.Mutex{}
+	mu := &sync.Mutex{}
 
 	makeBackend := func() *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"k8s-httpcache/internal/redact"
+	"k8s-httpcache/internal/telemetry"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -17,9 +19,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-
-	"k8s-httpcache/internal/redact"
-	"k8s-httpcache/internal/telemetry"
 )
 
 // --- mock types ---

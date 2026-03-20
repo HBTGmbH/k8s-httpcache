@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"k8s-httpcache/internal/redact"
+	"k8s-httpcache/internal/telemetry"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -20,9 +22,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"k8s-httpcache/internal/redact"
-	"k8s-httpcache/internal/telemetry"
 )
 
 var (

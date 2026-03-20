@@ -7,6 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"k8s-httpcache/internal/config"
+	"k8s-httpcache/internal/redact"
+	"k8s-httpcache/internal/renderer"
+	"k8s-httpcache/internal/telemetry"
+	"k8s-httpcache/internal/varnish"
+	"k8s-httpcache/internal/watcher"
 	"log/slog"
 	"maps"
 	"net"
@@ -30,13 +36,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
-
-	"k8s-httpcache/internal/config"
-	"k8s-httpcache/internal/redact"
-	"k8s-httpcache/internal/renderer"
-	"k8s-httpcache/internal/telemetry"
-	"k8s-httpcache/internal/varnish"
-	"k8s-httpcache/internal/watcher"
 )
 
 func TestBackendChanNil(t *testing.T) {

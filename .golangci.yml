@@ -2,7 +2,7 @@ version: "2"
 
 formatters:
   enable:
-    - gofmt
+    - gofumpt
 
 linters:
   default: standard  # govet, staticcheck, ineffassign, unused (made explicit)

@@ -1,13 +1,13 @@
 package renderer
 
 import (
+	"k8s-httpcache/internal/watcher"
 	"os"
 	"strings"
 	"testing"
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
-	"k8s-httpcache/internal/watcher"
 )
 
 func writeTempTemplate(t *testing.T, content string) string {
