@@ -163,7 +163,7 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 	defer func() { _ = os.Remove(path) }()
 	_ = f.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	ch := watchFile(ctx, path, 50*time.Millisecond)
 
 	// Cancel the context immediately.
@@ -733,7 +733,7 @@ func TestRunLoop_SecretsUpdateUpdatesRedactor(t *testing.T) {
 
 	rd := redact.NewRedactor()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	lc := h.loopConfig(h.bcast)
 	lc.redactor = rd
 	var code atomic.Int32
@@ -794,7 +794,7 @@ func TestRunLoop_ReloadErrorRedactsSecretsInEvent(t *testing.T) {
 		return errors.New("vcl.load: exit status 1: VCL error near " + secret)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	lc := h.loopConfig(h.bcast)
 	lc.redactor = rd
 	var code atomic.Int32
@@ -1065,7 +1065,7 @@ func TestRunLoop_RollbackReloadError(t *testing.T) {
 func TestRunLoop_SignalShutdown(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1103,7 +1103,7 @@ func TestRunLoop_VarnishdUnexpectedExit(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	h.mgr.err = errors.New("crashed")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1252,7 +1252,7 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 func TestRunLoop_ShutdownTimeout(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1289,7 +1289,7 @@ func TestRunLoop_SignalShutdownVarnishError(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	h.mgr.err = errors.New("exit status 1")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1312,7 +1312,7 @@ func TestRunLoop_SignalShutdownVarnishError(t *testing.T) {
 func TestRunLoop_DebounceCoalescing(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1448,7 +1448,7 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	// bcast is nil — should not panic.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1491,7 +1491,7 @@ func TestRunLoop_DrainOnShutdown(t *testing.T) {
 
 		return 0, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1543,7 +1543,7 @@ func TestRunLoop_DrainOnShutdown(t *testing.T) {
 func TestRunLoop_DrainSkippedWhenDisabled(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1585,7 +1585,7 @@ func TestRunLoop_DrainInterruptedBySecondSignal(t *testing.T) {
 	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 10, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1624,7 +1624,7 @@ func TestRunLoop_DrainMarkSickError(t *testing.T) {
 	h.mgr.markBackendFn = func(_ string) error {
 		return errors.New("backend not found")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1671,7 +1671,7 @@ func TestRunLoop_DrainMarkSickErrorContinuesDrain(t *testing.T) {
 
 		return 0, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1707,7 +1707,7 @@ func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
 	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 42, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1752,7 +1752,7 @@ func TestRunLoop_DrainSecondSignalDuringPolling(t *testing.T) {
 	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 10, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1801,7 +1801,7 @@ func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
 		// Third poll succeeds with 0 sessions.
 		return 0, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1839,7 +1839,7 @@ func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
 
 		return 0, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -1960,7 +1960,7 @@ func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 	// nobody sends to, so the select case never fires.
 
 	// Set up the loop manually so we can seed latestValues.
-	ctxLoop, cancel := context.WithCancel(context.Background())
+	ctxLoop, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2052,7 +2052,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 	// Do NOT wire fvw.Changes() into valuesCh — simulates --file-watch=false.
 
 	// Set up loop manually to seed latestValues with initial directory state.
-	ctxLoop, cancel := context.WithCancel(context.Background())
+	ctxLoop, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2120,7 +2120,7 @@ func TestDrainBackendForLoop(t *testing.T) {
 func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2154,7 +2154,7 @@ func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2193,7 +2193,7 @@ func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
 func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2235,7 +2235,7 @@ func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 func testDebounceMaxForced(t *testing.T, frontendDebounce, frontendDebounceMax, backendDebounce, backendDebounceMax time.Duration) {
 	t.Helper()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2293,7 +2293,7 @@ func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
 func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2346,7 +2346,7 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2432,7 +2432,7 @@ func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := newTestHarness()
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(t.Context())
 			var code atomic.Int32
 			code.Store(-1)
 			done := make(chan struct{})
@@ -2481,7 +2481,7 @@ func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
 func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2537,7 +2537,7 @@ func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
 func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2585,7 +2585,7 @@ func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
 func TestRunLoop_CrossGroupClearOnReload(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2630,7 +2630,7 @@ func TestRunLoop_IndependentDebounceMaxGroups(t *testing.T) {
 func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2710,7 +2710,7 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2758,7 +2758,7 @@ func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
 func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2941,7 +2941,7 @@ func TestResetDebounce_CappedFalseWhenNotConstrained(t *testing.T) {
 func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -2997,7 +2997,7 @@ func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -3046,7 +3046,7 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -3077,7 +3077,7 @@ func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -3124,7 +3124,7 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -3927,7 +3927,7 @@ func TestRunLoop_EventVarnishdExited(t *testing.T) {
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.mgr.err = errors.New("crashed")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -3960,7 +3960,7 @@ func TestRunLoop_EventDrainStartedAndCompleted(t *testing.T) {
 
 		return 0, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -3996,7 +3996,7 @@ func TestRunLoop_EventDrainTimeout(t *testing.T) {
 	h.mgr.activeSessionsFn = func() (uint64, error) {
 		return 42, nil // sessions never clear
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -4052,7 +4052,7 @@ func TestRunLoop_DrainSecondSignalDuringDelay(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	rec := h.withRecorder()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -4100,7 +4100,7 @@ func TestWatchFileContextCancelDuringPoll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	ch := watchFile(ctx, path, 10*time.Millisecond)
 
 	// Let the goroutine enter the polling loop and tick at least once.
@@ -4631,7 +4631,7 @@ func TestRunLoop_StatusStoreUpdatedOnReload(t *testing.T) {
 		varnishdUp:    true,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -4678,7 +4678,7 @@ func TestRunLoop_StatusStoreVarnishdDown(t *testing.T) {
 		varnishdUp:    true,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -4711,7 +4711,7 @@ func TestRunLoop_StatusStoreBackendCounts(t *testing.T) {
 		varnishdUp:    true,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -4767,7 +4767,7 @@ func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
 		varnishdUp:    true,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -4810,7 +4810,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
 		varnishdUp:    true,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -4863,7 +4863,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
 		varnishdUp:    true,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5017,7 +5017,7 @@ func TestRunLoop_NCSAEventEmitsKubeEvent(t *testing.T) {
 	rec := h.withRecorder()
 	ncsaCh := make(chan varnish.NCSAEvent, 1)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5084,7 +5084,7 @@ func TestRunLoop_NCSACrashLoopExitsWithError(t *testing.T) {
 
 	ncsaCrashed := make(chan struct{})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5124,7 +5124,7 @@ func TestRunLoop_StopNCSACalledOnShutdown(t *testing.T) {
 	h := newTestHarness()
 
 	var stopCalled atomic.Bool
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5149,7 +5149,7 @@ func TestRunLoop_StopNCSANilOnShutdown(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5341,7 +5341,7 @@ func TestRunLoop_ExplicitBackendLabelsSeededAtStartup(t *testing.T) {
 
 	// Pre-seed latestBackends with labels for an explicit backend,
 	// simulating the initial seed from bw.Labels() at startup (main.go:598).
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5394,7 +5394,7 @@ func TestRunLoop_ExplicitBackendAnnotationsSeededAtStartup(t *testing.T) {
 
 	// Pre-seed latestBackends with annotations for an explicit backend,
 	// simulating the initial seed from bw.Annotations() at startup.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5496,7 +5496,7 @@ func TestRunLoop_BackendAnnotationsFilteredSeededAtStartup(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})
@@ -5565,7 +5565,7 @@ func TestRunLoop_SkipsReloadWhenVCLUnchanged(t *testing.T) {
 	skippedBefore := getCounterValue(t, "skipped", h.metrics.VCLReloadsTotal)
 
 	// Pre-populate lastVCLHash so the first render matches.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
 	done := make(chan struct{})

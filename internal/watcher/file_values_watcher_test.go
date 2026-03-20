@@ -243,7 +243,7 @@ func TestFileValuesWatcherStopsOnContextCancel(t *testing.T) {
 	writeYAML(t, dir, "key.yaml", "value")
 
 	w := NewFileValuesWatcher(dir, 50*time.Millisecond)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
 	go func() {

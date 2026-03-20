@@ -702,7 +702,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	t.Parallel()
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
 	go func() {

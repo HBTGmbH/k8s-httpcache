@@ -129,6 +129,27 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    copyloopvar:
+      check-alias: true
+    embeddedstructfieldcheck:
+      forbid-mutex: true         # embedded mutexes leak lock/unlock into the API surface
+    errchkjson:
+      check-error-free-encoding: true
+    fatcontext:
+      check-struct-pointers: true
+    nonamedreturns:
+      report-error-in-defer: true
+    perfsprint:
+      err-error: true            # prefer err.Error() over fmt.Sprintf("%s", err)
+    usestdlibvars:
+      time-weekday: true
+      time-month: true
+      time-layout: true
+      crypto-hash: true
+    usetesting:
+      context-background: true   # use t.Context() instead of context.Background()
+      context-todo: true         # use t.Context() instead of context.TODO()
+      os-temp-dir: true          # use t.TempDir() instead of os.TempDir()
     revive:
       enable-all-rules: true
       rules:

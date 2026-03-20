@@ -196,7 +196,7 @@ func TestConfigMapWatcherStopsOnContextCancel(t *testing.T) {
 	clientset := fake.NewClientset(cm)
 	w := NewConfigMapWatcher(clientset, "default", "my-cm")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
 	go func() {

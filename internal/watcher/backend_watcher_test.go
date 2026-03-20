@@ -490,7 +490,7 @@ func TestBackendWatcherStopsOnContextCancel(t *testing.T) {
 	clientset := fake.NewClientset(svc)
 	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
 	go func() {
