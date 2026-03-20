@@ -36,7 +36,7 @@ A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) w
 - Cross-namespace backends and values via `namespace/service` syntax
 - All [Sprig](http://masterminds.github.io/sprig/) template functions available in VCL templates (including [`env`](http://masterminds.github.io/sprig/os.html) for environment variables), with optional [Sprout](https://docs.atom.codes/sprout) support via `--template-funcs=sprout`
   - https://github.com/mittwald/kube-httpcache/issues/53
-- Supports both [Varnish Cache](https://varnish-cache.org/) and [Vinyl Cache](https://vinyl-cache.org/) (9+) with [automatic detection](#varnish-cache-vs-vinyl-cache) and configurable binary paths
+- Supports both [Varnish Cache](https://varnish-cache.org/) and [Vinyl Cache](https://vinyl-cache.org/) with [automatic detection](#varnish-cache-vs-vinyl-cache) and configurable binary paths
 - Structured logging with configurable format (text/json) and log level
 - [Kubernetes Events](#kubernetes-events) for VCL reloads, template changes, rollbacks, drain lifecycle, and varnishd crashes — visible via `kubectl describe pod` and `kubectl get events`
 - [Discarding old VCL objects](#vcl-retention) after reload and keep the most recent `N` object (`--vcl-kept=N`), to avoid unbounded Varnish memory usage with every successive VCL reload
@@ -115,10 +115,10 @@ These flags control which cache binaries k8s-httpcache uses. See [Varnish Cache 
 | `--varnishd-path` | `varnishd` | Path to varnishd binary (Varnish Cache) |
 | `--varnishadm-path` | `varnishadm` | Path to varnishadm binary (Varnish Cache) |
 | `--varnishstat-path` | `varnishstat` | Path to varnishstat binary (Varnish Cache) |
-| `--vinyld-path` | | Path to vinyld binary (Vinyl Cache 9+; takes precedence over `--varnishd-path`) |
-| `--vinyladm-path` | | Path to vinyladm binary (Vinyl Cache 9+; takes precedence over `--varnishadm-path`) |
-| `--vinylstat-path` | | Path to vinylstat binary (Vinyl Cache 9+; takes precedence over `--varnishstat-path`) |
-| `--vinylncsa-path` | | Path to vinylncsa binary (Vinyl Cache 9+; takes precedence over `--varnishncsa-path`) |
+| `--vinyld-path` | | Path to vinyld binary (Vinyl Cache; takes precedence over `--varnishd-path`) |
+| `--vinyladm-path` | | Path to vinyladm binary (Vinyl Cache; takes precedence over `--varnishadm-path`) |
+| `--vinylstat-path` | | Path to vinylstat binary (Vinyl Cache; takes precedence over `--varnishstat-path`) |
+| `--vinylncsa-path` | | Path to vinylncsa binary (Vinyl Cache; takes precedence over `--varnishncsa-path`) |
 | `--admin-timeout` | `30s` | Max time to wait for the cache admin CLI to become ready |
 
 ### Broadcast flags
@@ -273,7 +273,7 @@ Both endpoints are available whenever the metrics server is enabled (the default
 |------|---------|-------------|
 | `--varnishncsa-enabled` | `false` | Enable managed access logging subprocess (see [Access logging](#access-logging)). Alias: `--vinylncsa-enabled`. |
 | `--varnishncsa-path` | `varnishncsa` | Path to `varnishncsa` binary (Varnish Cache). For Vinyl Cache, use `--vinylncsa-path` instead. |
-| `--varnishncsa-format` | *(Combined)* | Custom log format string (passed as `-F`); see `varnishncsa(1)`. Note: Vinyl Cache 9+ uses `%{Vinyl:...}x` instead of `%{Varnish:...}x`. |
+| `--varnishncsa-format` | *(Combined)* | Custom log format string (passed as `-F`); see `varnishncsa(1)`. Note: Vinyl Cache uses `%{Vinyl:...}x` instead of `%{Varnish:...}x`. |
 | `--varnishncsa-query` | *(all)* | VSL query expression (passed as `-q`) to filter which requests are logged |
 | `--varnishncsa-backend` | `false` | Log backend (fetch) requests instead of client requests (passes `-b`) |
 | `--varnishncsa-output` | *(stdout)* | Output file path (passed as `-w`); default writes to stdout |
@@ -417,9 +417,9 @@ k8s-httpcache \
 
 ### Varnish Cache vs Vinyl Cache
 
-k8s-httpcache supports both [Varnish Cache](https://varnish-cache.org/) (versions 6, 7, 8, and trunk) and [Vinyl Cache](https://vinyl-cache.org/) (9+, the successor to Varnish Cache). Vinyl Cache 9.0 renamed all executables from `varnish*` to `vinyl*`:
+k8s-httpcache supports both [Varnish Cache](https://varnish-cache.org/) (versions 6, 7, 8, 9 and trunk) as well as the new [Vinyl Cache](https://vinyl-cache.org/). Compared to Varnish Cache, Vinyl Cache renamed all executables from `varnish*` to `vinyl*`:
 
-| Varnish Cache | Vinyl Cache 9+ |
+| Varnish Cache | Vinyl Cache |
 |---------------|----------------|
 | `varnishd` | `vinyld` |
 | `varnishadm` | `vinyladm` |
@@ -455,7 +455,7 @@ Varnish 6 also does not default to `/var/lib/varnish` as working directory. You 
 -- -n /var/lib/varnish
 ```
 
-> **Note:** Vinyl Cache 9+ does not have the wrapper-script issue described above.
+> **Note:** Vinyl Cache does not have the wrapper-script issue described above.
 
 ## Backend specification
 
@@ -1076,7 +1076,7 @@ Use a custom format showing cache hit/miss:
 # Varnish Cache
 k8s-httpcache --varnishncsa-enabled --varnishncsa-format='%h %s %{Varnish:hitmiss}x %U'
 
-# Vinyl Cache 9+ (renamed format tag)
+# Vinyl Cache (renamed format tag)
 k8s-httpcache --vinylncsa-enabled --varnishncsa-format='%h %s %{Vinyl:hitmiss}x %U'
 ```
 
