@@ -9,7 +9,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/urfave/cli/v3 v3.7.0
 	k8s.io/api v0.35.2
-	k8s.io/apimachinery v0.35.2
+	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.2
 	sigs.k8s.io/yaml v1.6.0
 )
