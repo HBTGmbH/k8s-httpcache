@@ -62,7 +62,7 @@ jobs:
       with:
         go-version-file: go.mod
     - name: Restore gotestsum
-      uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       id: gotestsum
       with:
         path: ~/go/bin/gotestsum
@@ -74,7 +74,7 @@ jobs:
           | tar -xz -C ~/go/bin gotestsum
     - name: Save gotestsum
       if: steps.gotestsum.outputs.cache-hit != 'true'
-      uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       with:
         path: ~/go/bin/gotestsum
         key: gotestsum-1.13.0-linux-amd64
@@ -127,7 +127,7 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.go == 'true' ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       id: analysis-tools
       with:
         path: |
@@ -149,7 +149,7 @@ jobs:
         needs.changes.outputs.go == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.analysis-tools.outputs.cache-hit != 'true'
-      uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       with:
         path: |
           ~/go/bin/govulncheck
@@ -179,7 +179,7 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       id: markdownlint
       with:
         path: ~/markdownlint
@@ -197,7 +197,7 @@ jobs:
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.markdownlint.outputs.cache-hit != 'true'
-      uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       with:
         path: ~/markdownlint
         key: markdownlint-cli2-0.21.0
@@ -231,7 +231,7 @@ jobs:
         fi
     - name: Cache binaries
       id: cache
-      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # zizmor: ignore[cache-poisoning] v5.0.3
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # zizmor: ignore[cache-poisoning] v5.0.4
       with:
         path: k8s-httpcache-linux-*
         key: binaries-${{ steps.version.outputs.value }}-${{ hashFiles('**/*.go', 'go.mod', 'go.sum') }}
@@ -285,7 +285,7 @@ jobs:
       with:
         name: binaries
     - name: Restore test tools
-      uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       id: test-tools
       with:
         path: ~/tools
@@ -301,7 +301,7 @@ jobs:
         chmod +x ~/tools/oha
     - name: Save test tools
       if: steps.test-tools.outputs.cache-hit != 'true'
-      uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       with:
         path: ~/tools
         key: test-tools-hurl-7.1.0-oha-1.13.0
