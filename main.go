@@ -1300,7 +1300,7 @@ func detectLocalZone(logger *slog.Logger, clientset kubernetes.Interface, nodeNa
 	return zone
 }
 
-func buildClientset() (kubernetes.Interface, error) {
+func buildClientset() (kubernetes.Interface, error) { //nolint:ireturn // returns interface to allow test injection
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		// Fall back to kubeconfig.

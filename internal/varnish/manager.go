@@ -132,7 +132,7 @@ type execRunner struct {
 	stderr io.Writer
 }
 
-func (r execRunner) start(name string, args []string) (proc, error) {
+func (r execRunner) start(name string, args []string) (proc, error) { //nolint:ireturn // returns unexported interface as DI seam for testing
 	cmd := exec.Command(name, args...) //nolint:gosec,noctx // G702: paths from CLI flags, not runtime input; noctx: cancelled via SIGTERM.
 	cmd.Stdout = r.stdout
 	cmd.Stderr = r.stderr
