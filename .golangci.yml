@@ -116,17 +116,31 @@ linters:
           msg: use slog for structured logging
         - pattern: '^print(ln)?$'
           msg: use slog for structured logging
+    godoclint:
+      enable:
+        - no-unused-link
+        - require-stdlib-doclink
+    predeclared:
+      qualified-name: true
     gocritic:
       enable-all: true
       disabled-checks:
         - unnamedResult  # conflicts with nonamedreturns linter
     exhaustive:
       default-signifies-exhaustive: true
+    loggercheck:
+      kitlog: false
+      zap: false
+      require-string-key: true
+      no-printf-like: true
     gosec:
       excludes:
         - G104  # redundant with errcheck
         - G204  # subprocess launch is core functionality
         - G304  # file reading by variable path is core functionality
+      config:
+        global:
+          audit: true
     nolintlint:
       require-explanation: true
       require-specific: true

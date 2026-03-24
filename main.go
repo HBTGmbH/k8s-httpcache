@@ -1231,7 +1231,7 @@ func emitEvent(lc *loopConfig, eventType, reason, message string) {
 	}
 }
 
-// warnOnceEventSink wraps a record.EventSink and logs a single slog.Warn
+// warnOnceEventSink wraps a record.EventSink and logs a single [slog.Warn]
 // on the first Forbidden (RBAC) error, then stays quiet for subsequent errors.
 type warnOnceEventSink struct {
 	inner  record.EventSink

@@ -450,7 +450,7 @@ func (h *testHarness) loopConfig(bcast broadcaster) *loopConfig {
 }
 
 // waitForStatus polls the status store until check returns true, or fails
-// the test after 2 seconds. Use this instead of a fixed time.Sleep when
+// the test after 2 seconds. Use this instead of a fixed [time.Sleep] when
 // asserting that a reload (or other async event) has updated the store.
 func waitForStatus(t *testing.T, store *statusStore, check func(statusResponse) bool) {
 	t.Helper()

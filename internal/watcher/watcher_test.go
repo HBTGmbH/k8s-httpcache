@@ -201,42 +201,42 @@ func TestDiffEndpoints(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
-		old, new    []Endpoint
+		old, cur    []Endpoint
 		wantAdded   []Endpoint
 		wantRemoved []Endpoint
 	}{
 		{
 			name:        "no change",
 			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			new:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
+			cur:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
 			wantAdded:   nil,
 			wantRemoved: nil,
 		},
 		{
 			name:        "add one",
 			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			new:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}, {IP: "10.0.0.2", Port: 80, Name: "b"}},
+			cur:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}, {IP: "10.0.0.2", Port: 80, Name: "b"}},
 			wantAdded:   []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
 			wantRemoved: nil,
 		},
 		{
 			name:        "remove one",
 			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}, {IP: "10.0.0.2", Port: 80, Name: "b"}},
-			new:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
+			cur:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
 			wantAdded:   nil,
 			wantRemoved: []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
 		},
 		{
 			name:        "replace",
 			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			new:         []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
+			cur:         []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
 			wantAdded:   []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
 			wantRemoved: []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
 		},
 		{
 			name:        "both nil",
 			old:         nil,
-			new:         nil,
+			cur:         nil,
 			wantAdded:   nil,
 			wantRemoved: nil,
 		},
@@ -245,7 +245,7 @@ func TestDiffEndpoints(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			added, removed := diffEndpoints(tt.old, tt.new)
+			added, removed := diffEndpoints(tt.old, tt.cur)
 			if !EndpointsEqual(added, tt.wantAdded) {
 				t.Errorf("added = %v, want %v", added, tt.wantAdded)
 			}

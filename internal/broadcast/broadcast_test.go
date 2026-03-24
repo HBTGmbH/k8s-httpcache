@@ -18,7 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// errorReader is an io.Reader that always returns an error.
+// errorReader is an [io.Reader] that always returns an error.
 type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) {

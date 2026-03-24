@@ -51,7 +51,7 @@ type NCSAEvent struct {
 	Message string
 }
 
-// prefixWriter wraps an io.Writer and prepends a fixed prefix to every line.
+// prefixWriter wraps an [io.Writer] and prepends a fixed prefix to every line.
 // It buffers partial lines so the prefix appears exactly once at the start of
 // each newline-terminated line, even when Write is called with fragments.
 //
@@ -152,7 +152,7 @@ func (execRunner) run(name string, args []string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// execProc wraps an exec.Cmd as a proc.
+// execProc wraps an [exec.Cmd] as a proc.
 type execProc struct{ cmd *exec.Cmd }
 
 func (p *execProc) Wait() error                { return p.cmd.Wait() }              //nolint:wrapcheck // interface impl delegates to exec.Cmd

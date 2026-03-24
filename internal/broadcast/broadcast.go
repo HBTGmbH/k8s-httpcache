@@ -219,7 +219,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// connState tracks active client connections via the http.Server callback.
+// connState tracks active client connections via the [http.Server] callback.
 func (s *Server) connState(_ net.Conn, state http.ConnState) {
 	switch state {
 	case http.StateNew:

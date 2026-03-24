@@ -16,7 +16,7 @@ const minSecretLen = 6
 // placeholder is the replacement text for redacted values.
 const placeholder = "[REDACTED]"
 
-// Redactor maintains a thread-safe strings.Replacer built from secret values.
+// Redactor maintains a thread-safe [strings.Replacer] built from secret values.
 type Redactor struct {
 	mu       sync.RWMutex
 	replacer *strings.Replacer
@@ -74,7 +74,7 @@ func (r *Redactor) Redact(s string) string {
 	return repl.Replace(s)
 }
 
-// Writer returns an io.Writer that redacts each Write through w.
+// Writer returns an [io.Writer] that redacts each Write through w.
 func (r *Redactor) Writer(w io.Writer) io.Writer {
 	return &redactingWriter{redactor: r, inner: w}
 }

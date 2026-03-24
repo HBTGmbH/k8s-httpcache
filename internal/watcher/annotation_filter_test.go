@@ -127,7 +127,7 @@ func TestFilterAnnotations_NilAnnotations(t *testing.T) {
 }
 
 // TestBuildAnnotationFilter_CombinedDefaultAndUser simulates the pattern used
-// in main.go: slices.Concat(DefaultExcludeAnnotations, userPatterns).
+// in main.go: [slices.Concat](DefaultExcludeAnnotations, userPatterns).
 func TestBuildAnnotationFilter_CombinedDefaultAndUser(t *testing.T) {
 	t.Parallel()
 

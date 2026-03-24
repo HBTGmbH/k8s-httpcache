@@ -3089,7 +3089,7 @@ func TestMarkBackendSickRedactsResponse(t *testing.T) {
 // --- varnishd stdout/stderr: pipe-based simulation ---
 
 // TestVarnishdOutputRedactedViaPipe simulates the exact mechanism that
-// exec.Command uses to deliver subprocess output: a pipe is read in chunks
+// [exec.Command] uses to deliver subprocess output: a pipe is read in chunks
 // and each chunk is written to cmd.Stdout/cmd.Stderr (our redactingWriter).
 // This proves that multi-line varnishd output with secrets is fully redacted.
 func TestVarnishdOutputRedactedViaPipe(t *testing.T) {

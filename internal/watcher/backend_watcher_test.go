@@ -15,7 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// syncBuffer is a goroutine-safe wrapper around bytes.Buffer for use
+// syncBuffer is a goroutine-safe wrapper around [bytes.Buffer] for use
 // with per-instance loggers in tests where multiple goroutines may
 // write concurrently.
 type syncBuffer struct {
@@ -1531,7 +1531,7 @@ func TestBackendWatcher_ExcludedOnlyAnnotationChangeSkipsResend(t *testing.T) {
 }
 
 // TestBackendWatcher_ExcludeAnnotationsCombinedDefaultAndUser tests the pattern
-// used in main.go: slices.Concat(DefaultExcludeAnnotations, userPatterns).
+// used in main.go: [slices.Concat](DefaultExcludeAnnotations, userPatterns).
 func TestBackendWatcher_ExcludeAnnotationsCombinedDefaultAndUser(t *testing.T) {
 	t.Parallel()
 

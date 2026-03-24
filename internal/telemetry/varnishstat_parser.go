@@ -266,7 +266,7 @@ func (s *jsonScanner) skipLiteral(lit string) error {
 
 // unescapeJSONString handles all JSON escape sequences including \uXXXX
 // surrogate pairs. Only called when scanString detects a backslash.
-// Uses strings.Builder whose String() method is zero-copy.
+// Uses [strings.Builder] whose String() method is zero-copy.
 func unescapeJSONString(raw string) string {
 	var buf strings.Builder
 	buf.Grow(len(raw))

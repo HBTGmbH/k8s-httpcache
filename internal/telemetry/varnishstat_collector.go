@@ -237,7 +237,7 @@ func isStaleBackendCounter(counterName, latestReload string) bool {
 
 // lowerGroup maps a raw uppercase group name (e.g. "MAIN", "VBE") to its
 // lowercase Prometheus equivalent. Known groups are handled via a switch to
-// avoid allocating a new string from strings.ToLower on every call.
+// avoid allocating a new string from [strings.ToLower] on every call.
 func lowerGroup(upper string) string {
 	switch upper {
 	case "MAIN":
