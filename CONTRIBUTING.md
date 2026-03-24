@@ -8,6 +8,8 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [Docker](https://docs.docker.com/get-docker/)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [golangci-lint](https://golangci-lint.run/welcome/install/)
+- [hadolint](https://github.com/hadolint/hadolint) for Dockerfile linting
+- [Helm](https://helm.sh/docs/intro/install/) for chart linting
 - [hurl](https://hurl.dev/) for E2E test assertions
 - A Kubernetes cluster for E2E testing (the CI uses [kind](https://kind.sigs.k8s.io/))
 - [curl](https://curl.se/) for HTTP assertions in E2E tests
@@ -64,6 +66,13 @@ YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config 
 yamllint --strict .
 shellcheck .github/test/*.sh
 npx --yes markdownlint-cli2 "**/*.md"
+```
+
+Dockerfiles are linted with [hadolint](https://github.com/hadolint/hadolint) and the Helm chart with `helm lint`:
+
+```bash
+hadolint .github/build/Dockerfile .github/test/*/Dockerfile
+helm lint --strict charts/k8s-httpcache
 ```
 
 The CI also runs [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) and [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode) detection:

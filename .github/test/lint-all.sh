@@ -25,4 +25,10 @@ deadcode -test ./...
 echo "=== actionlint ==="
 actionlint
 
+echo "=== hadolint ==="
+hadolint .github/build/Dockerfile .github/test/*/Dockerfile
+
+echo "=== helm lint ==="
+helm lint --strict charts/k8s-httpcache
+
 echo "All linting checks passed."

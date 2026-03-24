@@ -21,6 +21,8 @@ jobs:
       go: ${{ steps.filter.outputs.go }}
       src: ${{ steps.filter.outputs.src }}
       ci: ${{ steps.filter.outputs.ci }}
+      helm: ${{ steps.filter.outputs.helm }}
+      yaml: ${{ steps.filter.outputs.yaml }}
       md: ${{ steps.filter.outputs.md }}
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -35,12 +37,17 @@ jobs:
             - '**/*.go'
             - 'go.mod'
             - 'go.sum'
+            - '.golangci.yml'
           src:
             - '**/!(*_test).go'
             - 'go.mod'
             - 'go.sum'
           ci:
             - '.github/**'
+          helm:
+            - 'charts/**'
+          yaml:
+            - '.yamllint.yml'
           md:
             - '**/*.md'
             - '.markdownlint-cli2.yaml'
@@ -101,6 +108,8 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       needs.changes.outputs.go == 'true' ||
       needs.changes.outputs.ci == 'true' ||
+      needs.changes.outputs.helm == 'true' ||
+      needs.changes.outputs.yaml == 'true' ||
       needs.changes.outputs.md == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -133,7 +142,7 @@ jobs:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.1.4-deadcode-0.42.0
+        key: analysis-tools-govulncheck-1.1.4-deadcode-0.43.0
     - name: Install analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -142,7 +151,7 @@ jobs:
         steps.analysis-tools.outputs.cache-hit != 'true'
       run: |
         go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
-        go install golang.org/x/tools/cmd/deadcode@v0.42.0
+        go install golang.org/x/tools/cmd/deadcode@v0.43.0
     - name: Save analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -154,7 +163,7 @@ jobs:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.1.4-deadcode-0.42.0
+        key: analysis-tools-govulncheck-1.1.4-deadcode-0.43.0
     - name: Run govulncheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -183,14 +192,14 @@ jobs:
       id: markdownlint
       with:
         path: ~/markdownlint
-        key: markdownlint-cli2-0.21.0
+        key: markdownlint-cli2-0.22.0
     - name: Install markdownlint-cli2
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.markdownlint.outputs.cache-hit != 'true'
-      run: npm install --prefix ~/markdownlint markdownlint-cli2@0.21.0
+      run: npm install --prefix ~/markdownlint markdownlint-cli2@0.22.0
     - name: Save markdownlint-cli2
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -200,13 +209,51 @@ jobs:
       uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       with:
         path: ~/markdownlint
-        key: markdownlint-cli2-0.21.0
+        key: markdownlint-cli2-0.22.0
     - name: Markdown lint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true'
       run: ~/markdownlint/node_modules/.bin/markdownlint-cli2 "**/*.md"
+    - name: Restore hadolint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true'
+      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+      id: hadolint
+      with:
+        path: ~/tools/hadolint
+        key: hadolint-2.14.0-linux-amd64
+    - name: Install hadolint
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.hadolint.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/tools
+        curl -sfL -o ~/tools/hadolint https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64
+        chmod +x ~/tools/hadolint
+    - name: Save hadolint
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.hadolint.outputs.cache-hit != 'true'
+      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+      with:
+        path: ~/tools/hadolint
+        key: hadolint-2.14.0-linux-amd64
+    - name: Hadolint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true'
+      run: ~/tools/hadolint .github/build/Dockerfile .github/test/*/Dockerfile
+    - name: Helm lint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      run: helm lint --strict charts/k8s-httpcache
 
 
   go-build:
@@ -289,7 +336,7 @@ jobs:
       id: test-tools
       with:
         path: ~/tools
-        key: test-tools-hurl-7.1.0-oha-1.13.0
+        key: test-tools-hurl-7.1.0-oha-1.14.0
     - name: Install tools
       if: steps.test-tools.outputs.cache-hit != 'true'
       run: |
@@ -297,14 +344,14 @@ jobs:
         curl -sfL -o /tmp/hurl.deb https://github.com/Orange-OpenSource/hurl/releases/download/7.1.0/hurl_7.1.0_amd64.deb
         dpkg-deb -x /tmp/hurl.deb /tmp/hurl
         cp /tmp/hurl/usr/bin/* ~/tools/
-        curl -sfL -o ~/tools/oha https://github.com/hatoo/oha/releases/download/v1.13.0/oha-linux-amd64
+        curl -sfL -o ~/tools/oha https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64
         chmod +x ~/tools/oha
     - name: Save test tools
       if: steps.test-tools.outputs.cache-hit != 'true'
       uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
       with:
         path: ~/tools
-        key: test-tools-hurl-7.1.0-oha-1.13.0
+        key: test-tools-hurl-7.1.0-oha-1.14.0
     - name: Add tools to PATH
       run: echo "$HOME/tools" >> "$GITHUB_PATH"
     - name: Build test image
