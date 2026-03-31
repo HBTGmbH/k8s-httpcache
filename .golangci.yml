@@ -97,6 +97,13 @@ linters:
         - fieldalignment  # too noisy; micro-optimization not worth readability cost
         - shadow          # mostly flags idiomatic err re-declarations
         - findcall        # demo analyzer, not useful
+    ireturn:
+      allow:
+        - anon
+        - error
+        - empty
+        - stdlib
+        - proc  # unexported DI seam for testing
     iface:
       enable:
         - identical

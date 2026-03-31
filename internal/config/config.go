@@ -1097,6 +1097,18 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 			c.ListenAddrs = []ListenAddrSpec(listenAddrs)
 
+			// Reject empty values; use "none" to disable optional servers.
+			if c.BroadcastAddr == "" {
+				actionErr = validationError(cmd, "--broadcast-addr must not be empty (use %q to disable)", "none")
+
+				return nil
+			}
+			if c.MetricsAddr == "" {
+				actionErr = validationError(cmd, "--metrics-addr must not be empty (use %q to disable)", "none")
+
+				return nil
+			}
+
 			// Normalize "none" to empty string to disable optional servers.
 			if c.BroadcastAddr == "none" {
 				c.BroadcastAddr = ""
