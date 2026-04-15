@@ -282,10 +282,7 @@ func unescapeJSONString(raw string) string {
 			break
 		}
 
-		//nolint:revive // identical default branch is intentional: all unrecognized escapes pass through
 		switch raw[i] {
-		case '"', '\\', '/':
-			_ = buf.WriteByte(raw[i])
 		case 'b':
 			_ = buf.WriteByte('\b')
 		case 'f':

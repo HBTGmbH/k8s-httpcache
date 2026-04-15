@@ -142,7 +142,7 @@ jobs:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.1.4-deadcode-0.43.0
+        key: analysis-tools-govulncheck-1.1.4-deadcode-0.44.0
     - name: Install analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -151,7 +151,7 @@ jobs:
         steps.analysis-tools.outputs.cache-hit != 'true'
       run: |
         go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
-        go install golang.org/x/tools/cmd/deadcode@v0.43.0
+        go install golang.org/x/tools/cmd/deadcode@v0.44.0
     - name: Save analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -163,7 +163,7 @@ jobs:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.1.4-deadcode-0.43.0
+        key: analysis-tools-govulncheck-1.1.4-deadcode-0.44.0
     - name: Run govulncheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
