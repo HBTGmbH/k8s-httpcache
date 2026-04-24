@@ -322,6 +322,14 @@ type loopConfig struct {
 	shutdownTimeout       time.Duration
 	broadcastDrainTimeout time.Duration
 
+	// reloadRecoveryInitial is the first delay used after a reload failure.
+	// On each consecutive failure the delay doubles, capped at
+	// reloadRecoveryMax. On a successful reload both are reset so that the
+	// next failure starts again at reloadRecoveryInitial. Zero disables the
+	// recovery loop.
+	reloadRecoveryInitial time.Duration
+	reloadRecoveryMax     time.Duration
+
 	recorder record.EventRecorder
 	podRef   *v1.ObjectReference
 
@@ -812,6 +820,9 @@ func main() {
 		shutdownTimeout:       cfg.ShutdownTimeout,
 		broadcastDrainTimeout: cfg.BroadcastDrainTimeout,
 
+		reloadRecoveryInitial: 10 * time.Second,
+		reloadRecoveryMax:     time.Minute,
+
 		recorder: eventRecorder,
 		podRef:   podRef,
 
@@ -831,8 +842,9 @@ func main() {
 
 // runLoop runs the main event loop, returning 0 for clean shutdown and 1 for error.
 // rollbackReload re-renders VCL with the rolled-back template and reloads
-// Varnish. Called after the primary reload fails on a new template.
-func rollbackReload(lc *loopConfig, reasons string) {
+// Varnish. Called after the primary reload fails on a new template. Returns
+// true iff the render+reload completed successfully.
+func rollbackReload(lc *loopConfig, reasons string) bool {
 	renderStart := time.Now()
 	vclStr, err := lc.rend.Render(lc.latestFrontends, lc.latestBackends, lc.latestValues, lc.latestSecrets)
 	lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
@@ -841,14 +853,14 @@ func rollbackReload(lc *loopConfig, reasons string) {
 		slog.Error("render error after rollback", "error", err)
 		emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error after rollback: %v", err))
 
-		return
+		return false
 	}
 
 	f, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
 	if err != nil {
 		slog.Error("creating temp VCL file after rollback", "error", err)
 
-		return
+		return false
 	}
 	vclPath := f.Name()
 	_, err = f.WriteString(vclStr)
@@ -857,7 +869,7 @@ func rollbackReload(lc *loopConfig, reasons string) {
 		slog.Error("writing temp VCL file after rollback", "error", err)
 		_ = os.Remove(vclPath)
 
-		return
+		return false
 	}
 	defer func() { _ = os.Remove(vclPath) }()
 
@@ -867,7 +879,7 @@ func rollbackReload(lc *loopConfig, reasons string) {
 		slog.Error("reload error after rollback", "error", err)
 		emitEvent(lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed after rollback: %v", err))
 
-		return
+		return false
 	}
 	lc.lastVCLHash = sha256.Sum256([]byte(vclStr))
 	lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
@@ -876,6 +888,8 @@ func rollbackReload(lc *loopConfig, reasons string) {
 		lc.status.recordReload()
 		lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
 	}
+
+	return true
 }
 
 // handleDrain runs the graceful drain sequence: mark backend sick, wait for
@@ -949,10 +963,54 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		pendingReload   bool
 		templateChanged bool
 		pendingReasons  []string
+
+		// Recovery retry: when a reload fails we arm recoveryTimer so the
+		// reload is retried even if no new Kubernetes events arrive. The
+		// delay starts at reloadRecoveryInitial, doubles on each consecutive
+		// failure, and is capped at reloadRecoveryMax. Reset on success.
+		recoveryTimer *time.Timer
+		recoveryDelay time.Duration
 	)
 
+	// nextRecoveryDelay returns the delay for the next recovery retry:
+	// reloadRecoveryInitial the first time, then double (capped at max).
+	nextRecoveryDelay := func() time.Duration {
+		if recoveryDelay == 0 {
+			return lc.reloadRecoveryInitial
+		}
+		next := recoveryDelay * 2
+		if lc.reloadRecoveryMax > 0 && next > lc.reloadRecoveryMax {
+			next = lc.reloadRecoveryMax
+		}
+
+		return next
+	}
+
+	armRecovery := func() {
+		if lc.reloadRecoveryInitial <= 0 {
+			return
+		}
+		delay := nextRecoveryDelay()
+		if recoveryTimer != nil {
+			recoveryTimer.Stop()
+		}
+		recoveryTimer = time.NewTimer(delay)
+		recoveryDelay = delay
+		slog.Warn("scheduling reload retry after failure", "delay", delay)
+	}
+
+	clearRecovery := func() {
+		if recoveryTimer != nil {
+			recoveryTimer.Stop()
+			recoveryTimer = nil
+		}
+		recoveryDelay = 0
+	}
+
 	// handleReload executes the VCL reload logic, clearing both groups'
-	// timers and deadlines. Returns true if a reload was attempted.
+	// timers and deadlines. On success it clears any pending recovery
+	// retry; on failure it keeps pendingReload/pendingReasons set and arms
+	// the recovery timer so the reload is retried later.
 	handleReload := func() {
 		// Clear both groups.
 		if frontend.timer != nil {
@@ -975,7 +1033,25 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		}
 		pendingReload = false
 		reasons := strings.Join(pendingReasons, ", ")
-		pendingReasons = pendingReasons[:0]
+
+		// markRetry keeps pendingReload/pendingReasons set and arms the
+		// recovery timer so the reload is retried even if no new event
+		// arrives. Called only for mgr.Reload failures, which may be
+		// transient (e.g. varnishd CLI issues during child restart).
+		// Render errors bypass this because re-rendering the same inputs
+		// will fail the same way; they recover when new inputs arrive.
+		markRetry := func() {
+			pendingReload = true
+			armRecovery()
+		}
+
+		// clearPending marks the reload attempt complete (success or
+		// non-retryable failure): pendingReasons is truncated and any
+		// pending recovery retry is stopped.
+		clearPending := func() {
+			pendingReasons = pendingReasons[:0]
+			clearRecovery()
+		}
 
 		// If the template file changed, try to parse the new version.
 		reloadedTemplate := false
@@ -1004,6 +1080,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				lc.rend.Rollback()
 				emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
 			}
+			clearPending()
 
 			return
 		}
@@ -1012,6 +1089,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		if vclHash == lc.lastVCLHash {
 			slog.Info("VCL unchanged, skipping reload", "reasons", reasons)
 			lc.metrics.VCLReloadsTotal.WithLabelValues("skipped").Inc()
+			clearPending()
 
 			return
 		}
@@ -1019,6 +1097,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		f, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
 		if err != nil {
 			slog.Error("creating temp VCL file", "error", err)
+			markRetry()
 
 			return
 		}
@@ -1028,6 +1107,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		if err != nil {
 			slog.Error("writing temp VCL file", "error", err)
 			_ = os.Remove(vclPath)
+			markRetry()
 
 			return
 		}
@@ -1040,6 +1120,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			_ = os.Remove(vclPath)
 
 			if !reloadedTemplate {
+				markRetry()
+
 				return
 			}
 
@@ -1051,7 +1133,11 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			slog.Warn("rolled back to previous template")
 			emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Rolled back to previous template after reload failure")
 
-			rollbackReload(lc, reasons)
+			if rollbackReload(lc, reasons) {
+				clearPending()
+			} else {
+				markRetry()
+			}
 
 			return
 		}
@@ -1064,6 +1150,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
 		}
 		_ = os.Remove(vclPath)
+		clearPending()
 	}
 
 	for {
@@ -1159,6 +1246,21 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				lc.metrics.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
 			}
 			handleReload()
+
+		case <-timerChan(recoveryTimer):
+			// Clear the timer reference before retrying. On failure
+			// handleReload's markRetry will arm a fresh one; on success
+			// clearRecovery leaves it nil. Setting nil here avoids
+			// re-selecting the drained channel on the next iteration.
+			recoveryTimer = nil
+			slog.Info("reload recovery timer fired, retrying reload", "previous_delay", recoveryDelay)
+			handleReload()
+			// If handleReload did nothing (no pending reload), reset the
+			// backoff so a future failure starts again at the initial
+			// delay. Success already clears it via clearRecovery.
+			if recoveryTimer == nil {
+				recoveryDelay = 0
+			}
 
 		case ev := <-lc.ncsaEvents:
 			emitEvent(lc, ev.Type, ev.Reason, ev.Message)

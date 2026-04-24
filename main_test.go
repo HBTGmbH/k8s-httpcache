@@ -437,6 +437,12 @@ func (h *testHarness) loopConfig(bcast broadcaster) *loopConfig {
 		shutdownTimeout:       1 * time.Second,
 		broadcastDrainTimeout: 1 * time.Second,
 
+		// Tests default to 0 so the recovery timer is disabled; tests
+		// that exercise recovery override these directly on the
+		// returned loopConfig.
+		reloadRecoveryInitial: 0,
+		reloadRecoveryMax:     0,
+
 		drainPollInterval: 1 * time.Second,
 
 		latestFrontends: nil,
@@ -1191,6 +1197,114 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_ReloadRecoveryRetriesAfterFailure(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var loadCount atomic.Int32
+	h.mgr.reloadFn = func(_ string) error {
+		// First two attempts fail (simulating the CLI communication
+		// error scenario); the third succeeds.
+		if loadCount.Add(1) <= 2 {
+			return errors.New("cli communication error (hdr)")
+		}
+
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+
+	lc := h.loopConfig(h.bcast)
+	// Short delays so the test completes quickly. Doubling: 10ms → 20ms (cap).
+	lc.reloadRecoveryInitial = 10 * time.Millisecond
+	lc.reloadRecoveryMax = 20 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger a single reload via a frontend change.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+
+	// Expect 1 initial attempt (fails) + 2 recovery retries (1 fails, 1 succeeds).
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "3 mgr.Reload calls via recovery timer")
+
+	// After success, the recovery timer should be stopped; no further reloads.
+	time.Sleep(80 * time.Millisecond)
+	stable := h.mgr.getReloadCount()
+	time.Sleep(80 * time.Millisecond)
+	if final := h.mgr.getReloadCount(); final != stable {
+		t.Errorf("expected no further reload retries after success, got %d more (final=%d)", final-stable, final)
+	}
+
+	// Verify the error metric was incremented for the 2 failures.
+	if got := getCounterValue(t, "error", h.metrics.VCLReloadsTotal); got < 2 {
+		t.Errorf("vcl_reloads_total(error) = %v, want >= 2", got)
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+func TestRunLoop_ReloadRecoveryDisabledByDefault(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var loadCount atomic.Int32
+	h.mgr.reloadFn = func(_ string) error {
+		loadCount.Add(1)
+
+		return errors.New("cli communication error (hdr)")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+
+	lc := h.loopConfig(h.bcast)
+	// Harness default: reloadRecoveryInitial == 0 (disabled).
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger one reload via a frontend change.
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+
+	// Wait for the initial reload attempt.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "initial mgr.Reload call")
+
+	// Without recovery, no further retries should happen even though the
+	// reload failed — behavior matches pre-recovery-timer codebase.
+	time.Sleep(100 * time.Millisecond)
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Errorf("expected exactly 1 reload call with recovery disabled, got %d", got)
+	}
+
+	// Clean shutdown.
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
 	}
 }
 
