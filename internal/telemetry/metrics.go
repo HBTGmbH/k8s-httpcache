@@ -5,7 +5,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-const namespace = "k8s_httpcache"
+const (
+	namespace = "k8s_httpcache"
+
+	// Prometheus metric label keys.
+	labelStatus = "status"
+	labelGroup  = "group"
+)
 
 // Metrics holds all Prometheus metrics for k8s-httpcache. Create one per
 // registry with NewMetrics; production uses prometheus.DefaultRegisterer,
@@ -94,7 +100,7 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Namespace: namespace,
 			Name:      "broadcast_requests_total",
 			Help:      "Total number of broadcast HTTP requests.",
-		}, []string{"method", "status"}),
+		}, []string{"method", labelStatus}),
 
 		BroadcastFanoutTargets: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -130,19 +136,19 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Namespace: namespace,
 			Name:      "debounce_events_total",
 			Help:      "Total number of events received per debounce group.",
-		}, []string{"group"}),
+		}, []string{labelGroup}),
 
 		DebounceFiresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "debounce_fires_total",
 			Help:      "Total number of debounce timer fires per group.",
-		}, []string{"group"}),
+		}, []string{labelGroup}),
 
 		DebounceMaxEnforcementsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "debounce_max_enforcements_total",
 			Help:      "Total number of reloads forced by the debounce-max deadline.",
-		}, []string{"group"}),
+		}, []string{labelGroup}),
 
 		VCLRenderDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: namespace,
@@ -170,7 +176,7 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Name:      "debounce_latency_seconds",
 			Help:      "Wall-clock time from first event in a debounce burst to the reload.",
 			Buckets:   debounceBuckets,
-		}, []string{"group"}),
+		}, []string{labelGroup}),
 	}
 
 	reg.MustRegister(

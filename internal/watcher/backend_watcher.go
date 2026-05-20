@@ -20,6 +20,10 @@ import (
 
 var errNamedPortExternalName = errors.New("named port not supported for ExternalName service")
 
+// externalEndpointName is the synthetic endpoint name emitted for
+// ExternalName services, which have no underlying EndpointSlice.
+const externalEndpointName = "external"
+
 // BackendWatcher watches a Service object and emits endpoints. For ExternalName
 // services it emits the hostname directly. For all other types it delegates to
 // an internal EndpointSlice Watcher.
@@ -209,7 +213,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 		endpoints := []Endpoint{{
 			IP:   svc.Spec.ExternalName,
 			Port: port,
-			Name: "external",
+			Name: externalEndpointName,
 		}}
 		bw.send(endpoints)
 

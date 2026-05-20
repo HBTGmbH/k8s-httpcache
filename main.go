@@ -49,10 +49,16 @@ import (
 // version is set at build time via -ldflags.
 var version = "dev"
 
-// drainBackendName is the VCL backend name used internally for graceful
-// connection draining. Users do not configure this — it is auto-injected
-// into the rendered VCL when --drain is enabled.
-const drainBackendName = "drain_flag"
+const (
+	// drainBackendName is the VCL backend name used internally for graceful
+	// connection draining. Users do not configure this — it is auto-injected
+	// into the rendered VCL when --drain is enabled.
+	drainBackendName = "drain_flag"
+
+	// podKind is the Kubernetes object kind for the Pod resource, used when
+	// constructing event-recorder object references.
+	podKind = "Pod"
+)
 
 // vclRenderer abstracts VCL template operations (satisfied by *renderer.Renderer).
 type vclRenderer interface {
@@ -385,7 +391,7 @@ func main() {
 		mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
 		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout}
 		go func() {
-			slog.Info("starting metrics server", "addr", cfg.MetricsAddr) //nolint:gosec // G706: slog structured logging safely escapes values
+			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
 
 			err := metricsSrv.ListenAndServe()
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -414,7 +420,7 @@ func main() {
 		})
 		eventRecorder = eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "k8s-httpcache"})
 		podRef = &v1.ObjectReference{
-			Kind:       "Pod",
+			Kind:       podKind,
 			APIVersion: "v1",
 			Name:       podName,
 			Namespace:  cfg.ServiceNamespace,
@@ -425,7 +431,7 @@ func main() {
 		} else {
 			podRef.UID = pod.UID
 		}
-		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace) //nolint:gosec // G706: slog structured logging safely escapes values
+		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace)
 	} else {
 		slog.Info("POD_NAME not set, kubernetes event recording disabled")
 	}

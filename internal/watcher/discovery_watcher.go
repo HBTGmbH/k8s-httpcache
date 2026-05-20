@@ -226,7 +226,7 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 // BackendWatcher to the discovery watcher's updateCh. Must be called with
 // dw.mu held.
 func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb *managedBackend) {
-	fwdCtx, fwdCancel := context.WithCancel(ctx) //nolint:gosec // G118: cancel stored in managedBackend for lifecycle management
+	fwdCtx, fwdCancel := context.WithCancel(ctx)
 	mb.fwdCancel = fwdCancel
 	svcName := mb.name
 	bw := mb.watcher
@@ -300,7 +300,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 
 		bw := NewBackendWatcher(dw.clientset, svc.Namespace, svc.Name, dw.portOverride)
 		bw.SetExcludeAnnotations(dw.excludeAnnotation)
-		childCtx, childCancel := context.WithCancel(ctx) //nolint:gosec // G118: cancel stored in managedBackend for lifecycle management
+		childCtx, childCancel := context.WithCancel(ctx)
 
 		mb := &managedBackend{
 			watcher:   bw,

@@ -2,10 +2,15 @@ package watcher
 
 import "strings"
 
+// LastAppliedConfigAnnotation is the kubectl annotation key that stores the
+// last-applied JSON manifest; it is excluded from backend annotations by
+// default to avoid noisy reloads on apply.
+const LastAppliedConfigAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
+
 // DefaultExcludeAnnotations is the built-in exclusion list applied unless
 // overridden. Users can add more via --exclude-annotations.
 var DefaultExcludeAnnotations = []string{
-	"kubectl.kubernetes.io/last-applied-configuration",
+	LastAppliedConfigAnnotation,
 }
 
 // BuildAnnotationFilter compiles a list of exclusion patterns into a filter

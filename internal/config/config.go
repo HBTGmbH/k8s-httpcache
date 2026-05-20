@@ -25,6 +25,41 @@ import (
 // (in seconds) for the debounce_latency_seconds metric.
 var DefaultDebounceLatencyBuckets = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
+const (
+	// CLI flag category labels.
+	catListen    = "Listen, backend, and values:"
+	catPaths     = "Cache binary paths:"
+	catBroadcast = "Broadcast:"
+	catMetrics   = "Metrics:"
+	catLogging   = "Access logging:"
+	catDrain     = "Drain:"
+	catTemplate  = "Template:"
+	catTiming    = "Timing and logging:"
+
+	// Default Varnish Cache binary names.
+	binVarnishd    = "varnishd"
+	binVarnishadm  = "varnishadm"
+	binVarnishstat = "varnishstat"
+	binVarnishncsa = "varnishncsa"
+
+	// Vinyl Cache binary names (used when auto-detected).
+	binVinyld    = "vinyld"
+	binVinyladm  = "vinyladm"
+	binVinylstat = "vinylstat"
+	binVinylncsa = "vinylncsa"
+
+	// Default listen-addr help text.
+	defaultListenAddrText = "http=:8080,HTTP"
+
+	// Log format and level values.
+	logFormatText = "text"
+	logFormatJSON = "json"
+	logLevelInfo  = "INFO"
+
+	// Template function library identifier.
+	templateFuncsSprig = "sprig"
+)
+
 var (
 	errEmptyName          = errors.New("empty name")
 	errInvalidFormat      = errors.New("invalid format")
@@ -450,52 +485,52 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			&cli.StringSliceFlag{
 				Name:        "listen-addr",
 				Aliases:     []string{"l"},
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "Varnish listen address: [name=]address[,proto] (repeatable)",
-				DefaultText: "http=:8080,HTTP",
+				DefaultText: defaultListenAddrText,
 				Destination: &rawListenAddrs,
 			},
 			&cli.StringSliceFlag{
 				Name:        "backend",
 				Aliases:     []string{"b"},
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "Backend service: name:[namespace/]service[:port|:port-name] (repeatable)",
 				Destination: &rawBackends,
 			},
 			&cli.StringSliceFlag{
 				Name:        "backend-selector",
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "Label selector for backend service discovery: [namespace//]selector[:port|:port-name] (repeatable). Use '*//' prefix for all-namespace discovery.",
 				Destination: &rawBackendSelectors,
 			},
 			&cli.StringSliceFlag{
 				Name:        "values",
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "ConfigMap to watch for template values: name:[namespace/]configmap (repeatable)",
 				Destination: &rawValues,
 			},
 			&cli.StringSliceFlag{
 				Name:        "secrets",
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "Secret to watch for template values: name:[namespace/]secret (repeatable)",
 				Destination: &rawSecrets,
 			},
 			&cli.StringSliceFlag{
 				Name:        "values-dir",
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "Directory to poll for YAML template values: name:/path/to/dir (repeatable)",
 				Destination: &rawValuesDirs,
 			},
 			&cli.DurationFlag{
 				Name:        "values-dir-poll-interval",
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "Poll interval for --values-dir directories (only effective when --file-watch is enabled)",
 				Value:       5 * time.Second,
 				Destination: &c.ValuesDirPollInterval,
 			},
 			&cli.StringSliceFlag{
 				Name:        "exclude-annotations",
-				Category:    "Listen, backend, and values:",
+				Category:    catListen,
 				Usage:       "Annotation keys or prefixes to exclude from backend annotations (repeatable; trailing * for prefix match, e.g. kubectl.kubernetes.io/*)",
 				Destination: &c.ExcludeAnnotations,
 			},
@@ -503,54 +538,54 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Varnish paths
 			&cli.StringFlag{
 				Name:        "varnishd-path",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Path to varnishd binary (Varnish Cache)",
-				Value:       "varnishd",
+				Value:       binVarnishd,
 				Destination: &c.VarnishdPath,
 			},
 			&cli.StringFlag{
 				Name:        "varnishadm-path",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Path to varnishadm binary (Varnish Cache)",
-				Value:       "varnishadm",
+				Value:       binVarnishadm,
 				Destination: &c.VarnishadmPath,
 			},
 			&cli.StringFlag{
 				Name:        "varnishstat-path",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Path to varnishstat binary (Varnish Cache)",
-				Value:       "varnishstat",
+				Value:       binVarnishstat,
 				Destination: &c.VarnishstatPath,
 			},
 
 			// Vinyl Cache paths
 			&cli.StringFlag{
 				Name:        "vinyld-path",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Path to vinyld binary (Vinyl Cache 9+; takes precedence over --varnishd-path)",
 				Destination: &rawVinyldPath,
 			},
 			&cli.StringFlag{
 				Name:        "vinyladm-path",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Path to vinyladm binary (Vinyl Cache 9+; takes precedence over --varnishadm-path)",
 				Destination: &rawVinyladmPath,
 			},
 			&cli.StringFlag{
 				Name:        "vinylstat-path",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Path to vinylstat binary (Vinyl Cache 9+; takes precedence over --varnishstat-path)",
 				Destination: &rawVinylstatPath,
 			},
 			&cli.StringFlag{
 				Name:        "vinylncsa-path",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Path to vinylncsa binary (Vinyl Cache 9+; takes precedence over --varnishncsa-path)",
 				Destination: &rawVinylncsaPath,
 			},
 			&cli.DurationFlag{
 				Name:        "admin-timeout",
-				Category:    "Cache binary paths:",
+				Category:    catPaths,
 				Usage:       "Max time to wait for the cache admin CLI to become ready",
 				Value:       30 * time.Second,
 				Destination: &c.AdminTimeout,
@@ -559,55 +594,55 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Broadcast
 			&cli.StringFlag{
 				Name:        "broadcast-addr",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       `Listen address for the broadcast HTTP server ("none" to disable)`,
 				Value:       ":8088",
 				Destination: &c.BroadcastAddr,
 			},
 			&cli.StringFlag{
 				Name:        "broadcast-target-listen-addr",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       "Name of the --listen-addr to target for fan-out (default: first --listen-addr; only effective when broadcast is enabled)",
 				Destination: &c.BroadcastTargetListenAddr,
 			},
 			&cli.DurationFlag{
 				Name:        "broadcast-drain-timeout",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       "Time to wait for broadcast connections to drain before shutting down (only effective when broadcast is enabled)",
 				Value:       30 * time.Second,
 				Destination: &c.BroadcastDrainTimeout,
 			},
 			&cli.DurationFlag{
 				Name:        "broadcast-shutdown-timeout",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       "Time to wait for in-flight broadcast requests to finish after draining (only effective when broadcast is enabled)",
 				Value:       5 * time.Second,
 				Destination: &c.BroadcastShutdownTimeout,
 			},
 			&cli.DurationFlag{
 				Name:        "broadcast-server-idle-timeout",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       "Max time a client keep-alive connection to the broadcast server can stay idle (only effective when broadcast is enabled)",
 				Value:       120 * time.Second,
 				Destination: &c.BroadcastServerIdleTimeout,
 			},
 			&cli.DurationFlag{
 				Name:        "broadcast-read-header-timeout",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       "Max time to read request headers on the broadcast server (only effective when broadcast is enabled)",
 				Value:       10 * time.Second,
 				Destination: &c.BroadcastReadHeaderTimeout,
 			},
 			&cli.DurationFlag{
 				Name:        "broadcast-client-idle-timeout",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       "Max time an idle connection to a Varnish pod is kept in the broadcast client pool (only effective when broadcast is enabled)",
 				Value:       4 * time.Second,
 				Destination: &c.BroadcastClientIdleTimeout,
 			},
 			&cli.DurationFlag{
 				Name:        "broadcast-client-timeout",
-				Category:    "Broadcast:",
+				Category:    catBroadcast,
 				Usage:       "Timeout for each fan-out request to a Varnish pod (only effective when broadcast is enabled)",
 				Value:       3 * time.Second,
 				Destination: &c.BroadcastClientTimeout,
@@ -616,27 +651,27 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Metrics
 			&cli.StringFlag{
 				Name:        "metrics-addr",
-				Category:    "Metrics:",
+				Category:    catMetrics,
 				Usage:       `Listen address for Prometheus metrics ("none" to disable)`,
 				Value:       ":9101",
 				Destination: &c.MetricsAddr,
 			},
 			&cli.DurationFlag{
 				Name:        "metrics-read-header-timeout",
-				Category:    "Metrics:",
+				Category:    catMetrics,
 				Usage:       "Max time to read request headers on the metrics server",
 				Value:       10 * time.Second,
 				Destination: &c.MetricsReadHeaderTimeout,
 			},
 			&cli.BoolFlag{
 				Name:        "varnishstat-export",
-				Category:    "Metrics:",
+				Category:    catMetrics,
 				Usage:       "Enable varnishstat Prometheus exporter (exports all varnishstat counters on /metrics)",
 				Destination: &c.VarnishstatExport,
 			},
 			&cli.StringSliceFlag{
 				Name:        "varnishstat-export-filter",
-				Category:    "Metrics:",
+				Category:    catMetrics,
 				Usage:       "Counter groups to export (e.g. MAIN,SMA,VBE); empty exports all (only effective when --varnishstat-export is enabled)",
 				Destination: &c.VarnishstatExportFilter,
 			},
@@ -645,44 +680,44 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			&cli.BoolFlag{
 				Name:        "varnishncsa-enabled",
 				Aliases:     []string{"vinylncsa-enabled"},
-				Category:    "Access logging:",
+				Category:    catLogging,
 				Usage:       "Enable access logging subprocess (varnishncsa / vinylncsa)",
 				Destination: &c.VarnishncsaEnabled,
 			},
 			&cli.StringFlag{
 				Name:        "varnishncsa-path",
-				Category:    "Access logging:",
+				Category:    catLogging,
 				Usage:       "Path to varnishncsa binary (Varnish Cache)",
-				Value:       "varnishncsa",
+				Value:       binVarnishncsa,
 				Destination: &c.VarnishncsaPath,
 			},
 			&cli.StringFlag{
 				Name:        "varnishncsa-format",
-				Category:    "Access logging:",
+				Category:    catLogging,
 				Usage:       `Custom log format string (passed as -F; only effective with --varnishncsa-enabled)`,
 				Destination: &c.VarnishncsaFormat,
 			},
 			&cli.StringFlag{
 				Name:        "varnishncsa-query",
-				Category:    "Access logging:",
+				Category:    catLogging,
 				Usage:       `VSL query expression (passed as -q; only effective with --varnishncsa-enabled)`,
 				Destination: &c.VarnishncsaQuery,
 			},
 			&cli.BoolFlag{
 				Name:        "varnishncsa-backend",
-				Category:    "Access logging:",
+				Category:    catLogging,
 				Usage:       "Log backend requests instead of client requests (passes -b; only effective with --varnishncsa-enabled)",
 				Destination: &c.VarnishncsaBackend,
 			},
 			&cli.StringFlag{
 				Name:        "varnishncsa-output",
-				Category:    "Access logging:",
+				Category:    catLogging,
 				Usage:       `Output file path (default: stdout; only effective with --varnishncsa-enabled)`,
 				Destination: &c.VarnishncsaOutput,
 			},
 			&cli.StringFlag{
 				Name:        "varnishncsa-prefix",
-				Category:    "Access logging:",
+				Category:    catLogging,
 				Usage:       `Prefix prepended to each access log line on stdout (only effective with --varnishncsa-enabled)`,
 				Value:       "[access] ",
 				Destination: &c.VarnishncsaPrefix,
@@ -691,27 +726,27 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Drain
 			&cli.BoolFlag{
 				Name:        "drain",
-				Category:    "Drain:",
+				Category:    catDrain,
 				Usage:       "Enable graceful connection draining on shutdown",
 				Destination: &c.Drain,
 			},
 			&cli.DurationFlag{
 				Name:        "drain-delay",
-				Category:    "Drain:",
+				Category:    catDrain,
 				Usage:       "Delay after marking backend sick before polling for active sessions (only effective when --drain is enabled)",
 				Value:       15 * time.Second,
 				Destination: &c.DrainDelay,
 			},
 			&cli.DurationFlag{
 				Name:        "drain-poll-interval",
-				Category:    "Drain:",
+				Category:    catDrain,
 				Usage:       "Poll interval for active sessions during graceful drain (only effective when --drain is enabled)",
 				Value:       1 * time.Second,
 				Destination: &c.DrainPollInterval,
 			},
 			&cli.DurationFlag{
 				Name:        "drain-timeout",
-				Category:    "Drain:",
+				Category:    catDrain,
 				Usage:       "Max time to wait for active sessions to reach 0 (0 to skip session polling; only effective when --drain is enabled)",
 				Destination: &c.DrainTimeout,
 			},
@@ -719,21 +754,21 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Template
 			&cli.StringFlag{
 				Name:        "template-delims",
-				Category:    "Template:",
+				Category:    catTemplate,
 				Usage:       `Template delimiters as a space-separated pair (e.g. "<< >>" or "{{ }}")`,
 				Value:       "<< >>",
 				Destination: &templateDelims,
 			},
 			&cli.StringFlag{
 				Name:        "template-funcs",
-				Category:    "Template:",
+				Category:    catTemplate,
 				Usage:       `Template function library ("sprig" or "sprout")`,
-				Value:       "sprig",
+				Value:       templateFuncsSprig,
 				Destination: &c.TemplateFuncs,
 			},
 			&cli.StringFlag{
 				Name:        "zone",
-				Category:    "Template:",
+				Category:    catTemplate,
 				Usage:       "Topology zone of this Varnish pod (overrides auto-detection from NODE_NAME)",
 				Destination: &c.Zone,
 			},
@@ -741,20 +776,20 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Timing and logging
 			&cli.DurationFlag{
 				Name:        "debounce",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Debounce duration for endpoint changes",
 				Value:       2 * time.Second,
 				Destination: &c.Debounce,
 			},
 			&cli.DurationFlag{
 				Name:        "debounce-max",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Maximum debounce duration before a reload is forced (0 disables; only effective when events arrive within the --debounce window)",
 				Destination: &c.DebounceMax,
 			},
 			&cli.DurationFlag{
 				Name:        "frontend-debounce",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Debounce duration for frontend (--service-name) changes; overrides --debounce for the frontend group",
 				Value:       time.Duration(-1),
 				DefaultText: "uses --debounce",
@@ -762,7 +797,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			},
 			&cli.DurationFlag{
 				Name:        "frontend-debounce-max",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Maximum debounce duration for frontend changes; overrides --debounce-max for the frontend group",
 				Value:       time.Duration(-1),
 				DefaultText: "uses --debounce-max",
@@ -770,7 +805,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			},
 			&cli.DurationFlag{
 				Name:        "backend-debounce",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Debounce duration for backend (--backend, --values, --values-dir, template) changes; overrides --debounce for the backend group",
 				Value:       time.Duration(-1),
 				DefaultText: "uses --debounce",
@@ -778,7 +813,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			},
 			&cli.DurationFlag{
 				Name:        "backend-debounce-max",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Maximum debounce duration for backend changes; overrides --debounce-max for the backend group",
 				Value:       time.Duration(-1),
 				DefaultText: "uses --debounce-max",
@@ -786,65 +821,65 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			},
 			&cli.DurationFlag{
 				Name:        "shutdown-timeout",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Time to wait for varnishd to exit before sending SIGKILL",
 				Value:       30 * time.Second,
 				Destination: &c.ShutdownTimeout,
 			},
 			&cli.DurationFlag{
 				Name:        "vcl-template-watch-interval",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Poll interval for VCL template file changes (only effective when --file-watch is enabled)",
 				Value:       5 * time.Second,
 				Destination: &c.VCLTemplateWatchInterval,
 			},
 			&cli.BoolFlag{
 				Name:        "file-watch",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Watch VCL template and --values-dir paths for changes (disable with --file-watch=false)",
 				Value:       true,
 				Destination: &c.FileWatch,
 			},
 			&cli.IntFlag{
 				Name:        "vcl-reload-retries",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Max retry attempts for vcl.load failures (0 disables retries)",
 				Value:       3,
 				Destination: &c.VCLReloadRetries,
 			},
 			&cli.DurationFlag{
 				Name:        "vcl-reload-retry-interval",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Wait between vcl.load retry attempts",
 				Value:       2 * time.Second,
 				Destination: &c.VCLReloadRetryInterval,
 			},
 			&cli.IntFlag{
 				Name:        "vcl-kept",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Number of old VCL objects to retain after reload (0 discards all)",
 				Value:       0,
 				Destination: &c.VCLKept,
 			},
 			&cli.StringFlag{
 				Name:        "debounce-latency-buckets",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Comma-separated histogram bucket boundaries (seconds) for debounce_latency_seconds",
 				Value:       "0.01,0.05,0.1,0.25,0.5,1,2.5,5,10",
 				Destination: &rawDebounceLatencyBuckets,
 			},
 			&cli.StringFlag{
 				Name:        "log-level",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Log level (DEBUG, INFO, WARN, ERROR)",
-				Value:       "INFO",
+				Value:       logLevelInfo,
 				Destination: &logLevel,
 			},
 			&cli.StringFlag{
 				Name:        "log-format",
-				Category:    "Timing and logging:",
+				Category:    catTiming,
 				Usage:       "Log format (text, json)",
-				Value:       "text",
+				Value:       logFormatText,
 				Destination: &c.LogFormat,
 			},
 		},
@@ -885,7 +920,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 			// Validate template function library.
 			switch c.TemplateFuncs {
-			case "sprig", "sprout":
+			case templateFuncsSprig, "sprout":
 			default:
 				actionErr = validationError(cmd, "--template-funcs must be \"sprig\" or \"sprout\", got %q", c.TemplateFuncs)
 
@@ -902,7 +937,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 			// Validate log format.
 			switch c.LogFormat {
-			case "text", "json":
+			case logFormatText, logFormatJSON:
 			default:
 				actionErr = validationError(cmd, "--log-format must be \"text\" or \"json\", got %q", c.LogFormat)
 
@@ -1313,10 +1348,10 @@ func resolveBinaryPaths(c *Config, vinyldPath, vinyladmPath, vinylstatPath, viny
 
 	if vinylSet {
 		// Use explicit vinyl paths, defaulting to standard vinyl binary names for unset ones.
-		c.VarnishdPath = cmp.Or(vinyldPath, "vinyld")
-		c.VarnishadmPath = cmp.Or(vinyladmPath, "vinyladm")
-		c.VarnishstatPath = cmp.Or(vinylstatPath, "vinylstat")
-		c.VarnishncsaPath = cmp.Or(vinylncsaPath, "vinylncsa")
+		c.VarnishdPath = cmp.Or(vinyldPath, binVinyld)
+		c.VarnishadmPath = cmp.Or(vinyladmPath, binVinyladm)
+		c.VarnishstatPath = cmp.Or(vinylstatPath, binVinylstat)
+		c.VarnishncsaPath = cmp.Or(vinylncsaPath, binVinylncsa)
 
 		return
 	}
@@ -1327,12 +1362,12 @@ func resolveBinaryPaths(c *Config, vinyldPath, vinyladmPath, vinylstatPath, viny
 	}
 
 	// Auto-detect: prefer Vinyl Cache if vinyld is found on PATH.
-	_, err := lookPathFn("vinyld")
+	_, err := lookPathFn(binVinyld)
 	if err == nil {
-		c.VarnishdPath = "vinyld"
-		c.VarnishadmPath = "vinyladm"
-		c.VarnishstatPath = "vinylstat"
-		c.VarnishncsaPath = "vinylncsa"
+		c.VarnishdPath = binVinyld
+		c.VarnishadmPath = binVinyladm
+		c.VarnishstatPath = binVinylstat
+		c.VarnishncsaPath = binVinylncsa
 	}
 	// Otherwise keep varnish defaults from Destination binding.
 }

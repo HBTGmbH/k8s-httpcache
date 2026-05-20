@@ -196,6 +196,25 @@ const (
 
 	// unknownServer is the placeholder server label when no address is available.
 	unknownServer = "unknown"
+
+	// Counter group names.
+	groupMAIN = "MAIN"
+	groupMain = "main"
+	groupSMA  = "sma"
+
+	// Renamed lock metric names.
+	metricLockCollisions = "varnish_lock_collisions"
+	metricLockCreated    = "varnish_lock_created"
+	metricLockDestroyed  = "varnish_lock_destroyed"
+	metricLockOperations = "varnish_lock_operations"
+
+	// metricSMAGAlloc anchors the SMA "g_alloc" gauge — referenced from both
+	// labelKeyByMetric and as a key in resolveMetric.
+	metricSMAGAlloc = "varnish_sma_g_alloc"
+
+	// Prometheus label keys.
+	labelType   = "type"
+	labelTarget = "target"
 )
 
 // newestVBEReloadTag scans counter names for VBE.reload_<N> prefixes and
@@ -240,12 +259,12 @@ func isStaleBackendCounter(counterName, latestReload string) bool {
 // avoid allocating a new string from [strings.ToLower] on every call.
 func lowerGroup(upper string) string {
 	switch upper {
-	case "MAIN":
-		return "main"
+	case groupMAIN:
+		return groupMain
 	case "VBE":
 		return backendGroup
 	case "SMA":
-		return "sma"
+		return groupSMA
 	case "LCK":
 		return "lck"
 	case "MGT":
@@ -323,7 +342,7 @@ var counterAggregations = func() []counterAggregation {
 		if r.renamed != "" {
 			target = "varnish_" + r.renamed
 		}
-		label := "type"
+		label := labelType
 		if r.label != "" {
 			label = r.label
 		}
@@ -344,35 +363,35 @@ var counterAggregations = func() []counterAggregation {
 
 // renamedMetrics maps original metric names to canonical Prometheus names.
 var renamedMetrics = map[string]string{
-	"varnish_lck_colls":   "varnish_lock_collisions",
-	"varnish_lck_creat":   "varnish_lock_created",
-	"varnish_lck_destroy": "varnish_lock_destroyed",
-	"varnish_lck_locks":   "varnish_lock_operations",
+	"varnish_lck_colls":   metricLockCollisions,
+	"varnish_lck_creat":   metricLockCreated,
+	"varnish_lck_destroy": metricLockDestroyed,
+	"varnish_lck_locks":   metricLockOperations,
 }
 
 // labelKeyByMetric overrides the default "id" label key for specific metrics.
 var labelKeyByMetric = map[string]string{
-	"varnish_lock_collisions": "target",
-	"varnish_lock_created":    "target",
-	"varnish_lock_destroyed":  "target",
-	"varnish_lock_operations": "target",
-	"varnish_sma_c_bytes":     "type",
-	"varnish_sma_c_fail":      "type",
-	"varnish_sma_c_freed":     "type",
-	"varnish_sma_c_req":       "type",
-	"varnish_sma_g_alloc":     "type",
-	"varnish_sma_g_bytes":     "type",
-	"varnish_sma_g_space":     "type",
-	"varnish_smf_c_bytes":     "type",
-	"varnish_smf_c_fail":      "type",
-	"varnish_smf_c_freed":     "type",
-	"varnish_smf_c_req":       "type",
-	"varnish_smf_g_alloc":     "type",
-	"varnish_smf_g_bytes":     "type",
-	"varnish_smf_g_smf_frag":  "type",
-	"varnish_smf_g_smf_large": "type",
-	"varnish_smf_g_smf":       "type",
-	"varnish_smf_g_space":     "type",
+	metricLockCollisions:      labelTarget,
+	metricLockCreated:         labelTarget,
+	metricLockDestroyed:       labelTarget,
+	metricLockOperations:      labelTarget,
+	"varnish_sma_c_bytes":     labelType,
+	"varnish_sma_c_fail":      labelType,
+	"varnish_sma_c_freed":     labelType,
+	"varnish_sma_c_req":       labelType,
+	metricSMAGAlloc:           labelType,
+	"varnish_sma_g_bytes":     labelType,
+	"varnish_sma_g_space":     labelType,
+	"varnish_smf_c_bytes":     labelType,
+	"varnish_smf_c_fail":      labelType,
+	"varnish_smf_c_freed":     labelType,
+	"varnish_smf_c_req":       labelType,
+	"varnish_smf_g_alloc":     labelType,
+	"varnish_smf_g_bytes":     labelType,
+	"varnish_smf_g_smf_frag":  labelType,
+	"varnish_smf_g_smf_large": labelType,
+	"varnish_smf_g_smf":       labelType,
+	"varnish_smf_g_space":     labelType,
 }
 
 // toLowerASCII returns s lowercased. When s is already lowercase (the common
