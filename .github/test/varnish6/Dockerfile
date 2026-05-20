@@ -1,4 +1,4 @@
-FROM varnish:6.0.17@sha256:ec99f528eb409789d6b2d01178a36388f21d5a19faab7f695e39ad5e23eca5ad
+FROM varnish:6.0.18@sha256:65de4db75b40ab26fe1b769b3fecafe12ecc0312310d2a8a557a1958683fa279
 ARG BINARY=k8s-httpcache
 COPY --chmod=755 ${BINARY} /usr/local/bin/k8s-httpcache
 ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]

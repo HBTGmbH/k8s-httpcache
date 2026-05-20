@@ -372,7 +372,8 @@ jobs:
         config: .github/test/kind-config.yaml
     - name: Install ingress-nginx
       run: |
-        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml > /dev/null
+        url=https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/kind/deploy.yaml
+        kubectl apply -f "$url" > /dev/null
         kubectl wait -n ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s > /dev/null
         kubectl patch configmap -n ingress-nginx ingress-nginx-controller --type merge -p '{"data":{"upstream-keepalive-timeout":"5"}}' > /dev/null
     - name: Load image into kind
