@@ -7,6 +7,7 @@ updates:
 # varnish6: patch-only (6.0.x is the final 6.x minor release)
 # varnish7: minor + patch
 # varnish8: minor + patch
+# varnish9: minor + patch
 - package-ecosystem: docker
   directory: /.github/test/varnish6
   schedule:
@@ -28,6 +29,15 @@ updates:
 
 - package-ecosystem: docker
   directory: /.github/test/varnish8
+  schedule:
+    interval: weekly
+  ignore:
+  - dependency-name: varnish
+    update-types:
+    - "version-update:semver-major"
+
+- package-ecosystem: docker
+  directory: /.github/test/varnish9
   schedule:
     interval: weekly
   ignore:
