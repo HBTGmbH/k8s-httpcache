@@ -814,10 +814,10 @@ func TestDiscoveryWatcher_DuplicateNameAcrossNamespaces(t *testing.T) {
 
 	waitForInitial(t, dw)
 
-	// Both services have the same Name "web", so InitialState is keyed by
-	// service name. The second one overwrites the first — only one entry.
+	// Both services have the same Name "web", and InitialState is keyed by
+	// service name. The first discovered Service wins; the same-named
+	// Service in the other namespace is skipped — only one entry.
 	state := dw.InitialState()
-	// This documents current behavior: last-write-wins for duplicate names.
 	eps, ok := state["web"]
 	if !ok {
 		t.Fatal("expected 'web' in initial state")
@@ -1448,7 +1448,7 @@ func TestDiscoveryWatcher_SyncServicesListerError(t *testing.T) {
 	}
 }
 
-func TestDiscoveryWatcher_RemovalDroppedWhenChannelFull(t *testing.T) {
+func TestDiscoveryWatcher_RemovalDeliveredWhenChannelFull(t *testing.T) {
 	t.Parallel()
 
 	clientset := fake.NewClientset()
@@ -1475,10 +1475,55 @@ func TestDiscoveryWatcher_RemovalDroppedWhenChannelFull(t *testing.T) {
 		dw.updateCh <- BackendUpdate{Name: fmt.Sprintf("filler-%d", i)}
 	}
 
-	// Call syncServices with an empty lister (no services match).
-	// The backend should be removed from the map, and the removal
-	// notification should be silently dropped (channel full) without blocking.
-	dw.syncServices(t.Context(), &stubServiceLister{})
+	// Call syncServices with an empty lister (no services match). A removed
+	// Service produces no further events, so a dropped removal would leave
+	// the deleted backend in the VCL forever — it must be delivered even
+	// when the channel is momentarily full.
+	done := make(chan struct{})
+	go func() {
+		dw.syncServices(t.Context(), &stubServiceLister{})
+		close(done)
+	}()
+
+	// Give syncServices time to either finish (if it drops the removal) or
+	// block on the full channel (correct behavior) before draining.
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	found := false
+	timeout := time.After(60 * time.Second)
+drain:
+	for {
+		select {
+		case u := <-dw.updateCh:
+			if u.Name == "web" && u.Endpoints == nil {
+				found = true
+
+				break drain
+			}
+		case <-timeout:
+			break drain
+		default:
+			// Channel momentarily empty: if syncServices already returned,
+			// nothing more is coming.
+			select {
+			case <-done:
+				break drain
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+	if !found {
+		t.Fatal("removal update was dropped; it must be delivered even when the channel is full")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("syncServices did not return after removal was consumed")
+	}
 
 	// Verify the backend was removed from the internal map.
 	dw.mu.Lock()
@@ -1487,12 +1532,103 @@ func TestDiscoveryWatcher_RemovalDroppedWhenChannelFull(t *testing.T) {
 	if exists {
 		t.Fatal("backend was not removed from internal map")
 	}
+}
 
-	// Drain the channel — should contain only filler items, not the removal.
-	for range cap(dw.updateCh) {
-		u := <-dw.updateCh
-		if u.Name == "web" && u.Endpoints == nil {
-			t.Fatal("removal update was not dropped; expected best-effort send to fail when channel is full")
+func TestDiscoveryWatcher_ScaleToZeroIsNotRemoval(t *testing.T) {
+	t.Parallel()
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	slice := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
+	clientset := fake.NewClientset(svc, slice)
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	waitForInitial(t, dw)
+	waitForWatch()
+
+	// All endpoints become unready (e.g. rolling restart). The Service still
+	// exists, so the update must NOT look like a removal: nil Endpoints is
+	// reserved for "Service removed".
+	updated := slice.DeepCopy()
+	updated.Endpoints[0].Conditions.Ready = new(false)
+	_, err := clientset.DiscoveryV1().EndpointSlices("default").Update(ctx, updated, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating EndpointSlice: %v", err)
+	}
+
+	u := readDiscoveryUpdate(t, dw)
+	if u.Name != "web" {
+		t.Errorf("Name = %q, want web", u.Name)
+	}
+	if len(u.Endpoints) != 0 {
+		t.Fatalf("expected 0 endpoints, got %d", len(u.Endpoints))
+	}
+	if u.Endpoints == nil {
+		t.Fatal("Endpoints = nil for a Service that still exists; nil must be reserved for removal")
+	}
+}
+
+func TestDiscoveryWatcher_DuplicateNameInOtherNamespaceSkipped(t *testing.T) {
+	t.Parallel()
+	svc1 := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	slice1 := makeDiscoverableEndpointSlice("ns1", "web", "web-abc", "10.0.0.1", 8080)
+	clientset := fake.NewClientset(svc1, slice1)
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "", true, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	waitForInitial(t, dw)
+	waitForWatch()
+
+	// A same-named Service appears in another namespace. Updates are keyed
+	// by bare Service name, so adopting it would make two watchers fight
+	// over the "web" backend group downstream — it must be skipped.
+	svc2 := makeDiscoverableService("ns2", "web", map[string]string{"app": "web"})
+	slice2 := makeDiscoverableEndpointSlice("ns2", "web", "web-def", "10.0.0.99", 8080)
+	_, err := clientset.CoreV1().Services("ns2").Create(ctx, svc2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating Service: %v", err)
+	}
+	_, err = clientset.DiscoveryV1().EndpointSlices("ns2").Create(ctx, slice2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("creating EndpointSlice: %v", err)
+	}
+
+	waitForWatch()
+
+	// Positive sync barrier: change ns1's endpoints and wait for that update.
+	updated := slice1.DeepCopy()
+	updated.Endpoints[0].Addresses = []string{"10.0.0.2"}
+	_, err = clientset.DiscoveryV1().EndpointSlices("ns1").Update(ctx, updated, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("updating EndpointSlice: %v", err)
+	}
+
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case u := <-dw.Changes():
+			if u.Name != "web" {
+				t.Errorf("Name = %q, want web", u.Name)
+			}
+			for _, ep := range u.Endpoints {
+				if ep.IP == "10.0.0.99" {
+					t.Fatal("received endpoints of the same-named Service from another namespace; it should be skipped")
+				}
+				if ep.IP == "10.0.0.2" {
+					return // ns1 change arrived without any collision update
+				}
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for ns1 endpoint update")
 		}
 	}
 }

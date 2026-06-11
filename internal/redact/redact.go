@@ -93,7 +93,11 @@ func (w *redactingWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 
-	return n, err //nolint:wrapcheck // thin wrapper; callers handle errors
+	// On error, n counts bytes of the redacted output, which can exceed
+	// len(p) when the placeholder is longer than the secret. Clamp it: the
+	// io.Writer contract requires 0 <= n <= len(p), and io.Copy fails with
+	// "invalid write result" otherwise.
+	return min(n, len(p)), err
 }
 
 // collectLeafStrings recursively walks v and appends string leaves

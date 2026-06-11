@@ -1572,3 +1572,53 @@ func TestBackendWatcher_ExcludeAnnotationsCombinedDefaultAndUser(t *testing.T) {
 		t.Errorf("expected exactly 1 annotation remaining, got %d: %v", len(annotations), annotations)
 	}
 }
+
+func TestBackendWatcherResendDoesNotDeliverStaleEndpoints(t *testing.T) {
+	t.Parallel()
+
+	// A metadata-triggered resend() racing an endpoint update via send()
+	// must never leave the consumer with the older endpoint set: the
+	// channel drain+send must be atomic with respect to send(). Stress the
+	// interleaving; either a stale final value or a blocked resend (send
+	// into a full channel outside the lock) indicates the race.
+	bw := NewBackendWatcher(fake.NewClientset(), "default", "web", "")
+	bw.send([]Endpoint{{IP: "10.0.0.1", Port: 1}})
+
+	for i := range 100000 {
+		// Drain any buffered value from the previous iteration.
+		select {
+		case <-bw.ch:
+		default:
+		}
+
+		newEps := []Endpoint{{IP: "10.0.0.1", Port: int32(i%30000 + 2)}}
+
+		var wg sync.WaitGroup
+		wg.Go(func() { bw.resend() })
+		wg.Go(func() { bw.send(newEps) })
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("send/resend deadlocked: resend's drain+send is not atomic with send()")
+		}
+
+		bw.mu.Lock()
+		want := bw.previous
+		bw.mu.Unlock()
+
+		select {
+		case got := <-bw.ch:
+			if !EndpointsEqual(got, want) {
+				t.Fatalf("iteration %d: channel delivered stale endpoints %v, want %v", i, got, want)
+			}
+		default:
+			t.Fatalf("iteration %d: no value buffered in channel", i)
+		}
+	}
+}

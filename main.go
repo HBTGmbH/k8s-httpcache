@@ -123,7 +123,9 @@ func resetDebounce(s *debounceState, debounce, debounceMax time.Duration) {
 type statusStore struct {
 	mu sync.RWMutex
 
-	// Static (set once during init).
+	// Populated during startup. The metrics server (serving /status) starts
+	// early, so fields assigned after that point must go through the locked
+	// setters below.
 	version             string
 	goVersion           string
 	varnishMajorVersion int
@@ -215,6 +217,31 @@ func (s *statusStore) setVarnishdUp(up bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.varnishdUp = up
+}
+
+// setVarnishMajorVersion records the detected varnishd major version.
+func (s *statusStore) setVarnishMajorVersion(v int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.varnishMajorVersion = v
+}
+
+// setServiceInfo records the service configuration shown by /status.
+func (s *statusStore) setServiceInfo(name, namespace string, drainEnabled, broadcastEnabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serviceName = name
+	s.serviceNamespace = namespace
+	s.drainEnabled = drainEnabled
+	s.broadcastEnabled = broadcastEnabled
+}
+
+// setSourceCounts records the number of configured values and secrets sources.
+func (s *statusStore) setSourceCounts(values, secrets int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.valuesCount = values
+	s.secretsCount = secrets
 }
 
 // statusHandler returns an HTTP handler that serves the /status JSON endpoint.
@@ -465,7 +492,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("cache version: %v", err)
 	}
-	status.varnishMajorVersion = mgr.MajorVersion()
+	status.setVarnishMajorVersion(mgr.MajorVersion())
 
 	// Register varnishstat Prometheus exporter if enabled.
 	if cfg.VarnishstatExport {
@@ -595,10 +622,7 @@ func main() {
 	}
 
 	// Populate remaining static status fields now that config is known.
-	status.serviceName = cfg.ServiceName
-	status.serviceNamespace = cfg.ServiceNamespace
-	status.drainEnabled = cfg.Drain
-	status.broadcastEnabled = cfg.BroadcastAddr != ""
+	status.setServiceInfo(cfg.ServiceName, cfg.ServiceNamespace, cfg.Drain, cfg.BroadcastAddr != "")
 
 	// Collect the initial endpoint snapshot from every watcher before
 	// starting varnishd, so it launches with a complete configuration.
@@ -644,8 +668,7 @@ func main() {
 
 	// Set initial status counts.
 	status.setEndpointCounts(len(latestFrontends), backendCountsMap(latestBackends))
-	status.valuesCount = len(latestValues)
-	status.secretsCount = len(latestSecrets)
+	status.setSourceCounts(len(latestValues), len(latestSecrets))
 
 	// Set initial endpoint gauges.
 	metrics.Endpoints.WithLabelValues("frontend", cfg.ServiceName).Set(float64(len(latestFrontends)))
@@ -1307,6 +1330,10 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			case <-time.After(lc.shutdownTimeout):
 				slog.Warn("varnishd did not exit in time, forcing")
 				lc.mgr.ForwardSignal(syscall.SIGKILL)
+				// SIGKILL cannot be ignored. Wait for the exit so the Err()
+				// read below is ordered after the manager's Wait goroutine
+				// writes it (reading earlier is a data race).
+				<-lc.mgr.Done()
 			}
 
 			err := lc.mgr.Err()

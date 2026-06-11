@@ -288,15 +288,18 @@ func (bw *BackendWatcher) stopEndpointSliceWatcherLocked() {
 // metadata (labels or annotations) changes without an endpoint change.
 func (bw *BackendWatcher) resend() {
 	bw.mu.Lock()
-	eps := bw.previous
-	bw.mu.Unlock()
+	defer bw.mu.Unlock()
 
-	// Non-blocking send: drain then send.
+	// Non-blocking send: drain then send. The channel operations must stay
+	// under the mutex so they are atomic with send() — otherwise a resend
+	// racing a newer update can drain the fresh value and deliver the stale
+	// one (and the drain+send pair only guarantees buffer space when all
+	// senders are serialised).
 	select {
 	case <-bw.ch:
 	default:
 	}
-	bw.ch <- eps
+	bw.ch <- bw.previous
 }
 
 func (bw *BackendWatcher) send(endpoints []Endpoint) {

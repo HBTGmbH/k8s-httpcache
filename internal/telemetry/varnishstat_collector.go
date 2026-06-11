@@ -1,9 +1,11 @@
 package telemetry
 
 import (
+	"cmp"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,10 +32,13 @@ type VarnishstatCollector struct {
 	parseFailuresDesc *prometheus.Desc
 
 	// descCache avoids re-creating identical prometheus.Desc objects on every
-	// scrape. Keyed by metric name; safe without a mutex because Prometheus
-	// serialises calls to Collect.
+	// scrape. Keyed by metric name; guarded by mu.
 	descCache map[string]*prometheus.Desc
 
+	// mu serialises Collect: the prometheus.Collector contract allows
+	// concurrent Collect calls (e.g. two scrapes in flight), which would
+	// otherwise race on descCache and the scrape counters.
+	mu            sync.Mutex
 	totalScrapes  float64
 	parseFailures float64
 }
@@ -89,6 +94,9 @@ func (c *VarnishstatCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect runs varnishstat and emits all counters as Prometheus metrics.
 func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.totalScrapes++
 
 	start := time.Now()
@@ -217,11 +225,27 @@ const (
 	labelTarget = "target"
 )
 
-// newestVBEReloadTag scans counter names for VBE.reload_<N> prefixes and
-// returns the lexicographically greatest one (most recent VCL reload).
-// Returns "" when no reload prefixes exist.
+// compareReloadTags orders two reload tag suffixes (the part after
+// "VBE.kv_reload_"). The controller names reloads with an unpadded counter
+// (kv_reload_1, … kv_reload_10), so purely numeric tags are compared
+// numerically — lexicographic comparison would rank 9 above 10. Non-numeric
+// tags (e.g. timestamp-style) fall back to lexicographic ordering.
+func compareReloadTags(a, b string) int {
+	na, errA := strconv.ParseUint(a, 10, 64)
+	nb, errB := strconv.ParseUint(b, 10, 64)
+	if errA == nil && errB == nil {
+		return cmp.Compare(na, nb)
+	}
+
+	return cmp.Compare(a, b)
+}
+
+// newestVBEReloadTag scans counter names for VBE.kv_reload_<tag> prefixes and
+// returns the one from the most recent VCL reload (numeric tags compared
+// numerically). Returns "" when no reload prefixes exist.
 func newestVBEReloadTag(counters map[string]varnishstatCounter) string {
 	latest := ""
+	latestSuffix := ""
 	for key := range counters {
 		if !strings.HasPrefix(key, vbeReloadTag) {
 			continue
@@ -235,9 +259,10 @@ func newestVBEReloadTag(counters map[string]varnishstatCounter) string {
 		if sep < 0 {
 			continue
 		}
-		candidate := key[:len(vbeReloadTag)+sep]
-		if candidate > latest {
-			latest = candidate
+		suffix := tail[:sep]
+		if latest == "" || compareReloadTags(suffix, latestSuffix) > 0 {
+			latest = key[:len(vbeReloadTag)+sep]
+			latestSuffix = suffix
 		}
 	}
 
@@ -250,8 +275,20 @@ func isStaleBackendCounter(counterName, latestReload string) bool {
 	if latestReload == "" {
 		return false
 	}
+	if !strings.HasPrefix(counterName, "VBE.") {
+		return false
+	}
 
-	return strings.HasPrefix(counterName, "VBE.") && !strings.HasPrefix(counterName, latestReload)
+	// Current-reload counters have the form "<latestReload>.<backend>…".
+	// The boundary dot must be checked explicitly: "VBE.kv_reload_2" is a
+	// plain prefix of "VBE.kv_reload_25.…" but reload 25 is a different
+	// (non-stale) generation.
+	if strings.HasPrefix(counterName, latestReload) &&
+		len(counterName) > len(latestReload) && counterName[len(latestReload)] == '.' {
+		return false
+	}
+
+	return true
 }
 
 // lowerGroup maps a raw uppercase group name (e.g. "MAIN", "VBE") to its

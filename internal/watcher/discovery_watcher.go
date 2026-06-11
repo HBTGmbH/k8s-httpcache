@@ -239,6 +239,13 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 				if !ok {
 					return
 				}
+				if eps == nil {
+					// The child watcher emits nil when the Service has no
+					// ready endpoints. Nil Endpoints on a BackendUpdate
+					// means "Service removed", so normalize to an empty
+					// slice to keep the two cases distinguishable.
+					eps = []Endpoint{}
+				}
 				select {
 				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: bw.Labels(), Annotations: bw.Annotations()}:
 				case <-fwdCtx.Done():
@@ -279,10 +286,11 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 	}
 
 	dw.mu.Lock()
-	defer dw.mu.Unlock()
 
 	// backends is set to nil during shutdown; bail out to avoid nil-map panic.
 	if dw.backends == nil {
+		dw.mu.Unlock()
+
 		return
 	}
 
@@ -293,6 +301,12 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		}
 		if dw.explicitNames[svc.Name] {
 			dw.log.Debug("skipping discovered Service (matches explicit --backend name)",
+				"namespace", svc.Namespace, "service", svc.Name)
+
+			continue
+		}
+		if dw.nameClaimedLocked(svc.Name, svc.Namespace) {
+			dw.log.Warn("skipping discovered Service: name already claimed by a same-named Service in another namespace",
 				"namespace", svc.Namespace, "service", svc.Name)
 
 			continue
@@ -329,6 +343,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 	}
 
 	// Remove backends that no longer match.
+	var removedNames []string
 	for key, mb := range dw.backends {
 		if _, exists := current[key]; exists {
 			continue
@@ -340,12 +355,34 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		delete(dw.backends, key)
 		dw.log.Info("removed discovered backend Service",
 			"namespace", mb.namespace, "service", mb.name)
+		removedNames = append(removedNames, mb.name)
+	}
+	dw.mu.Unlock()
 
-		// Send removal notification.
+	// Send removal notifications without holding the lock. A removed Service
+	// produces no further events that could correct a dropped notification,
+	// so block until the consumer drains the channel instead of dropping on
+	// overflow.
+	for _, name := range removedNames {
 		select {
-		case dw.updateCh <- BackendUpdate{Name: mb.name, Endpoints: nil}:
-		default:
-			// Best effort — channel full.
+		case dw.updateCh <- BackendUpdate{Name: name, Endpoints: nil}:
+		case <-ctx.Done():
+			return
 		}
 	}
+}
+
+// nameClaimedLocked reports whether a backend with the given Service name
+// already exists in a different namespace. Updates are keyed by bare Service
+// name, so a second same-named Service would fight over the same backend
+// group downstream; the first discovered Service wins. Must be called with
+// dw.mu held.
+func (dw *BackendDiscoveryWatcher) nameClaimedLocked(name, namespace string) bool {
+	for _, mb := range dw.backends {
+		if mb.name == name && mb.namespace != namespace {
+			return true
+		}
+	}
+
+	return false
 }

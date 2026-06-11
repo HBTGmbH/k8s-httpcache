@@ -296,6 +296,30 @@ func TestRedactWriterInnerError(t *testing.T) {
 	}
 }
 
+func TestRedactWriterInnerErrorCountWithinInput(t *testing.T) {
+	t.Parallel()
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{
+		"app": {"token": "secret"}, // 6 bytes → "[REDACTED]" is 10 bytes
+	})
+
+	errInner := errors.New("disk full")
+	// The inner writer consumed 8 bytes of the redacted (longer) output
+	// before failing — more than the 6 input bytes.
+	w := r.Writer(&failWriter{err: errInner, n: 8})
+	input := []byte("secret")
+	n, err := w.Write(input)
+
+	if !errors.Is(err, errInner) {
+		t.Errorf("expected inner error, got %v", err)
+	}
+	// io.Writer contract: 0 <= n <= len(p). Reporting more makes io.Copy
+	// fail with "invalid write result".
+	if n > len(input) {
+		t.Errorf("Write returned n=%d > len(p)=%d, violating the io.Writer contract", n, len(input))
+	}
+}
+
 // failWriter is a test helper that always returns a fixed error.
 type failWriter struct {
 	err error

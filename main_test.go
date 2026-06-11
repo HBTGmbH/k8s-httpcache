@@ -1379,17 +1379,20 @@ func TestRunLoop_ShutdownTimeout(t *testing.T) {
 
 	// Send SIGTERM but do NOT close mgr.done — varnishd doesn't exit in time.
 	h.sigCh <- syscall.SIGTERM
+
+	// After the shutdown timeout fires, runLoop escalates to SIGKILL and
+	// waits for varnishd to exit. Simulate the kill taking effect.
+	waitFor(t, func() bool {
+		sigs := h.mgr.getForwardedSigs()
+
+		return len(sigs) >= 2 && sigs[1] == syscall.SIGKILL
+	}, "SIGKILL forwarded")
+	close(h.mgr.done)
 	<-done
 
 	sigs := h.mgr.getForwardedSigs()
-	if len(sigs) < 2 {
-		t.Fatalf("expected at least 2 forwarded signals (SIGTERM + SIGKILL), got %v", sigs)
-	}
 	if sigs[0] != syscall.SIGTERM {
 		t.Fatalf("expected first signal SIGTERM, got %v", sigs[0])
-	}
-	if sigs[1] != syscall.SIGKILL {
-		t.Fatalf("expected second signal SIGKILL, got %v", sigs[1])
 	}
 
 	result := int(code.Load())
@@ -5491,6 +5494,9 @@ func TestRunLoop_ExplicitBackendLabelsSeededAtStartup(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
+	// Simulate varnishd exiting once the loop forwards the signal.
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -5544,6 +5550,9 @@ func TestRunLoop_ExplicitBackendAnnotationsSeededAtStartup(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
+	// Simulate varnishd exiting once the loop forwards the signal.
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -5654,6 +5663,9 @@ func TestRunLoop_BackendAnnotationsFilteredSeededAtStartup(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
+	// Simulate varnishd exiting once the loop forwards the signal.
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -5804,5 +5816,104 @@ func TestRunLoop_MockLastBackendsIndependentOfSubsequentChanges(t *testing.T) {
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestStatusStoreInitWritesConcurrentWithSnapshot(t *testing.T) {
+	t.Parallel()
+
+	// main() populates several statusStore fields after the metrics server
+	// (which serves snapshot() via /status) is already running. Those
+	// writes must be synchronized with concurrent readers (run with -race).
+	store := &statusStore{
+		version:   "test",
+		goVersion: "go-test",
+		startedAt: time.Now(),
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		<-start
+		for range 5000 {
+			_ = store.snapshot()
+		}
+	})
+
+	// Mirrors the late-init assignments in main(), repeated so the writes
+	// demonstrably overlap the concurrent snapshot() calls.
+	close(start)
+	for range 5000 {
+		store.setVarnishMajorVersion(7)
+		store.setServiceInfo("svc", "ns", true, true)
+		store.setSourceCounts(2, 1)
+	}
+
+	wg.Wait()
+
+	snap := store.snapshot()
+	if snap.VarnishMajorVersion != 7 {
+		t.Errorf("VarnishMajorVersion = %d, want 7", snap.VarnishMajorVersion)
+	}
+	if snap.ServiceName != "svc" || snap.ServiceNamespace != "ns" {
+		t.Errorf("service info = %q/%q, want svc/ns", snap.ServiceName, snap.ServiceNamespace)
+	}
+	if !snap.DrainEnabled || !snap.BroadcastEnabled {
+		t.Error("drain/broadcast flags not set")
+	}
+	if snap.ValuesCount != 2 || snap.SecretsCount != 1 {
+		t.Errorf("source counts = %d/%d, want 2/1", snap.ValuesCount, snap.SecretsCount)
+	}
+}
+
+// racyShutdownManager mirrors varnish.Manager's synchronization: err is
+// written by a plain goroutine followed by close(done), and Err() reads it
+// without a mutex. The happens-before edge exists only for readers that wait
+// on Done() first — exactly the contract runLoop must respect after SIGKILL.
+type racyShutdownManager struct {
+	done chan struct{}
+	err  error
+}
+
+func (*racyShutdownManager) Reload(string) error             { return nil }
+func (m *racyShutdownManager) Done() <-chan struct{}         { return m.done }
+func (m *racyShutdownManager) Err() error                    { return m.err }
+func (*racyShutdownManager) MarkBackendSick(string) error    { return nil }
+func (*racyShutdownManager) ActiveSessions() (uint64, error) { return 0, nil }
+
+func (m *racyShutdownManager) ForwardSignal(sig os.Signal) {
+	if sig == syscall.SIGKILL {
+		go func() {
+			m.err = errors.New("killed") // mirrors m.err = m.proc.Wait()
+			close(m.done)
+		}()
+	}
+}
+
+func TestRunLoopShutdownTimeoutErrReadAfterKill(t *testing.T) {
+	t.Parallel()
+
+	// varnishd ignores SIGTERM (Done never closes), the shutdown timeout
+	// fires, and runLoop escalates to SIGKILL. Reading mgr.Err() must be
+	// ordered after the manager's Wait goroutine writes it (run with -race).
+	h := newTestHarness()
+	mgr := &racyShutdownManager{done: make(chan struct{})}
+	lc := h.loopConfig(h.bcast)
+	lc.mgr = mgr
+	lc.shutdownTimeout = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(t.Context())
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- runLoop(ctx, cancel, lc) }()
+
+	h.sigCh <- syscall.SIGTERM
+
+	select {
+	case code := <-codeCh:
+		if code != 1 {
+			t.Errorf("exit code = %d, want 1 (varnishd was killed with an error)", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runLoop did not return after SIGKILL escalation")
 	}
 }

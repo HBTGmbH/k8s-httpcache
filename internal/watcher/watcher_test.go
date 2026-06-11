@@ -632,12 +632,68 @@ func TestRunFiltersNonReadyEndpoints(t *testing.T) {
 	ctx := t.Context()
 	go func() { _ = w.Run(ctx) }()
 
+	// Ready=false is excluded. Ready=nil means "unknown", which the
+	// EndpointSlice spec instructs consumers to interpret as ready.
 	eps := readChanges(t, w)
-	if len(eps) != 1 {
-		t.Fatalf("expected 1 ready endpoint, got %d: %v", len(eps), eps)
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 endpoints (ready + nil-ready), got %d: %v", len(eps), eps)
 	}
 	if eps[0].IP != "10.0.0.1" {
 		t.Errorf("expected ready endpoint 10.0.0.1, got %s", eps[0].IP)
+	}
+	if eps[1].IP != "10.0.0.3" {
+		t.Errorf("expected nil-ready endpoint 10.0.0.3, got %s", eps[1].IP)
+	}
+}
+
+func TestRunDeduplicatesEndpointsAcrossSlices(t *testing.T) {
+	t.Parallel()
+	// During EndpointSlice rebalancing the same endpoint can transiently
+	// appear in two slices; the API docs require consumers to deduplicate.
+	// Without dedup, duplicate VCL backend declarations break vcl.load.
+	sliceA := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+	sliceB := makeEndpointSlice("svc-def",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1"}, // duplicate of sliceA's endpoint
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+			{
+				Addresses:  []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-b"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(sliceA, sliceB)
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 unique endpoints, got %d: %v", len(eps), eps)
+	}
+	if eps[0].IP != "10.0.0.1" || eps[1].IP != "10.0.0.2" {
+		t.Errorf("endpoints = %v, want 10.0.0.1 and 10.0.0.2", eps)
 	}
 }
 

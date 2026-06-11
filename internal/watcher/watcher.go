@@ -131,7 +131,9 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		port := resolvePort(slice.Ports, w.portOverride)
 
 		for _, ep := range slice.Endpoints {
-			if ep.Conditions.Ready == nil || !*ep.Conditions.Ready {
+			// Ready == nil means "unknown"; the EndpointSlice spec
+			// instructs consumers to interpret unknown as ready.
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
 				continue
 			}
 			name := ""
@@ -171,6 +173,14 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		}
 
 		return cmp.Compare(a.Port, b.Port)
+	})
+
+	// The same endpoint can transiently appear in more than one slice during
+	// EndpointSlice rebalancing; the API docs require consumers to
+	// deduplicate. The list is sorted by (IP, Port), so duplicates are
+	// adjacent.
+	endpoints = slices.CompactFunc(endpoints, func(a, b Endpoint) bool {
+		return a.IP == b.IP && a.Port == b.Port
 	})
 
 	w.mu.Lock()

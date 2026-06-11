@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -2090,4 +2091,134 @@ func BenchmarkParseVarnishstatV6(b *testing.B) {
 	for range b.N {
 		_, _ = parseVarnishstatV6(data)
 	}
+}
+
+func TestNewestVBEReloadTagNumericOrdering(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		counters map[string]varnishstatCounter
+		want     string
+	}{
+		{
+			// Reload 10 is newer than reload 9 even though "9" > "10" lexicographically.
+			name: "single vs double digit",
+			counters: map[string]varnishstatCounter{
+				"VBE.kv_reload_9.a(1.2.3.4,,80).happy":  {},
+				"VBE.kv_reload_10.b(1.2.3.5,,80).happy": {},
+			},
+			want: "VBE.kv_reload_10",
+		},
+		{
+			name: "shared digit prefix",
+			counters: map[string]varnishstatCounter{
+				"VBE.kv_reload_2.a(1.2.3.4,,80).happy":  {},
+				"VBE.kv_reload_25.b(1.2.3.5,,80).happy": {},
+			},
+			want: "VBE.kv_reload_25",
+		},
+		{
+			// Non-numeric (timestamp-style) tags keep lexicographic ordering.
+			name: "timestamp tags",
+			counters: map[string]varnishstatCounter{
+				"VBE.kv_reload_20240101_120000_123.a(1.2.3.4,,80).happy": {},
+				"VBE.kv_reload_20240102_080000_001.b(1.2.3.5,,80).happy": {},
+			},
+			want: "VBE.kv_reload_20240102_080000_001",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := newestVBEReloadTag(tt.counters); got != tt.want {
+				t.Errorf("newestVBEReloadTag() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsStaleBackendCounterPrefixBoundary(t *testing.T) {
+	t.Parallel()
+
+	// "VBE.kv_reload_2" must not be treated as a prefix match for counters
+	// of reload 25 — that would export two reload generations at once and
+	// produce duplicate label sets.
+	if got := isStaleBackendCounter("VBE.kv_reload_25.foo.happy", "VBE.kv_reload_2"); !got {
+		t.Error("isStaleBackendCounter(kv_reload_25 counter, latest kv_reload_2) = false, want true")
+	}
+}
+
+func TestVarnishstatCollectorStaleFilterDoubleDigitReload(t *testing.T) {
+	t.Parallel()
+
+	// Counters from reload 9 (old) and reload 10 (current). Only the
+	// kv_reload_10 backend may be exported.
+	jsonOutput := `{
+		"version": 1,
+		"counters": {
+			"VBE.kv_reload_9.old_backend(10.0.0.1,,80).happy": {
+				"value": 1, "flag": "b", "description": "Happy health probes",
+				"ident": "kv_reload_9.old_backend(10.0.0.1,,80)"
+			},
+			"VBE.kv_reload_10.new_backend(10.0.0.2,,80).happy": {
+				"value": 3, "flag": "b", "description": "Happy health probes",
+				"ident": "kv_reload_10.new_backend(10.0.0.2,,80)"
+			}
+		}
+	}`
+
+	fn := func() (string, int, error) { return jsonOutput, 7, nil }
+	c := NewVarnishstatCollector(fn, nil)
+
+	families := collectMetrics(t, c)
+
+	up := findFamily(families, "varnish_backend_up")
+	if up == nil {
+		t.Fatal("missing varnish_backend_up metric")
+	}
+	if got := len(up.GetMetric()); got != 1 {
+		t.Fatalf("varnish_backend_up has %d series, want 1 (only the kv_reload_10 backend)", got)
+	}
+	if got := labelValue(up, "backend"); got != "new_backend" {
+		t.Errorf("varnish_backend_up backend label = %q, want %q", got, "new_backend")
+	}
+}
+
+func TestVarnishstatCollectorConcurrentCollect(t *testing.T) {
+	t.Parallel()
+
+	// The prometheus.Collector contract allows concurrent Collect calls
+	// (e.g. two scrapes in flight). This must not race on the collector's
+	// internal state (run with -race).
+	jsonOutput := `{
+		"version": 1,
+		"counters": {
+			"MAIN.cache_hit": {"value": 42, "flag": "c", "description": "Cache hits"},
+			"MAIN.n_object": {"value": 10, "flag": "g", "description": "Object count"},
+			"VBE.kv_reload_1.be(10.0.0.1,,80).happy": {
+				"value": 1, "flag": "b", "description": "Happy health probes",
+				"ident": "kv_reload_1.be(10.0.0.1,,80)"
+			}
+		}
+	}`
+
+	fn := func() (string, int, error) { return jsonOutput, 7, nil }
+	c := NewVarnishstatCollector(fn, nil)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 25 {
+				ch := make(chan prometheus.Metric, 64)
+				c.Collect(ch)
+				close(ch)
+				for range ch { //nolint:revive // drain only
+				}
+			}
+		})
+	}
+	wg.Wait()
 }
