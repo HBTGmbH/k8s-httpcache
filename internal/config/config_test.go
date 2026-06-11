@@ -1075,6 +1075,28 @@ func TestParseDebounceLatencyBucketsCustom(t *testing.T) {
 	}
 }
 
+func TestParseDebounceLatencyBucketsDeduplicated(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-latency-buckets=1,0.1,1,5",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// prometheus.NewHistogram panics unless bucket boundaries are strictly
+	// increasing, so duplicates must not survive parsing — otherwise the
+	// process crashes in NewMetrics after validation has already passed.
+	want := []float64{0.1, 1, 5}
+	if !slices.Equal(cfg.DebounceLatencyBuckets, want) {
+		t.Errorf("DebounceLatencyBuckets = %v, want %v (sorted and deduplicated)", cfg.DebounceLatencyBuckets, want)
+	}
+}
+
 func TestParseDebounceLatencyBucketsInvalidValue(t *testing.T) {
 	t.Parallel()
 	vcl := makeTempVCL(t)

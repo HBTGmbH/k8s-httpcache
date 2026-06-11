@@ -4577,3 +4577,49 @@ func BenchmarkPrefixWriter_TrailingFragment(b *testing.B) {
 		_, _ = pw.Write(write2)
 	}
 }
+
+func TestStartNCSAStableRunsResetCrashCounter(t *testing.T) {
+	t.Parallel()
+
+	// Each varnishncsa run stays up longer than NCSAStableUptime before
+	// exiting. Such exits are not a crash loop ("crashed N times
+	// consecutively"): the counter must reset after every stable run, so
+	// the breaker never trips even after more than NCSAMaxCrashes
+	// lifetime exits — otherwise three unrelated exits spread over weeks
+	// would shut down the whole controller.
+	var startCount atomic.Int32
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			startCount.Add(1)
+			p := &mockProc{pid: 1, waitErr: errors.New("exited"), waitCh: make(chan struct{})}
+			go func() {
+				time.Sleep(30 * time.Millisecond) // stable uptime
+				close(p.waitCh)
+			}()
+
+			return p, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.NCSAMaxCrashes = 3
+	m.NCSAStableUptime = 10 * time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+	defer m.StopNCSA()
+
+	// Survive well past NCSAMaxCrashes exits.
+	deadline := time.After(10 * time.Second)
+	for startCount.Load() < 5 {
+		select {
+		case <-m.NCSACrashed():
+			t.Fatalf("crash-loop breaker tripped after %d stable runs; counter must reset after a stable run", startCount.Load())
+		case <-deadline:
+			t.Fatalf("timed out: startCount=%d, want >= 5", startCount.Load())
+		case <-time.After(time.Millisecond):
+		}
+	}
+}

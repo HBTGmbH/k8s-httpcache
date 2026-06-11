@@ -835,3 +835,41 @@ func TestNewPanicsOnNilMetrics(t *testing.T) {
 		Metrics:           nil,
 	})
 }
+
+func TestForwardPreservesHostHeader(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu      sync.Mutex
+		gotHost string
+	)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotHost = r.Host
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	s := newTestServer()
+	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
+
+	// PURGE-style request: VCL on each pod matches on req.http.host, so the
+	// client's original Host must reach the pod — not the pod's ip:port.
+	// (Go promotes the incoming Host header to Request.Host and removes it
+	// from the Header map, so copying headers alone loses it.)
+	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
+	req.Host = "example.com"
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotHost != "example.com" {
+		t.Fatalf("forwarded Host = %q, want %q (purges keyed by host would miss)", gotHost, "example.com")
+	}
+}

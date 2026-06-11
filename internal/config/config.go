@@ -1088,6 +1088,9 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				c.DebounceLatencyBuckets = append(c.DebounceLatencyBuckets, v)
 			}
 			slices.Sort(c.DebounceLatencyBuckets)
+			// Drop duplicates: prometheus.NewHistogram panics unless bucket
+			// boundaries are strictly increasing.
+			c.DebounceLatencyBuckets = slices.Compact(c.DebounceLatencyBuckets)
 
 			// Validate VCL template file exists.
 			_, err = os.Stat(c.VCLTemplate)

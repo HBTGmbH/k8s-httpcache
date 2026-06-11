@@ -191,7 +191,8 @@ type Manager struct {
 	ncsaDone   chan struct{}  // closed when monitorNCSA exits
 
 	NCSARestartDelay time.Duration // default 5s, exported for testing
-	NCSAMaxCrashes   int           // default 3, exported for testing
+	NCSAMaxCrashes   int           // max consecutive crashes; default 3, exported for testing
+	NCSAStableUptime time.Duration // run time after which the crash counter resets; default 1m, exported for testing (0 = never reset)
 	ncsaCrashed      chan struct{} // closed when crash limit is reached
 }
 
@@ -242,6 +243,7 @@ func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, v
 		AdminTimeout:     30 * time.Second,
 		NCSARestartDelay: 5 * time.Second,
 		NCSAMaxCrashes:   3,
+		NCSAStableUptime: time.Minute,
 	}
 }
 
@@ -518,6 +520,7 @@ func (m *Manager) monitorNCSA() {
 		m.ncsaProc = p
 		m.ncsaMu.Unlock()
 		m.log.Info("started varnishncsa", "pid", p.Pid())
+		started := time.Now()
 
 		waitDone := make(chan error, 1)
 		go func() { waitDone <- p.Wait() }()
@@ -537,6 +540,13 @@ func (m *Manager) monitorNCSA() {
 			m.log.Warn("varnishncsa exited unexpectedly", "error", waitErr)
 			m.sendNCSAEvent("Warning", "VarnishncsaExited",
 				fmt.Sprintf("varnishncsa exited unexpectedly: %v", waitErr))
+			// A run that stayed up long enough is not part of a crash
+			// loop — reset the counter so only consecutive rapid
+			// failures trip the breaker, not unrelated exits spread
+			// over the process lifetime.
+			if m.NCSAStableUptime > 0 && time.Since(started) >= m.NCSAStableUptime {
+				crashes = 0
+			}
 			crashes++
 			if m.NCSAMaxCrashes > 0 && crashes >= m.NCSAMaxCrashes {
 				m.log.Error("varnishncsa crash loop detected, giving up", "crashes", crashes)

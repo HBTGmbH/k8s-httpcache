@@ -264,6 +264,12 @@ func (s *Server) forward(origReq *http.Request, fe *watcher.Frontend, body []byt
 		}
 	}
 
+	// The incoming Host header is promoted to origReq.Host and removed from
+	// the Header map, so it is not covered by the copy above. Preserve it:
+	// Varnish PURGE/BAN VCL matches on req.http.host, and the pod's ip:port
+	// (the default otherwise) would never match cached objects.
+	req.Host = origReq.Host
+
 	if len(body) > 0 {
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
