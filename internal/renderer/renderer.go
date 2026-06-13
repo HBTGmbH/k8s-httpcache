@@ -329,11 +329,11 @@ func backendBlocksEnd(vcl string) int {
 		for i := openBrace + 1; i < len(vcl); i++ {
 			// Skip /* */ block comments.
 			if i+1 < len(vcl) && vcl[i] == '/' && vcl[i+1] == '*' {
-				end := strings.Index(vcl[i+2:], "*/")
-				if end < 0 {
+				rel := strings.Index(vcl[i+2:], "*/")
+				if rel < 0 {
 					break // unclosed comment, stop scanning
 				}
-				i = i + 2 + end + 1 // skip past "*/"
+				i = i + 2 + rel + 1 // skip past "*/"
 
 				continue
 			}

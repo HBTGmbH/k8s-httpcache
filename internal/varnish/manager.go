@@ -748,6 +748,12 @@ func (m *Manager) discardOldVCLs(currentName string) {
 			available = append(available, name)
 		}
 	}
+	err = scanner.Err()
+	if err != nil {
+		m.log.Warn("failed to parse vcl.list output, skipping VCL cleanup", "error", err)
+
+		return
+	}
 
 	if len(available) == 0 {
 		return

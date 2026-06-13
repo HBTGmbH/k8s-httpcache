@@ -420,9 +420,9 @@ func main() {
 		go func() {
 			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
 
-			err := metricsSrv.ListenAndServe()
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Fatalf("metrics server: %v", err)
+			serveErr := metricsSrv.ListenAndServe()
+			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				log.Fatalf("metrics server: %v", serveErr)
 			}
 		}()
 	}
@@ -452,9 +452,9 @@ func main() {
 			Name:       podName,
 			Namespace:  cfg.ServiceNamespace,
 		}
-		pod, err := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(context.Background(), podName, metav1.GetOptions{})
-		if err != nil {
-			slog.Warn("could not look up pod UID for event recording; events may not appear in kubectl describe pod", "error", err)
+		pod, getErr := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(context.Background(), podName, metav1.GetOptions{})
+		if getErr != nil {
+			slog.Warn("could not look up pod UID for event recording; events may not appear in kubectl describe pod", "error", getErr)
 		} else {
 			podRef.UID = pod.UID
 		}
@@ -519,9 +519,9 @@ func main() {
 	// Start frontend watcher.
 	w := watcher.New(clientset, cfg.ServiceNamespace, cfg.ServiceName, "")
 	go func() {
-		err := w.Run(ctx)
-		if err != nil {
-			slog.Error("watcher error", "error", err)
+		runErr := w.Run(ctx)
+		if runErr != nil {
+			slog.Error("watcher error", "error", runErr)
 		}
 	}()
 
@@ -539,9 +539,9 @@ func main() {
 		bw.SetExcludeAnnotations(excludeAnnotation)
 		name := b.Name
 		go func() {
-			err := bw.Run(ctx)
-			if err != nil {
-				slog.Error("backend watcher error", "backend", name, "error", err)
+			runErr := bw.Run(ctx)
+			if runErr != nil {
+				slog.Error("backend watcher error", "backend", name, "error", runErr)
 			}
 		}()
 		bwNames = append(bwNames, name)
@@ -576,9 +576,9 @@ func main() {
 		vw := watcher.NewConfigMapWatcher(clientset, v.Namespace, v.ConfigMapName)
 		name := v.Name
 		go func() {
-			err := vw.Run(ctx)
-			if err != nil {
-				slog.Error("values watcher error", "values", name, "error", err)
+			runErr := vw.Run(ctx)
+			if runErr != nil {
+				slog.Error("values watcher error", "values", name, "error", runErr)
 			}
 		}()
 		vwNames = append(vwNames, name)
@@ -594,9 +594,9 @@ func main() {
 		sw := watcher.NewSecretWatcher(clientset, s.Namespace, s.SecretName)
 		name := s.Name
 		go func() {
-			err := sw.Run(ctx)
-			if err != nil {
-				slog.Error("secrets watcher error", "secrets", name, "error", err)
+			runErr := sw.Run(ctx)
+			if runErr != nil {
+				slog.Error("secrets watcher error", "secrets", name, "error", runErr)
 			}
 		}()
 		swNames = append(swNames, name)
@@ -612,9 +612,9 @@ func main() {
 		fvw := watcher.NewFileValuesWatcher(vd.Path, cfg.ValuesDirPollInterval)
 		name := vd.Name
 		go func() {
-			err := fvw.Run(ctx)
-			if err != nil {
-				slog.Error("values-dir watcher error", "values_dir", name, "error", err)
+			runErr := fvw.Run(ctx)
+			if runErr != nil {
+				slog.Error("values-dir watcher error", "values_dir", name, "error", runErr)
 			}
 		}()
 		fvwNames = append(fvwNames, name)
@@ -691,9 +691,9 @@ func main() {
 		})
 		bcast.SetFrontends(latestFrontends)
 		go func() {
-			err := bcast.ListenAndServe()
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Fatalf("broadcast server: %v", err)
+			serveErr := bcast.ListenAndServe()
+			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				log.Fatalf("broadcast server: %v", serveErr)
 			}
 		}()
 	}

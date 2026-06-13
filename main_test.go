@@ -4305,7 +4305,7 @@ func TestWatchFileReadError(t *testing.T) {
 	// can flake under load (race detector, Windows timer resolution).
 	watcherActive := false
 	for i := 1; i <= 100; i++ {
-		err := os.WriteFile(path, fmt.Appendf(nil, "v%d", i), 0o644)
+		err = os.WriteFile(path, fmt.Appendf(nil, "v%d", i), 0o644)
 		if err != nil {
 			t.Fatal(err)
 		}

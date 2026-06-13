@@ -95,7 +95,6 @@ linters:
       enable-all: true
       disable:
         - fieldalignment  # too noisy; micro-optimization not worth readability cost
-        - shadow          # mostly flags idiomatic err re-declarations
         - findcall        # demo analyzer, not useful
     ireturn:
       allow:

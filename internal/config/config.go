@@ -1074,9 +1074,9 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 			// Parse debounce latency buckets.
 			for p := range strings.SplitSeq(rawDebounceLatencyBuckets, ",") {
-				v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
-				if err != nil {
-					actionErr = validationError(cmd, "--debounce-latency-buckets: invalid value %q: %v", p, err)
+				v, parseErr := strconv.ParseFloat(strings.TrimSpace(p), 64)
+				if parseErr != nil {
+					actionErr = validationError(cmd, "--debounce-latency-buckets: invalid value %q: %v", p, parseErr)
 
 					return nil
 				}
@@ -1157,9 +1157,9 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 			// Resolve broadcast target port from the named listen address.
 			if c.BroadcastAddr != "" {
-				port, err := resolveBroadcastTargetPort(c.ListenAddrs, c.BroadcastTargetListenAddr)
-				if err != nil {
-					actionErr = validationError(cmd, "%v", err)
+				port, resolveErr := resolveBroadcastTargetPort(c.ListenAddrs, c.BroadcastTargetListenAddr)
+				if resolveErr != nil {
+					actionErr = validationError(cmd, "%v", resolveErr)
 
 					return nil
 				}
