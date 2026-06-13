@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       go: ${{ steps.filter.outputs.go }}
+      gofiles: ${{ steps.filter.outputs.gofiles }}
       src: ${{ steps.filter.outputs.src }}
       ci: ${{ steps.filter.outputs.ci }}
       helm: ${{ steps.filter.outputs.helm }}
@@ -38,6 +39,8 @@ jobs:
             - 'go.mod'
             - 'go.sum'
             - '.golangci.yml'
+          gofiles:
+            - '**/*.go'
           src:
             - '**/!(*_test).go'
             - 'go.mod'
@@ -176,7 +179,7 @@ jobs:
     - name: Run deadcode
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
-        needs.changes.outputs.go == 'true' ||
+        needs.changes.outputs.gofiles == 'true' ||
         needs.changes.outputs.ci == 'true'
       run: deadcode -test ./...
     - name: ShellCheck
@@ -187,12 +190,14 @@ jobs:
     - name: Install yamllint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
-        needs.changes.outputs.yaml == 'true'
+        needs.changes.outputs.yaml == 'true' ||
+        needs.changes.outputs.ci == 'true'
       run: python3 -m pip install --user yamllint==1.38.0
     - name: YAML lint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
-        needs.changes.outputs.yaml == 'true'
+        needs.changes.outputs.yaml == 'true' ||
+        needs.changes.outputs.ci == 'true'
       run: yamllint --strict .
     - name: Restore markdownlint-cli2
       if: >-
