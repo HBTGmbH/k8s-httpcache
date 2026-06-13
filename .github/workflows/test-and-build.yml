@@ -47,7 +47,8 @@ jobs:
           helm:
             - 'charts/**'
           yaml:
-            - '.yamllint.yml'
+            - '**/*.yaml'
+            - '**/*.yml'
           md:
             - '**/*.md'
             - '.markdownlint-cli2.yaml'
@@ -184,8 +185,14 @@ jobs:
         needs.changes.outputs.ci == 'true'
       run: shellcheck .github/test/*.sh
     - name: Install yamllint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.yaml == 'true'
       run: python3 -m pip install --user yamllint==1.38.0
     - name: YAML lint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.yaml == 'true'
       run: yamllint --strict .
     - name: Restore markdownlint-cli2
       if: >-
