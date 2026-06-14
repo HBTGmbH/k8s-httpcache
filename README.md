@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/HBTGmbH/k8s-httpcache)](https://goreportcard.com/report/github.com/HBTGmbH/k8s-httpcache)
 [![License](https://img.shields.io/github/license/HBTGmbH/k8s-httpcache)](https://github.com/HBTGmbH/k8s-httpcache/blob/main/LICENSE)
 
-A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) with many more additional features (see list below).
+A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) with many more additional features (see list below). Already running kube-httpcache? See [Migrating from kube-httpcache](#migrating-from-kube-httpcache).
 
 ## Features
 
@@ -77,6 +77,128 @@ Apply it with:
 ```bash
 kubectl apply -f .github/test/manifest.yaml
 ```
+
+## Migrating from kube-httpcache
+
+k8s-httpcache is a near drop-in replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache). The cache (Varnish or Vinyl) and your VCL logic carry over; what changes is how the controller reaches Varnish, plus how the deployment is packaged, configured, and signalled. This guide maps a typical kube-httpcache setup (as of [v0.9.1](https://github.com/mittwald/kube-httpcache/tree/v0.9.1)) to its k8s-httpcache equivalent.
+
+### Deployment model
+
+Both projects have the **same basic shape**: a single container whose entrypoint is a Go controller that watches Kubernetes and runs **`varnishd` as a subprocess** (Varnish is never a separate container, and there is no controller sidecar). Migrating is therefore not about collapsing processes — it is about how that controller reaches Varnish, how the image is built, and how the pod is wired. The differences that matter:
+
+- **Varnish CLI / admin secret.** kube-httpcache drives Varnish over its **TCP management interface** (`-admin-addr` / `-admin-port`; the chart binds `0.0.0.0:6083`) authenticated by an **admin secret** (`-varnish-secret-file`), so the pod carries a mounted `Secret` and an open CLI port. k8s-httpcache starts `varnishd` with **no `-T` / `-S`** and reaches the CLI **locally through Varnish's working directory** (`varnishadm -n`), where `varnishd` keeps its own auto-generated secret — so there is **no management port and no admin `Secret`** to create, mount, or rotate.
+- **Container image.** kube-httpcache ships one image that **bundles Varnish and the controller** (`quay.io/mittwald/kube-httpcache`). k8s-httpcache ships a **distroless, binary-only** image that you layer onto the Varnish (or Vinyl) base image of your choice, so you pick the cache version (see [Container image](#container-image)).
+- **Endpoint discovery.** kube-httpcache watches `Endpoints`; k8s-httpcache watches **EndpointSlices** (`discovery.k8s.io/v1`). Update RBAC accordingly (see [RBAC](#rbac)).
+- **Workload kind.** The kube-httpcache chart defaults to a **StatefulSet** (`useStatefulset.enabled: true`); the k8s-httpcache chart ships a plain **Deployment**. Stable pod identities are not required — peers come from the frontend Service's EndpointSlice (`.Frontends`) and the shard director is rebuilt whenever endpoints change.
+- **Cache invalidation.** The built-in [broadcast server](#broadcast-server) (port `8088`) replaces kube-httpcache's signaller (`-signaller-enable`, port `8090`); see [Cache invalidation](#cache-invalidation-signaller-8090--broadcast-8088) below.
+
+One operational note: k8s-httpcache writes rendered VCL under `/tmp`, so that path must be writable (an `emptyDir`, ideally `medium: Memory`).
+
+### Flag and configuration mapping
+
+| kube-httpcache (default) | k8s-httpcache | Notes |
+|--------------------------|---------------|-------|
+| `-frontend-service` / `-frontend-namespace` | `--service-name`, `-s` `[namespace/]service` (+ `--namespace`, `-n`) | The frontend Service is still required: it is the source of `.Frontends` and the broadcast fan-out targets. |
+| `-frontend-addr` / `-frontend-port` (`8080`) | `--listen-addr`, `-l` (`http=:8080,HTTP`) | Full varnishd `-a` syntax; repeatable. See [Listen address specification](#listen-address-specification). |
+| `-backend-service` / `-backend-namespace` / `-backend-portname` | `--backend`, `-b` `name:[namespace/]service[:port]` (repeatable) | Backends are now **named** and you can have [multiple groups](#backend-specification), or auto-discover them with [`--backend-selector`](#dynamic-backend-discovery). |
+| `-varnish-vcl-template` | `--vcl-template`, `-t` | Template syntax differs — see [VCL template translation](#vcl-template-translation). |
+| `-varnish-vcl-template-poll` | `--file-watch` (default **true**) | The template is watched and reloaded by default, with [rollback](#runtime-reload-and-rollback) on failure. |
+| `-varnish-storage` / `-varnish-transient-storage` | varnishd args after `--` (e.g. `-- -s file,/var/lib/varnish,1G`) | See [Passing arguments to varnishd](#passing-arguments-to-varnishd). |
+| `-varnish-additional-parameters` / `-varnish-working-dir` | varnishd args after `--` (e.g. `-- -p …` / `-- -n …`) | |
+| `-admin-addr` / `-admin-port` (`6082`) / `-varnish-secret-file` | *(none — admin socket managed internally)* | No admin port to expose, no secret to mount. |
+| `-signaller-enable` | broadcast server is on by default (`--broadcast-addr=none` to disable) | |
+| `-signaller-addr` / `-signaller-port` (`8090`) | `--broadcast-addr` (`:8088`) | Port changes **8090 → 8088**. See [Broadcast server](#broadcast-server). |
+| `-signaller-request-timeout` | `--broadcast-client-timeout` (`3s`) | The signaller worker/retry/queue knobs have no analogue — fan-out is concurrent per request. |
+| `-readiness-enable` / `-readiness-addr` (`:9102`) | `/readyz` and `/healthz` on the metrics server (`--metrics-addr`, `:9101`) | Port changes **9102 → 9101**; checks are path-based. |
+| `-v[N]` | `--log-level` (`DEBUG`/`INFO`/`WARN`/`ERROR`) + `--log-format` (`text`/`json`) | |
+
+Four responsibilities **move** rather than map one-to-one: the Varnish admin port/secret become internal, `-signaller-*` becomes the [broadcast server](#broadcast-server), `-varnish-storage` / `-varnish-additional-parameters` become plain `varnishd` arguments after `--`, and `-readiness-*` becomes the metrics-server health endpoints.
+
+### VCL template translation
+
+Your VCL logic carries over unchanged. Only three mechanical things differ:
+
+1. **Delimiters** `{{ … }}` → `<< … >>` (or keep `{{ … }}` by passing `--template-delims="{{ }}"` to minimize the diff).
+2. **`.Host` → `.IP`** on every endpoint.
+3. **`.Backends` is a map** keyed by backend name, not a flat slice. A single `range .Backends` becomes a nested `range $name, $bg := .Backends` then `range $bg.Endpoints`.
+
+**Before** (kube-httpcache — `{{ }}`, `.Backends` slice, `.Host`):
+
+```vcl
+{{ range .Backends }}
+backend be-{{ .Name }} {
+  .host = "{{ .Host }}";
+  .port = "{{ .Port }}";
+}
+{{- end }}
+
+sub vcl_init {
+  new lb = directors.round_robin();
+  {{ range .Backends -}}
+  lb.add_backend(be-{{ .Name }});
+  {{ end }}
+}
+```
+
+**After** (k8s-httpcache — `<< >>`, `.Backends` map, `.IP`):
+
+```vcl
+<<- range $name, $bg := .Backends >>
+<<- range $bg.Endpoints >>
+backend << .Name >>_<< $name >> {
+  .host = "<< .IP >>";
+  .port = "<< .Port >>";
+}
+<<- end >>
+<<- end >>
+
+sub vcl_init {
+  <<- range $name, $bg := .Backends >>
+  new backend_<< $name >> = directors.round_robin();
+  <<- range $bg.Endpoints >>
+  backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+  <<- end >>
+  <<- end >>
+}
+```
+
+The same change applies to `.Frontends` (still a slice; `.Host` → `.IP`). Bump `vcl 4.0;` to `vcl 4.1;` while you are here (recommended; the real constraint is your installed Varnish version). For the full picture — a frontend shard director with self-routing plus PURGE handling — see the [Reference VCL template](#reference-vcl-template) and the [template data model](#data-model).
+
+### Cache invalidation: signaller (`:8090`) → broadcast (`:8088`)
+
+The [broadcast server](#broadcast-server) forwards the request method, path, query, **all headers, and the `Host` header** verbatim to every frontend pod, so your existing PURGE/BAN VCL (the `acl purge` and `req.http.X-Url` / `X-Host` handling) keeps working. Only the port changes:
+
+```bash
+# kube-httpcache signaller (port 8090)
+curl -X BAN -H "X-Url: /products" -H "X-Host: example.com" http://my-cache:8090/
+
+# k8s-httpcache broadcast server (port 8088) — same method and headers
+curl -X BAN -H "X-Url: /products" -H "X-Host: example.com" http://my-cache:8088/
+```
+
+The one behavioral difference: the broadcast server returns an aggregated JSON object — `{"pod-name": {"status": 200, "body": "…"}}` — instead of the signaller's response. Update any tooling that parsed the old shape (see [Response format](#response-format)).
+
+### Helm chart
+
+If you deploy kube-httpcache with its Helm chart, the bundled [`charts/k8s-httpcache`](charts/k8s-httpcache) chart covers the same ground. Key value mappings (kube-httpcache chart [v0.9.1](https://github.com/mittwald/kube-httpcache/tree/v0.9.1)):
+
+| mittwald/kube-httpcache | charts/k8s-httpcache | Notes |
+|-------------------------|----------------------|-------|
+| `replicaCount` | `replicaCount` | |
+| `useStatefulset.enabled: true` | *(Deployment; no toggle)* | The k8s-httpcache chart ships a Deployment. |
+| `cache.frontendService` / `cache.frontendWatch` | `serviceName` (→ `--service-name`) | |
+| `cache.backendService` / `cache.backendServiceNamespace` | `backends[]` (`{name, service, port}`) | Or `backendDiscovery[]` for label-based discovery. |
+| `cache.secret` / `cache.existingSecret` | *(none)* | Delete the admin Secret. |
+| `cache.varnishStorage` / `cache.storageSize` / `cache.varnishTransientStorage` | `varnishdExtraArgs` (e.g. `["-s", "file,/var/lib/varnish,1G"]`) | Passed to `varnishd` after `--`. |
+| `cacheExtraArgs: -signaller-enable` / `-signaller-port` | `broadcast` (`enabled`, `addr`) | Port `8090` → `8088`. |
+| `cacheExtraArgs: -varnish-additional-parameters` | `varnishdExtraArgs` (e.g. `["-p", "…"]`) | |
+| `cacheExtraArgs: -v=N` | `logging.level` / `logging.format` | |
+| `vclTemplate` (embedded VCL) | `vclTemplateContent` | Rendered into a ConfigMap. |
+| `serviceMonitor.*` | `metrics.*` (+ chart `ServiceMonitor`) | |
+
+### What you gain
+
+Beyond parity, the move unlocks the capabilities listed in [Features](#features): startup and readiness probes that don't wait for a non-empty EndpointSlice, automatic VCL [rollback and reload retries](#runtime-reload-and-rollback), [multiple backend groups](#backend-specification) and [label-based discovery](#dynamic-backend-discovery), [topology-aware routing](#topology-aware-routing), graceful [connection draining](#graceful-shutdown--zero-downtime-deploys), [ConfigMap/Secret template values](#values-specification), and managed [access logging](#access-logging).
 
 ## Configuration
 

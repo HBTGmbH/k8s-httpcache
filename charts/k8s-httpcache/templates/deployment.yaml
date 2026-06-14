@@ -149,6 +149,10 @@ spec:
             {{- with .Values.valuesDirPollInterval }}
             - --values-dir-poll-interval={{ . }}
             {{- end }}
+            {{- /* --- Exclude annotations (repeatable) --- */}}
+            {{- range .Values.excludeAnnotations }}
+            - --exclude-annotations={{ . }}
+            {{- end }}
             {{- /* --- Broadcast --- */}}
             {{- if .Values.broadcast.enabled }}
             {{- with .Values.broadcast.addr }}
@@ -233,6 +237,9 @@ spec:
             {{- /* --- Template --- */}}
             {{- with .Values.template.delims }}
             - --template-delims={{ . }}
+            {{- end }}
+            {{- with .Values.template.funcs }}
+            - --template-funcs={{ . }}
             {{- end }}
             {{- with .Values.template.zone }}
             - --zone={{ . }}

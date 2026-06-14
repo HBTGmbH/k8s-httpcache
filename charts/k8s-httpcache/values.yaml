@@ -89,6 +89,12 @@ valuesDirs: []
 # -- Poll interval for --values-dir directories (empty = app default 5s)
 valuesDirPollInterval: ""
 
+# -- Annotation keys or prefixes to exclude from backend `.Annotations` (repeatable).
+# A trailing `*` matches a prefix (e.g. "kubectl.kubernetes.io/*").
+# `kubectl.kubernetes.io/last-applied-configuration` is always excluded by default.
+excludeAnnotations: []
+# - kubectl.kubernetes.io/*
+
 # ---------------------------------------------------------------------------
 # Cache binary paths (Varnish Cache / Vinyl Cache)
 # ---------------------------------------------------------------------------
@@ -191,6 +197,8 @@ drain:
 template:
   # -- Template delimiters (empty = app default "<< >>")
   delims: ""
+  # -- Template function library: "sprig" (default) or "sprout" (empty = app default sprig)
+  funcs: ""
   # -- Topology zone override (empty = auto-detect from NODE_NAME)
   zone: ""
 
