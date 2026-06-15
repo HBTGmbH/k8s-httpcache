@@ -61,6 +61,22 @@ COPY --from=ghcr.io/hbtgmbh/k8s-httpcache:<version> /usr/local/bin/k8s-httpcache
 ENTRYPOINT ["/usr/local/bin/k8s-httpcache"]
 ```
 
+## Install with Helm
+
+The chart is published as an OCI artifact to GitHub Container Registry, so no `helm repo add` is
+needed:
+
+```bash
+# Install (or upgrade) straight from the registry
+helm install my-cache oci://ghcr.io/hbtgmbh/charts/k8s-httpcache --version <x.y.z>
+
+# Inspect the chart's values and metadata before installing
+helm show values oci://ghcr.io/hbtgmbh/charts/k8s-httpcache --version <x.y.z>
+```
+
+The chart is versioned independently of the binary; see [`charts/k8s-httpcache`](charts/k8s-httpcache)
+for the available values.
+
 ## Quick start
 
 [`.github/test/manifest.yaml`](.github/test/manifest.yaml) contains a complete working example. It creates the following resources:

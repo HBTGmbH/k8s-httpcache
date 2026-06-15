@@ -195,3 +195,9 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 ## Releasing
 
 Releases are automated. When a tag matching `v*` is pushed to `main`, the CI builds multi-arch binaries and container images, creates checksums, and publishes a GitHub release with auto-generated release notes.
+
+### Helm chart
+
+The chart in `charts/k8s-httpcache` is versioned independently of the binary, also via release-please. A conventional commit that changes files **under `charts/k8s-httpcache/**`** (e.g. `feat(chart): ...` or `fix(chart): ...`) makes release-please open a separate *chart* release PR that bumps `version` in `Chart.yaml` and updates `charts/k8s-httpcache/CHANGELOG.md`. Merging that PR tags `k8s-httpcache-v<version>`, cuts a GitHub release, and the `publish-chart` job packages the chart and pushes it to `oci://ghcr.io/hbtgmbh/charts/k8s-httpcache:<version>`.
+
+It is the **changed file path**, not the commit scope, that routes a commit to the chart vs. the binary. `appVersion` is not touched by the automation — bump it by hand when the default image version changes.

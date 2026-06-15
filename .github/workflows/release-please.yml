@@ -5,8 +5,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
@@ -14,7 +13,38 @@ jobs:
       !startsWith(github.event.head_commit.message, 'docs:') &&
       !startsWith(github.event.head_commit.message, 'docs(')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      chart_released: ${{ steps.release.outputs['charts/k8s-httpcache--release_created'] }}
+      chart_version: ${{ steps.release.outputs['charts/k8s-httpcache--version'] }}
     steps:
     - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
+      id: release
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-chart:
+    needs: release-please
+    if: needs.release-please.outputs.chart_released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      with:
+        persist-credentials: false
+    - name: Set up Helm
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5.0.0
+    - name: Log in to GHCR
+      env:
+        GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GHCR_ACTOR: ${{ github.actor }}
+      run: echo "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+    - name: Package and push chart
+      run: |
+        helm package charts/k8s-httpcache --destination .chart-pkg
+        helm push .chart-pkg/k8s-httpcache-*.tgz oci://ghcr.io/hbtgmbh/charts
