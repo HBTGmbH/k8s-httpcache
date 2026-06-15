@@ -66,6 +66,29 @@ func readDiscoveryUpdate(t *testing.T, dw *BackendDiscoveryWatcher) BackendUpdat
 	}
 }
 
+// readDiscoveryRemoval reads updates until a removal (nil Endpoints) for name
+// arrives. The Service and EndpointSlice informers sync independently, so a
+// redundant endpoints refresh (non-nil) can be delivered before the removal;
+// such refreshes are skipped so the assertion stays race-free.
+func readDiscoveryRemoval(t *testing.T, dw *BackendDiscoveryWatcher, name string) {
+	t.Helper()
+	deadline := time.After(60 * time.Second)
+	for {
+		select {
+		case u := <-dw.Changes():
+			if u.Name != name {
+				t.Fatalf("Name = %q, want %q", u.Name, name)
+			}
+			if u.Endpoints == nil {
+				return // removal observed
+			}
+			// Redundant endpoints refresh before removal — keep waiting.
+		case <-deadline:
+			t.Fatalf("timeout waiting for removal of %q", name)
+		}
+	}
+}
+
 func TestDiscoveryWatcher_InitialDiscovery(t *testing.T) {
 	t.Parallel()
 	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
@@ -181,13 +204,7 @@ func TestDiscoveryWatcher_ServiceRemoved(t *testing.T) {
 		t.Fatalf("deleting Service: %v", err)
 	}
 
-	u := readDiscoveryUpdate(t, dw)
-	if u.Name != "web" {
-		t.Errorf("Name = %q, want web", u.Name)
-	}
-	if u.Endpoints != nil {
-		t.Errorf("Endpoints = %v, want nil (removal)", u.Endpoints)
-	}
+	readDiscoveryRemoval(t, dw, "web")
 }
 
 func TestDiscoveryWatcher_ExplicitNameSkipped(t *testing.T) {
@@ -1018,15 +1035,9 @@ func TestDiscoveryWatcher_RemovalUpdateLabels(t *testing.T) {
 		t.Fatalf("deleting Service: %v", err)
 	}
 
-	u := readDiscoveryUpdate(t, dw)
-	if u.Name != "web" {
-		t.Errorf("Name = %q, want web", u.Name)
-	}
-	if u.Endpoints != nil {
-		t.Errorf("Endpoints = %v, want nil", u.Endpoints)
-	}
 	// Removal events don't carry labels (the Service is gone).
 	// This documents the current behavior.
+	readDiscoveryRemoval(t, dw, "web")
 }
 
 func TestDiscoveryWatcher_SelectorRematchAfterLabelRestore(t *testing.T) {
