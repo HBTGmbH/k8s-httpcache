@@ -28,7 +28,7 @@ A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) w
 - Uses `<< ... >>` as default template delimiters to not clash with Helm templating (configurable via `--template-delims`)
 - Graceful connection draining on shutdown with active session polling via varnishstat
 - [Broadcast server](#broadcast-server) that fans out requests (e.g. PURGE) to all Varnish frontend pods
-- Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more
+- Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more — plus a built-in [varnishstat exporter](#varnishstat-exporter), so no separate `prometheus-varnish-exporter` sidecar is needed
 - [ExternalName service](#externalname-services) support for hostname-based backends
   - https://github.com/mittwald/kube-httpcache/issues/39
 - Native [frontend TLS/HTTPS termination](#tls--https) (Varnish 9+) with certificates from `kubernetes.io/tls` Secrets ([`--tls-cert`](#tls--https)), hot-rotated on renewal without restarting Varnish (cache stays warm), with SNI for multiple certificates
@@ -214,7 +214,7 @@ If you deploy kube-httpcache with its Helm chart, the bundled [`charts/k8s-httpc
 
 ### What you gain
 
-Beyond parity, the move unlocks the capabilities listed in [Features](#features): startup and readiness probes that don't wait for a non-empty EndpointSlice, automatic VCL [rollback and reload retries](#runtime-reload-and-rollback), [multiple backend groups](#backend-specification) and [label-based discovery](#dynamic-backend-discovery), [topology-aware routing](#topology-aware-routing), graceful [connection draining](#graceful-shutdown--zero-downtime-deploys), [ConfigMap/Secret template values](#values-specification), and managed [access logging](#access-logging).
+Beyond parity, the move unlocks the capabilities listed in [Features](#features): startup and readiness probes that don't wait for a non-empty EndpointSlice, automatic VCL [rollback and reload retries](#runtime-reload-and-rollback), [multiple backend groups](#backend-specification) and [label-based discovery](#dynamic-backend-discovery), [topology-aware routing](#topology-aware-routing), graceful [connection draining](#graceful-shutdown--zero-downtime-deploys), [ConfigMap/Secret template values](#values-specification), and managed [access logging](#access-logging) — plus a built-in [varnishstat exporter](#varnishstat-exporter) that removes the separate `prometheus-varnish-exporter` sidecar a kube-httpcache deployment typically runs.
 
 ## Configuration
 
@@ -316,7 +316,7 @@ The `group` label is `frontend` (`--service-name` endpoint changes), `backend` (
 
 #### Varnishstat exporter
 
-When `--varnishstat-export` is enabled, native Varnish counters from `varnishstat` are exported as `varnish_*` Prometheus metrics on the same `/metrics` endpoint. Use `--varnishstat-export-filter` to limit which counter groups are exported.
+k8s-httpcache scrapes `varnishstat`, interprets its counters, and exposes them as Prometheus metrics itself — so you don't need a separate `prometheus-varnish-exporter` sidecar. The exported metric names, labels, and value types match the de-facto [`prometheus-varnish-exporter`](https://github.com/jonnenauha/prometheus_varnish_exporter), so Grafana dashboards and Prometheus alerts built for it keep working unchanged. When `--varnishstat-export` is enabled, native Varnish counters from `varnishstat` are exported as `varnish_*` Prometheus metrics on the same `/metrics` endpoint. Use `--varnishstat-export-filter` to limit which counter groups are exported.
 
 The exporter always registers these meta-metrics:
 
