@@ -11,6 +11,7 @@ const (
 	// Prometheus metric label keys.
 	labelStatus = "status"
 	labelGroup  = "group"
+	labelResult = "result"
 )
 
 // Metrics holds all Prometheus metrics for k8s-httpcache. Create one per
@@ -38,6 +39,10 @@ type Metrics struct {
 	VCLReloadDurationSeconds     prometheus.Histogram
 	BroadcastDurationSeconds     prometheus.Histogram
 	DebounceLatencySeconds       *prometheus.HistogramVec
+	TLSCertUpdatesTotal          *prometheus.CounterVec
+	TLSCertReloadsTotal          *prometheus.CounterVec
+	TLSCertOperationsTotal       *prometheus.CounterVec
+	TLSCertsActive               prometheus.Gauge
 }
 
 // NewMetrics creates and registers all Prometheus metrics on reg.
@@ -52,7 +57,7 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Namespace: namespace,
 			Name:      "vcl_reloads_total",
 			Help:      "Total number of VCL reload attempts.",
-		}, []string{"result"}),
+		}, []string{labelResult}),
 
 		VCLRenderErrorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
@@ -177,6 +182,30 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Help:      "Wall-clock time from first event in a debounce burst to the reload.",
 			Buckets:   debounceBuckets,
 		}, []string{labelGroup}),
+
+		TLSCertUpdatesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "tls_cert_updates_total",
+			Help:      "Total number of TLS certificate Secret updates received.",
+		}, []string{"cert"}),
+
+		TLSCertReloadsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "tls_cert_reloads_total",
+			Help:      "Total number of TLS certificate (re)load attempts, by result (success, error, noop).",
+		}, []string{"cert", labelResult}),
+
+		TLSCertOperationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "tls_cert_operations_total",
+			Help:      "Total number of varnishadm TLS certificate operations (load, commit, discard, rollback), by result.",
+		}, []string{"operation", labelResult}),
+
+		TLSCertsActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "tls_certs_active",
+			Help:      "Number of TLS certificates currently active in the cache.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -201,6 +230,10 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 		m.VCLReloadDurationSeconds,
 		m.BroadcastDurationSeconds,
 		m.DebounceLatencySeconds,
+		m.TLSCertUpdatesTotal,
+		m.TLSCertReloadsTotal,
+		m.TLSCertOperationsTotal,
+		m.TLSCertsActive,
 	)
 
 	return m

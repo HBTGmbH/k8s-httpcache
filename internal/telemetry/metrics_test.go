@@ -251,6 +251,10 @@ func TestMetricsRegistered(t *testing.T) {
 		"k8s_httpcache_vcl_render_duration_seconds",
 		"k8s_httpcache_vcl_reload_duration_seconds",
 		"k8s_httpcache_broadcast_duration_seconds",
+		"k8s_httpcache_tls_cert_updates_total",
+		"k8s_httpcache_tls_cert_reloads_total",
+		"k8s_httpcache_tls_cert_operations_total",
+		"k8s_httpcache_tls_certs_active",
 	}
 
 	if len(found) != len(want) {

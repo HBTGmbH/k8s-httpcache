@@ -42,6 +42,8 @@ vclTemplate: /etc/k8s-httpcache/vcl.tmpl
 # -- Varnish listen addresses (repeatable).
 # Each entry is passed as --listen-addr value.
 # Example: ["http=:8080,HTTP", "https=:8443,PROXY"]
+# For native frontend TLS (Varnish 9+), add an https listener and configure
+# tlsCerts below, e.g. ["http=:8080,http", "https=:8443,https"].
 # Default (empty list): the application default "http=:8080,HTTP" is used.
 listenAddrs: []
 
@@ -77,6 +79,16 @@ values: []
 secrets: []
 # - name: mysecrets
 #   secret: my-secret
+
+# -- kubernetes.io/tls Secrets to install as frontend TLS certificates (Varnish 9+, repeatable).
+# Each entry: { name, secret } where secret references a Secret with tls.crt/tls.key
+# (e.g. produced by cert-manager). Generates --tls-cert=name:secret.
+# Requires an https listener in listenAddrs (e.g. "https=:8443,https").
+# Certificates are hot-reloaded on rotation without restarting Varnish; multiple
+# entries are selected by SNI. The 'name' is a logical/SNI label.
+tlsCerts: []
+# - name: frontend
+#   secret: my-tls          # cross-namespace: certs/my-tls
 
 # -- Directories to poll for YAML template values (repeatable).
 # Each entry: { name, path, configMap (optional — creates a volume from this ConfigMap) }
@@ -368,6 +380,9 @@ service:
   type: ClusterIP
   # -- HTTP port exposed by the Service
   httpPort: 80
+  # -- HTTPS port exposed by the Service (only when tlsCerts is set). Must match
+  # the port of the https listener in listenAddrs (the container targetPort).
+  httpsPort: 8443
   # -- Annotations for the Service
   annotations: {}
 

@@ -1,0 +1,221 @@
+# Isolated deployment used by tls-test.sh to exercise native Varnish 9 TLS.
+# It is applied on top of manifest.yaml (which provides the `backend` Service)
+# and only works on Varnish 9+; the matrix step in CI gates it to the varnish9
+# leg and tls-test.sh self-skips on older versions.
+#
+# The `k8s-httpcache-tls-cert` Secret is NOT defined here: tls-test.sh creates it
+# (with a generated certificate) before applying this manifest, so the pod has a
+# certificate to load before it becomes Ready.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-httpcache-tls
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-httpcache-tls
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-httpcache-tls
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-httpcache-tls
+subjects:
+- kind: ServiceAccount
+  name: k8s-httpcache-tls
+  namespace: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-httpcache-tls-vcl
+  namespace: default
+data:
+  vcl.tmpl: |
+    vcl 4.1;
+
+    import directors;
+    import std;
+
+    <<- range $name, $bg := .Backends >>
+    <<- range $bg.Endpoints >>
+    backend << .Name >>_<< $name >> {
+      .host = "<< .IP >>";
+      .port = "<< .Port >>";
+    }
+    <<- end >>
+    <<- end >>
+
+    sub vcl_init {
+      <<- range $name, $bg := .Backends >>
+      new backend_<< $name >> = directors.round_robin();
+      <<- range $bg.Endpoints >>
+      backend_<< $name >>.add_backend(<< .Name >>_<< $name >>);
+      <<- end >>
+      <<- end >>
+    }
+
+    sub vcl_recv {
+      if (req.url == "/ready") {
+        return (synth(200));
+      }
+      <<- range $name, $bg := .Backends >>
+      if (req.url ~ "^/<< $name >>/") {
+        set req.backend_hint = backend_<< $name >>.backend();
+      }
+      <<- end >>
+    }
+
+    sub vcl_deliver {
+      set resp.http.X-TLS-Test = "ok";
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-httpcache-tls
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-httpcache-tls
+  template:
+    metadata:
+      labels:
+        app: k8s-httpcache-tls
+    spec:
+      serviceAccountName: k8s-httpcache-tls
+      containers:
+      - name: k8s-httpcache
+        image: localhost/k8s-httpcache:test
+        imagePullPolicy: Never
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          runAsUser: 1000
+          runAsGroup: 1000
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        args:
+        - --varnishd-path=/usr/sbin/varnishd
+        - --service-name=k8s-httpcache-tls
+        - --namespace=$(NAMESPACE)
+        - --vcl-template=/etc/k8s-httpcache/vcl.tmpl
+        - --listen-addr=http=:8080,http
+        - --listen-addr=https=:8443,https
+        - --tls-cert=frontend:k8s-httpcache-tls-cert
+        - --backend=backend:backend
+        - --broadcast-addr=none
+        - --debounce=1s
+        - --log-level=DEBUG
+        - --
+        - -n
+        - /var/lib/varnish
+        - -s
+        - default,1M
+        - -t
+        - "5"
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        - name: https
+          containerPort: 8443
+          protocol: TCP
+        - name: http-m
+          containerPort: 9101
+          protocol: TCP
+        startupProbe:
+          httpGet:
+            path: /ready
+            port: http
+          failureThreshold: 30
+          periodSeconds: 1
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http-m
+          periodSeconds: 1
+          failureThreshold: 1
+        volumeMounts:
+        - name: vcl-template
+          mountPath: /etc/k8s-httpcache
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+          readOnly: false
+        - name: varlibvarnish
+          mountPath: /var/lib/varnish
+          readOnly: false
+        resources:
+          requests:
+            cpu: 10m
+            memory: 8Mi
+      volumes:
+      - name: tmp
+        emptyDir:
+          medium: Memory
+      - name: varlibvarnish
+        emptyDir:
+          medium: Memory
+      - name: vcl-template
+        configMap:
+          name: k8s-httpcache-tls-vcl
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-httpcache-tls
+  namespace: default
+spec:
+  selector:
+    app: k8s-httpcache-tls
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+  - name: https
+    port: 8443
+    targetPort: https
+  - name: http-m
+    port: 9101
+    targetPort: http-m

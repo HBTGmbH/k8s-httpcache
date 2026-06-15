@@ -58,6 +58,10 @@ const (
 
 	// Template function library identifier.
 	templateFuncsSprig = "sprig"
+
+	// DefaultText values shared by the per-source debounce flags.
+	defaultTextUsesDebounce    = "uses --debounce"
+	defaultTextUsesDebounceMax = "uses --debounce-max"
 )
 
 var (
@@ -70,7 +74,28 @@ var (
 	errInvalidDNSLabel    = errors.New("invalid RFC 1123 DNS label")
 	errEmptySelector      = errors.New("empty selector")
 	errListenAddrNotFound = errors.New("does not match any --listen-addr name")
+	errNoHTTPSListener    = errors.New("requires a --listen-addr with the 'https' protocol (e.g. --listen-addr=https=:8443,https)")
 )
+
+// hasHTTPSListener reports whether any listen address declares the "https"
+// protocol token (e.g. "https=:8443,https"). varnishd needs an https listener
+// before a TLS certificate can serve traffic.
+func hasHTTPSListener(addrs []ListenAddrSpec) bool {
+	for _, la := range addrs {
+		// Proto tokens follow the address, comma-separated: name=host:port,proto[,proto...].
+		_, protos, ok := strings.Cut(la.Raw, ",")
+		if !ok {
+			continue
+		}
+		for p := range strings.SplitSeq(protos, ",") {
+			if strings.EqualFold(strings.TrimSpace(p), "https") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
 
 // BackendSpec describes one upstream backend service to watch.
 type BackendSpec struct {
@@ -91,6 +116,14 @@ type ValuesSpec struct {
 type SecretsSpec struct {
 	Name       string // template key, accessible as .Secrets.<Name>.<key>
 	SecretName string // Kubernetes Secret name
+	Namespace  string // Kubernetes namespace (resolved from [namespace/]secret or --namespace)
+}
+
+// TLSCertSpec describes one kubernetes.io/tls Secret to watch and install as a
+// frontend TLS certificate.
+type TLSCertSpec struct {
+	Name       string // logical/SNI label (logging, metrics, dedup key)
+	SecretName string // Kubernetes Secret name (kubernetes.io/tls)
 	Namespace  string // Kubernetes namespace (resolved from [namespace/]secret or --namespace)
 }
 
@@ -201,6 +234,30 @@ func (s *secretsFlags) Set(val string) error {
 	return nil
 }
 
+// tlsCertFlags implements a parser for repeatable --tls-cert flags.
+type tlsCertFlags []TLSCertSpec
+
+func (t *tlsCertFlags) String() string { return fmt.Sprintf("%v", *t) }
+
+func (t *tlsCertFlags) Set(val string) error {
+	name, ref, ok := strings.Cut(val, ":")
+	if !ok {
+		return fmt.Errorf("--tls-cert %q: expected name:[namespace/]secret: %w", val, errInvalidFormat)
+	}
+	if name == "" {
+		return fmt.Errorf("--tls-cert %q: %w", val, errEmptyName)
+	}
+	if ref == "" {
+		return fmt.Errorf("--tls-cert %q: empty secret: %w", val, errEmptyField)
+	}
+	*t = append(*t, TLSCertSpec{
+		Name:       name,
+		SecretName: ref, // namespace resolution happens in Parse()
+	})
+
+	return nil
+}
+
 // valuesDirFlags implements a parser for repeatable --values-dir flags.
 type valuesDirFlags []ValuesDirSpec
 
@@ -292,6 +349,9 @@ type Config struct {
 	BackendSelectors           []BackendSelectorSpec
 	Values                     []ValuesSpec
 	Secrets                    []SecretsSpec
+	TLSCerts                   []TLSCertSpec
+	TLSCertDebounce            time.Duration
+	TLSCertDebounceMax         time.Duration
 	ValuesDirs                 []ValuesDirSpec
 	ValuesDirPollInterval      time.Duration
 	MetricsAddr                string
@@ -437,6 +497,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 		rawListenAddrs            []string
 		rawValues                 []string
 		rawSecrets                []string
+		rawTLSCerts               []string
 		rawValuesDirs             []string
 		templateDelims            string
 		logLevel                  string
@@ -444,6 +505,8 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 		rawFrontendDebounceMax    = time.Duration(-1)
 		rawBackendDebounce        = time.Duration(-1)
 		rawBackendDebounceMax     = time.Duration(-1)
+		rawTLSCertDebounce        = time.Duration(-1)
+		rawTLSCertDebounceMax     = time.Duration(-1)
 		rawDebounceLatencyBuckets string
 		rawVinyldPath             string
 		rawVinyladmPath           string
@@ -514,6 +577,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    catListen,
 				Usage:       "Secret to watch for template values: name:[namespace/]secret (repeatable)",
 				Destination: &rawSecrets,
+			},
+			&cli.StringSliceFlag{
+				Name:        "tls-cert",
+				Category:    catListen,
+				Usage:       "kubernetes.io/tls Secret to install as a frontend TLS certificate (Varnish 9+): name:[namespace/]secret (repeatable; requires a --listen-addr with the 'https' protocol)",
+				Destination: &rawTLSCerts,
 			},
 			&cli.StringSliceFlag{
 				Name:        "values-dir",
@@ -792,7 +861,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    catTiming,
 				Usage:       "Debounce duration for frontend (--service-name) changes; overrides --debounce for the frontend group",
 				Value:       time.Duration(-1),
-				DefaultText: "uses --debounce",
+				DefaultText: defaultTextUsesDebounce,
 				Destination: &rawFrontendDebounce,
 			},
 			&cli.DurationFlag{
@@ -800,7 +869,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    catTiming,
 				Usage:       "Maximum debounce duration for frontend changes; overrides --debounce-max for the frontend group",
 				Value:       time.Duration(-1),
-				DefaultText: "uses --debounce-max",
+				DefaultText: defaultTextUsesDebounceMax,
 				Destination: &rawFrontendDebounceMax,
 			},
 			&cli.DurationFlag{
@@ -808,7 +877,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    catTiming,
 				Usage:       "Debounce duration for backend (--backend, --values, --values-dir, template) changes; overrides --debounce for the backend group",
 				Value:       time.Duration(-1),
-				DefaultText: "uses --debounce",
+				DefaultText: defaultTextUsesDebounce,
 				Destination: &rawBackendDebounce,
 			},
 			&cli.DurationFlag{
@@ -816,8 +885,24 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Category:    catTiming,
 				Usage:       "Maximum debounce duration for backend changes; overrides --debounce-max for the backend group",
 				Value:       time.Duration(-1),
-				DefaultText: "uses --debounce-max",
+				DefaultText: defaultTextUsesDebounceMax,
 				Destination: &rawBackendDebounceMax,
+			},
+			&cli.DurationFlag{
+				Name:        "tls-cert-debounce",
+				Category:    catTiming,
+				Usage:       "Debounce duration for --tls-cert Secret changes; overrides --debounce for the TLS certificate group",
+				Value:       time.Duration(-1),
+				DefaultText: defaultTextUsesDebounce,
+				Destination: &rawTLSCertDebounce,
+			},
+			&cli.DurationFlag{
+				Name:        "tls-cert-debounce-max",
+				Category:    catTiming,
+				Usage:       "Maximum debounce duration for --tls-cert changes; overrides --debounce-max for the TLS certificate group",
+				Value:       time.Duration(-1),
+				DefaultText: defaultTextUsesDebounceMax,
+				Destination: &rawTLSCertDebounceMax,
 			},
 			&cli.DurationFlag{
 				Name:        "shutdown-timeout",
@@ -984,6 +1069,16 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			} else {
 				c.BackendDebounceMax = rawBackendDebounceMax
 			}
+			if rawTLSCertDebounce < 0 {
+				c.TLSCertDebounce = c.Debounce
+			} else {
+				c.TLSCertDebounce = rawTLSCertDebounce
+			}
+			if rawTLSCertDebounceMax < 0 {
+				c.TLSCertDebounceMax = c.DebounceMax
+			} else {
+				c.TLSCertDebounceMax = rawTLSCertDebounceMax
+			}
 
 			// Validate per-source debounce-max.
 			if c.FrontendDebounceMax > 0 && c.FrontendDebounceMax < c.FrontendDebounce {
@@ -993,6 +1088,11 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 			if c.BackendDebounceMax > 0 && c.BackendDebounceMax < c.BackendDebounce {
 				actionErr = validationError(cmd, "--backend-debounce-max (%v) must be >= --backend-debounce (%v)", c.BackendDebounceMax, c.BackendDebounce)
+
+				return nil
+			}
+			if c.TLSCertDebounceMax > 0 && c.TLSCertDebounceMax < c.TLSCertDebounce {
+				actionErr = validationError(cmd, "--tls-cert-debounce-max (%v) must be >= --tls-cert-debounce (%v)", c.TLSCertDebounceMax, c.TLSCertDebounce)
 
 				return nil
 			}
@@ -1276,6 +1376,43 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				secrets[i].SecretName = sec
 			}
 			c.Secrets = []SecretsSpec(secrets)
+
+			// Parse and validate TLS certificates.
+			var tlsCerts tlsCertFlags
+			for _, raw := range rawTLSCerts {
+				err := tlsCerts.Set(raw)
+				if err != nil {
+					actionErr = validationError(cmd, "%v", err)
+
+					return nil
+				}
+			}
+			seenTLSCerts := make(map[string]bool, len(tlsCerts))
+			for i, tc := range tlsCerts {
+				if seenTLSCerts[tc.Name] {
+					actionErr = validationError(cmd, "duplicate --tls-cert name %q", tc.Name)
+
+					return nil
+				}
+				seenTLSCerts[tc.Name] = true
+
+				ns, sec, err := parseNamespacedService(tc.SecretName, c.Namespace)
+				if err != nil {
+					actionErr = validationError(cmd, "--tls-cert %q: %v", tc.Name, err)
+
+					return nil
+				}
+				tlsCerts[i].Namespace = ns
+				tlsCerts[i].SecretName = sec
+			}
+			c.TLSCerts = []TLSCertSpec(tlsCerts)
+
+			// TLS certificates need an https listener to serve traffic.
+			if len(c.TLSCerts) > 0 && !hasHTTPSListener(c.ListenAddrs) {
+				actionErr = validationError(cmd, "--tls-cert %w", errNoHTTPSListener)
+
+				return nil
+			}
 
 			// Parse and validate values-dir.
 			var valuesDirs valuesDirFlags

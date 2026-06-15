@@ -31,6 +31,7 @@ A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) w
 - Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more
 - [ExternalName service](#externalname-services) support for hostname-based backends
   - https://github.com/mittwald/kube-httpcache/issues/39
+- Native [frontend TLS/HTTPS termination](#tls--https) (Varnish 9+) with certificates from `kubernetes.io/tls` Secrets ([`--tls-cert`](#tls--https)), hot-rotated on renewal without restarting Varnish (cache stays warm), with SNI for multiple certificates
 - Template values from Kubernetes ConfigMaps ([`--values`](#values-specification)), Secrets ([`--secrets`](#secrets-specification)), or mounted directories ([`--values-dir`](#values-from-directories)), dynamically reloaded on changes
 - Secret values are automatically [redacted](#security-considerations) from varnishd process output, varnishadm responses, and error logs
 - Cross-namespace backends and values via `namespace/service` syntax
@@ -224,6 +225,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--backend`, `-b` | | Backend service (repeatable). See [Backend specification](#backend-specification). |
 | `--values` | | ConfigMap to watch for template values (repeatable). See [Values specification](#values-specification). |
 | `--secrets` | | Secret to watch for template values (repeatable). See [Secrets specification](#secrets-specification). |
+| `--tls-cert` | | `kubernetes.io/tls` Secret to install as a frontend TLS certificate (Varnish 9+, repeatable). See [TLS / HTTPS](#tls--https). |
 | `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
 | `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories (only effective when `--file-watch` is enabled) |
 | `--exclude-annotations` | | Annotation keys or prefixes to exclude from backend annotations (repeatable; trailing `*` for prefix match, e.g. `kubectl.kubernetes.io/*`). `kubectl.kubernetes.io/last-applied-configuration` is always excluded by default. |
@@ -278,6 +280,10 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `endpoint_updates_total` | Counter | `role`, `service` | EndpointSlice updates received (`frontend` or `backend`) |
 | `values_updates_total` | Counter | `configmap` | ConfigMap value updates received |
 | `secrets_updates_total` | Counter | `secret` | Secret value updates received |
+| `tls_cert_updates_total` | Counter | `cert` | TLS certificate Secret updates received |
+| `tls_cert_reloads_total` | Counter | `cert`, `result` | TLS certificate (re)load attempts (`success`, `error`, `noop`) |
+| `tls_cert_operations_total` | Counter | `operation`, `result` | varnishadm TLS operations (`load`, `commit`, `discard`, `rollback`) by result |
+| `tls_certs_active` | Gauge | | TLS certificates currently active in the cache |
 | `endpoints` | Gauge | `role`, `service` | Current ready endpoint count per service |
 | `varnishd_up` | Gauge | | Whether the varnishd process is running (1/0) |
 | `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
@@ -291,7 +297,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `vcl_reload_duration_seconds` | Histogram | | Time for varnishd VCL reload (`vcl.load` + `vcl.use`), including retries |
 | `broadcast_duration_seconds` | Histogram | | Total wall-clock time for broadcast fan-out to all frontend pods |
 
-The `group` label is either `frontend` (`--service-name` endpoint changes) or `backend` (`--backend`, `--values`, `--secrets`, `--values-dir`, and VCL template changes).
+The `group` label is `frontend` (`--service-name` endpoint changes), `backend` (`--backend`, `--values`, `--secrets`, `--values-dir`, and VCL template changes), or `tls` (`--tls-cert` Secret changes). The `tls` group is fully decoupled from the others: a certificate rotation never re-renders or reloads VCL, and a VCL reload never touches certificates.
 
 #### Varnishstat exporter
 
@@ -423,6 +429,10 @@ The following events are emitted:
 | `VCLRenderFailed` | Warning | VCL template render failed |
 | `VCLReloadFailed` | Warning | varnishd rejected the new VCL |
 | `VCLRolledBack` | Warning | Template rolled back to previous known-good version |
+| `TLSCertLoaded` | Normal | Initial frontend TLS certificate(s) loaded at startup |
+| `TLSCertReloaded` | Normal | Frontend TLS certificate (re)loaded after a Secret change (rotation) |
+| `TLSCertReloadFailed` | Warning | Frontend TLS certificate failed to load (previous certificate stays active) |
+| `TLSCertAbsent` | Warning | TLS certificate Secret is empty/deleted; previous certificate kept active |
 | `VarnishdExited` | Warning | varnishd process exited unexpectedly |
 | `DrainStarted` | Normal | Graceful drain started after receiving a termination signal |
 | `DrainCompleted` | Normal | All active connections have drained |
@@ -461,6 +471,8 @@ Events require RBAC permission to `create` and `patch` the `events` resource (se
 | `--frontend-debounce-max` | *(uses `--debounce-max`)* | Maximum debounce duration for frontend changes; overrides `--debounce-max` for the frontend group |
 | `--backend-debounce` | *(uses `--debounce`)* | Debounce duration for backend (`--backend`, `--values`, `--values-dir`, template) changes; overrides `--debounce` for the backend group |
 | `--backend-debounce-max` | *(uses `--debounce-max`)* | Maximum debounce duration for backend changes; overrides `--debounce-max` for the backend group |
+| `--tls-cert-debounce` | *(uses `--debounce`)* | Debounce duration for `--tls-cert` Secret changes; overrides `--debounce` for the TLS certificate group |
+| `--tls-cert-debounce-max` | *(uses `--debounce-max`)* | Maximum debounce duration for `--tls-cert` changes; overrides `--debounce-max` for the TLS certificate group |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
 | `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes (only effective when `--file-watch` is enabled) |
 | `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
@@ -789,6 +801,80 @@ Secret values are rendered directly into VCL and passed to Varnish, so it is imp
 - **Request and response headers.** If your VCL template sets a secret value as an HTTP header (e.g. `bereq.http.Authorization`), that header is visible to backend services and may appear in their access logs. Similarly, secrets placed on response headers (e.g. `resp.http.*`) are visible to clients and any intermediary proxies that log headers. Only set secrets on headers that are strictly necessary, and ensure that both upstream and downstream services treat those headers as sensitive.
 - **Varnish process output and error messages.** When VCL compilation fails, `varnishd` and `varnishadm` may include VCL source lines — containing rendered secrets — in their error output. k8s-httpcache automatically redacts all known secret values (strings of 6 characters or longer) from process output, command responses, log messages, and Kubernetes Events. This protects against accidental exposure in logs, but the redactor only covers values it knows about — secrets must be loaded via `--secrets` to be redacted.
 - **Varnish shared memory log (VSL).** Varnish logs request and response headers to its shared memory log, accessible via `varnishlog` / `varnishncsa`. If a secret is set on a header, it will appear in VSL. This is outside the control of k8s-httpcache. If you expose VSL tooling, be aware that header values may contain secrets.
+
+## TLS / HTTPS
+
+Varnish Cache **9.0** introduced native, in-core TLS. k8s-httpcache uses it to terminate HTTPS at the frontend, loading certificates from Kubernetes `kubernetes.io/tls` Secrets and rotating them **without restarting Varnish** (the cache stays warm).
+
+> **Requires Varnish/Vinyl major version ≥ 9** (and a TLS-enabled build). Starting with `--tls-cert` on an older version is a fatal error.
+
+### How it works
+
+1. Declare an HTTPS listener via `--listen-addr` using the `https` protocol token, e.g. `--listen-addr=https=:8443,https`. The listener starts even before any certificate is loaded.
+2. Point `--tls-cert` at a `kubernetes.io/tls` Secret (keys `tls.crt`, `tls.key`, optional `ca.crt`) — typically produced by [cert-manager](https://cert-manager.io/).
+3. At startup, k8s-httpcache combines the key and certificate into a single PEM and installs it via `varnishadm tls.cert.load` + `tls.cert.commit` **before the pod becomes Ready**.
+4. When the Secret changes (cert-manager renews the certificate), the new certificate is staged, committed, and the superseded one is discarded — all at runtime, with no varnishd restart and no cold cache. Discarded certificates keep serving in-flight TLS sessions until they finish.
+
+Format: `name:[namespace/]secret`
+
+| Part | Required | Description |
+|------|----------|-------------|
+| `name` | yes | Logical/SNI label used in logs and metrics, and to track the certificate across rotations |
+| `namespace/` | no | Kubernetes namespace; defaults to `--namespace` if omitted |
+| `secret` | yes | `kubernetes.io/tls` Secret name to watch |
+
+### Example
+
+```
+--listen-addr=http=:8080,http
+--listen-addr=https=:8443,https
+--tls-cert=frontend:my-tls                 # default namespace
+--tls-cert=api:certs/api-tls               # cross-namespace
+```
+
+With the Helm chart:
+
+```yaml
+listenAddrs:
+  - http=:8080,http
+  - https=:8443,https
+tlsCerts:
+  - name: frontend
+    secret: my-tls
+service:
+  httpsPort: 8443
+```
+
+### SNI and multiple certificates
+
+Pass `--tls-cert` multiple times to serve several certificates; Varnish selects the right one per connection using the certificate's SAN and the client's SNI. Each certificate is tracked independently, so rotating one never disturbs another.
+
+### Certificate not present yet
+
+If the referenced Secret does not exist at startup, the pod still becomes Ready (the HTTP listener works) but HTTPS handshakes fail until the Secret appears, at which point the certificate is loaded hot. If a Secret is later emptied or deleted, the previously-committed certificate is kept active (a `TLSCertAbsent` event is emitted) rather than dropping TLS for live clients.
+
+### Cross-namespace certificates
+
+Use the `namespace/secret` syntax to reference a Secret in another namespace. This requires `list` and `watch` on `secrets` in that namespace (the Helm chart wires this automatically; see [RBAC](#rbac)).
+
+### Backend (origin) TLS
+
+Connecting to an origin over HTTPS is a pure VCL concern in Varnish 9 — no controller configuration is needed. Add `.ssl = 1` to the backend definition in your VCL template:
+
+```vcl
+backend secure_origin {
+    .host = "origin.example.com";
+    .port = "443";
+    .ssl = 1;          # speak HTTPS to the backend
+}
+```
+
+### Observability
+
+TLS operations are fully instrumented and decoupled from VCL reloads:
+
+- **Metrics** (`k8s_httpcache_`): `tls_cert_updates_total{cert}`, `tls_cert_reloads_total{cert,result}` (`success`/`error`/`noop`), `tls_cert_operations_total{operation,result}` for the underlying `load`/`commit`/`discard`/`rollback` varnishadm calls, and the `tls_certs_active` gauge. The debounce metrics also carry a `tls` group label.
+- **Events**: `TLSCertLoaded`, `TLSCertReloaded`, `TLSCertReloadFailed`, and `TLSCertAbsent` (see [Kubernetes Events](#kubernetes-events)).
 
 ## Values from directories
 
@@ -1268,7 +1354,7 @@ terminationGracePeriodSeconds: 90
 
 ### Minimum permissions
 
-k8s-httpcache needs `list` and `watch` on `services` and `endpointslices` in its own namespace. If using `--values`, it also needs `list` and `watch` on `configmaps`. If using `--secrets`, it also needs `list` and `watch` on `secrets`:
+k8s-httpcache needs `list` and `watch` on `services` and `endpointslices` in its own namespace. If using `--values`, it also needs `list` and `watch` on `configmaps`. If using `--secrets` or `--tls-cert`, it also needs `list` and `watch` on `secrets`:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1

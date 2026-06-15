@@ -78,6 +78,7 @@ func newTestManager(r *mockRunner) *Manager {
 		run:            r,
 		done:           make(chan struct{}),
 		metrics:        telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+		tlsCertIDs:     make(map[string]string),
 		AdminTimeout:   30 * time.Second,
 	}
 }

@@ -76,6 +76,8 @@ type varnishProcess interface {
 	ForwardSignal(sig os.Signal)
 	MarkBackendSick(name string) error
 	ActiveSessions() (uint64, error)
+	LoadCert(name string, cert, key, ca []byte) error
+	TLSSupported() bool
 }
 
 // broadcaster abstracts broadcast server operations (satisfied by *broadcast.Server).
@@ -341,6 +343,7 @@ type loopConfig struct {
 	backendCh   chan backendChange
 	valuesCh    chan valuesChange
 	secretsCh   chan secretsChange
+	tlsCertCh   chan tlsCertChange
 	templateCh  <-chan struct{}
 	sigCh       <-chan os.Signal
 	ncsaEvents  <-chan varnish.NCSAEvent // nil when disabled
@@ -352,6 +355,8 @@ type loopConfig struct {
 	frontendDebounceMax   time.Duration
 	backendDebounce       time.Duration
 	backendDebounceMax    time.Duration
+	tlsCertDebounce       time.Duration
+	tlsCertDebounceMax    time.Duration
 	shutdownTimeout       time.Duration
 	broadcastDrainTimeout time.Duration
 
@@ -494,6 +499,12 @@ func main() {
 	}
 	status.setVarnishMajorVersion(mgr.MajorVersion())
 
+	// Native TLS requires Varnish/Vinyl 9+. Fail fast rather than serving an
+	// https listener that has no certificate (every handshake would fail).
+	if len(cfg.TLSCerts) > 0 && !mgr.TLSSupported() {
+		log.Fatalf("--tls-cert requires Varnish/Vinyl major version >= 9 (detected %d)", mgr.MajorVersion())
+	}
+
 	// Register varnishstat Prometheus exporter if enabled.
 	if cfg.VarnishstatExport {
 		vsc := telemetry.NewVarnishstatCollector(mgr.VarnishstatFunc(), cfg.VarnishstatExportFilter)
@@ -603,6 +614,24 @@ func main() {
 		swWatchers = append(swWatchers, sw)
 	}
 
+	// Start TLSCertWatchers for --tls-cert.
+	var (
+		twNames    = make([]string, 0, len(cfg.TLSCerts))
+		twWatchers = make([]*watcher.TLSCertWatcher, 0, len(cfg.TLSCerts))
+	)
+	for _, tc := range cfg.TLSCerts {
+		tw := watcher.NewTLSCertWatcher(clientset, tc.Namespace, tc.SecretName)
+		name := tc.Name
+		go func() {
+			runErr := tw.Run(ctx)
+			if runErr != nil {
+				slog.Error("tls-cert watcher error", "tls_cert", name, "error", runErr)
+			}
+		}()
+		twNames = append(twNames, name)
+		twWatchers = append(twWatchers, tw)
+	}
+
 	// Start directory watchers for --values-dir.
 	var (
 		fvwNames    = make([]string, 0, len(cfg.ValuesDirs))
@@ -664,6 +693,10 @@ func main() {
 		latestSecrets[swNames[i]] = <-sw.Changes()
 	}
 	secretRedactor.Update(latestSecrets)
+	initialTLS := make(map[string]watcher.TLSCertData, len(twWatchers))
+	for i, tw := range twWatchers {
+		initialTLS[twNames[i]] = <-tw.Changes()
+	}
 	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues), "secrets", len(latestSecrets))
 
 	// Set initial status counts.
@@ -726,6 +759,30 @@ func main() {
 	if err != nil {
 		log.Fatalf("varnish start: %v", err)
 	}
+	defer mgr.CleanupTLS()
+
+	// Install initial TLS certificates before the pod becomes Ready: the https
+	// listener exists but has no certificate until loaded. A present-but-broken
+	// certificate is fatal (don't go Ready with a failing https listener); an
+	// absent Secret is a no-op (LoadCert returns nil) and is loaded hot once it
+	// appears.
+	loadedCerts := 0
+	for _, name := range twNames {
+		d := initialTLS[name]
+		err = mgr.LoadCert(name, d.Cert, d.Key, d.CA)
+		if err != nil {
+			log.Fatalf("loading initial TLS certificate %q: %v", name, err)
+		}
+		if !d.Empty() {
+			loadedCerts++
+		} else {
+			slog.Warn("TLS certificate Secret is empty at startup; https listener has no certificate until it appears", "cert", name)
+		}
+	}
+	if loadedCerts > 0 && eventRecorder != nil && podRef != nil {
+		eventRecorder.Event(podRef, v1.EventTypeNormal, "TLSCertLoaded", fmt.Sprintf("Loaded %d initial TLS certificate(s)", loadedCerts))
+	}
+
 	metrics.VarnishdUp.Set(1)
 	status.setVarnishdUp(true)
 	if eventRecorder != nil && podRef != nil {
@@ -818,15 +875,28 @@ func main() {
 		}
 	}
 
+	// Fan-in TLSCertWatcher updates to a single channel.
+	var tlsCertCh chan tlsCertChange
+	if len(twWatchers) > 0 {
+		tlsCertCh = make(chan tlsCertChange, len(twWatchers))
+		for i, tw := range twWatchers {
+			name := twNames[i]
+			go func() {
+				for data := range tw.Changes() {
+					tlsCertCh <- tlsCertChange{name: name, data: data}
+				}
+			}()
+		}
+	}
+
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// Main event loop with debounce.
-	os.Exit(runLoop(ctx, cancel, &loopConfig{
+	lc := &loopConfig{
 		rend:     rend,
 		mgr:      mgr,
-		bcast:    bcast,
 		status:   status,
 		metrics:  metrics,
 		redactor: secretRedactor,
@@ -835,6 +905,7 @@ func main() {
 		backendCh:   backendCh,
 		valuesCh:    valuesCh,
 		secretsCh:   secretsCh,
+		tlsCertCh:   tlsCertCh,
 		templateCh:  templateCh,
 		sigCh:       sigCh,
 		ncsaEvents:  mgr.NCSAEvents(),
@@ -846,6 +917,8 @@ func main() {
 		frontendDebounceMax:   cfg.FrontendDebounceMax,
 		backendDebounce:       cfg.BackendDebounce,
 		backendDebounceMax:    cfg.BackendDebounceMax,
+		tlsCertDebounce:       cfg.TLSCertDebounce,
+		tlsCertDebounceMax:    cfg.TLSCertDebounceMax,
 		shutdownTimeout:       cfg.ShutdownTimeout,
 		broadcastDrainTimeout: cfg.BroadcastDrainTimeout,
 
@@ -866,7 +939,22 @@ func main() {
 		latestSecrets:   latestSecrets,
 
 		lastVCLHash: initialVCLHash,
-	}))
+	}
+	// Assign the broadcaster only when it is enabled. A nil *broadcast.Server
+	// stored in the broadcaster interface field would be a typed nil, making
+	// `lc.bcast != nil` true and panicking when the loop calls into it.
+	setBroadcaster(lc, bcast)
+
+	os.Exit(runLoop(ctx, cancel, lc))
+}
+
+// setBroadcaster assigns bcast to lc.bcast only when bcast is non-nil, so that
+// disabling broadcast (`--broadcast-addr=none`) leaves lc.bcast as a true nil
+// interface rather than a typed-nil that would defeat the loop's nil guards.
+func setBroadcaster(lc *loopConfig, bcast *broadcast.Server) {
+	if bcast != nil {
+		lc.bcast = bcast
+	}
 }
 
 // runLoop runs the main event loop, returning 0 for clean shutdown and 1 for error.
@@ -999,7 +1087,19 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		// failure, and is capped at reloadRecoveryMax. Reset on success.
 		recoveryTimer *time.Timer
 		recoveryDelay time.Duration
+
+		// TLS certificate reloads are fully decoupled from VCL reloads: their
+		// own debounce group and independent recovery timer, so a cert
+		// rotation never re-renders VCL and a VCL reload never touches certs.
+		tlsCert          debounceState
+		tlsRecoveryTimer *time.Timer
+		tlsRecoveryDelay time.Duration
 	)
+
+	// latestTLS holds the most recent certificate material per logical name;
+	// pendingCertNames tracks names awaiting a (re)load.
+	latestTLS := make(map[string]watcher.TLSCertData)
+	pendingCertNames := make(map[string]struct{})
 
 	// nextRecoveryDelay returns the delay for the next recovery retry:
 	// reloadRecoveryInitial the first time, then double (capped at max).
@@ -1182,6 +1282,86 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		clearPending()
 	}
 
+	// TLS certificate recovery retry — independent of the VCL recovery state
+	// above. Reuses the same backoff bounds but its own timer/delay.
+	nextTLSRecoveryDelay := func() time.Duration {
+		if tlsRecoveryDelay == 0 {
+			return lc.reloadRecoveryInitial
+		}
+		next := tlsRecoveryDelay * 2
+		if lc.reloadRecoveryMax > 0 && next > lc.reloadRecoveryMax {
+			next = lc.reloadRecoveryMax
+		}
+
+		return next
+	}
+	armTLSRecovery := func() {
+		if lc.reloadRecoveryInitial <= 0 {
+			return
+		}
+		delay := nextTLSRecoveryDelay()
+		if tlsRecoveryTimer != nil {
+			tlsRecoveryTimer.Stop()
+		}
+		tlsRecoveryTimer = time.NewTimer(delay)
+		tlsRecoveryDelay = delay
+		slog.Warn("scheduling TLS certificate reload retry after failure", "delay", delay)
+	}
+	clearTLSRecovery := func() {
+		if tlsRecoveryTimer != nil {
+			tlsRecoveryTimer.Stop()
+			tlsRecoveryTimer = nil
+		}
+		tlsRecoveryDelay = 0
+	}
+
+	// handleCertReload installs every pending TLS certificate via the manager,
+	// independently of the VCL reload path. Names that fail stay pending and a
+	// recovery retry is armed; names that succeed are cleared.
+	handleCertReload := func() {
+		if tlsCert.timer != nil {
+			tlsCert.timer.Stop()
+		}
+		tlsCert.timer = nil
+		tlsCert.deadline = time.Time{}
+		tlsCert.firstEvent = time.Time{}
+		tlsCert.capped = false
+
+		if len(pendingCertNames) == 0 {
+			return
+		}
+
+		failed := false
+		for name := range pendingCertNames {
+			d := latestTLS[name]
+			// LoadCert owns the metric increments (success / error / noop).
+			err := lc.mgr.LoadCert(name, d.Cert, d.Key, d.CA)
+			if err != nil {
+				failed = true
+				slog.Error("TLS certificate reload failed", "cert", name, "error", err)
+				emitEvent(lc, v1.EventTypeWarning, "TLSCertReloadFailed", fmt.Sprintf("TLS certificate %q reload failed: %v", name, err))
+
+				continue
+			}
+			delete(pendingCertNames, name)
+			if d.Empty() {
+				// Secret deleted or not yet populated: previous cert stays active.
+				slog.Warn("TLS certificate Secret is empty, keeping previous certificate active", "cert", name)
+				emitEvent(lc, v1.EventTypeWarning, "TLSCertAbsent", fmt.Sprintf("TLS certificate Secret %q is empty; keeping previous certificate active", name))
+
+				continue
+			}
+			slog.Info("TLS certificate reloaded", "cert", name)
+			emitEvent(lc, v1.EventTypeNormal, "TLSCertReloaded", fmt.Sprintf("TLS certificate %q reloaded", name))
+		}
+
+		if failed {
+			armTLSRecovery()
+		} else {
+			clearTLSRecovery()
+		}
+	}
+
 	for {
 		select {
 		case <-lc.templateCh:
@@ -1250,6 +1430,16 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			pendingReasons = appendUnique(pendingReasons, "secrets updated")
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
+		case tc := <-tlsCertChan(lc.tlsCertCh):
+			// TLS certificate rotations are applied on their own debounce
+			// group and never trigger a VCL reload.
+			latestTLS[tc.name] = tc.data
+			pendingCertNames[tc.name] = struct{}{}
+			lc.metrics.TLSCertUpdatesTotal.WithLabelValues(tc.name).Inc()
+			lc.metrics.DebounceEventsTotal.WithLabelValues("tls").Inc()
+			slog.Info("TLS certificate Secret updated", "name", tc.name)
+			resetDebounce(&tlsCert, lc.tlsCertDebounce, lc.tlsCertDebounceMax)
+
 		case <-timerChan(frontend.timer):
 			lc.metrics.DebounceFiresTotal.WithLabelValues("frontend").Inc()
 			if frontend.capped {
@@ -1289,6 +1479,24 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// delay. Success already clears it via clearRecovery.
 			if recoveryTimer == nil {
 				recoveryDelay = 0
+			}
+
+		case <-timerChan(tlsCert.timer):
+			lc.metrics.DebounceFiresTotal.WithLabelValues("tls").Inc()
+			if tlsCert.capped {
+				lc.metrics.DebounceMaxEnforcementsTotal.WithLabelValues("tls").Inc()
+			}
+			if !tlsCert.firstEvent.IsZero() {
+				lc.metrics.DebounceLatencySeconds.WithLabelValues("tls").Observe(time.Since(tlsCert.firstEvent).Seconds())
+			}
+			handleCertReload()
+
+		case <-timerChan(tlsRecoveryTimer):
+			tlsRecoveryTimer = nil
+			slog.Info("TLS certificate recovery timer fired, retrying", "previous_delay", tlsRecoveryDelay)
+			handleCertReload()
+			if tlsRecoveryTimer == nil {
+				tlsRecoveryDelay = 0
 			}
 
 		case ev := <-lc.ncsaEvents:
@@ -1476,6 +1684,11 @@ type secretsChange struct {
 	data map[string]any
 }
 
+type tlsCertChange struct {
+	name string
+	data watcher.TLSCertData
+}
+
 // backendChan returns ch, or nil if ch is nil (so select skips it).
 func backendChan(ch chan backendChange) <-chan backendChange {
 	if ch == nil {
@@ -1496,6 +1709,15 @@ func valuesChan(ch chan valuesChange) <-chan valuesChange {
 
 // secretsChan returns ch, or nil if ch is nil (so select skips it).
 func secretsChan(ch chan secretsChange) <-chan secretsChange {
+	if ch == nil {
+		return nil
+	}
+
+	return ch
+}
+
+// tlsCertChan returns ch, or nil if ch is nil (so select skips it).
+func tlsCertChan(ch chan tlsCertChange) <-chan tlsCertChange {
 	if ch == nil {
 		return nil
 	}

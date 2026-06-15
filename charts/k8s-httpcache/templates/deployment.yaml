@@ -1,3 +1,20 @@
+{{- /*
+  Fail fast when tlsCerts is set but no listenAddrs entry declares the 'https'
+  protocol: the controller would otherwise exit at startup ("--tls-cert requires
+  a --listen-addr with the 'https' protocol") and CrashLoopBackoff. Mirrors the
+  app's hasHTTPSListener check (proto tokens after the address).
+*/}}
+{{- if .Values.tlsCerts }}
+{{- $hasHTTPS := false }}
+{{- range .Values.listenAddrs }}
+{{- range rest (splitList "," .) }}
+{{- if eq (lower (trim .)) "https" }}{{- $hasHTTPS = true }}{{- end }}
+{{- end }}
+{{- end }}
+{{- if not $hasHTTPS }}
+{{- fail "tlsCerts is set but no listenAddrs entry uses the 'https' protocol; add an https listener, e.g. listenAddrs: [\"http=:8080,http\", \"https=:8443,https\"]" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -141,6 +158,10 @@ spec:
             {{- /* --- Secrets (repeatable) --- */}}
             {{- range .Values.secrets }}
             - --secrets={{ .name }}:{{ .secret }}
+            {{- end }}
+            {{- /* --- TLS certificates (repeatable) --- */}}
+            {{- range .Values.tlsCerts }}
+            - --tls-cert={{ .name }}:{{ .secret }}
             {{- end }}
             {{- /* --- Values dirs (repeatable) --- */}}
             {{- range .Values.valuesDirs }}
@@ -323,6 +344,11 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- if .Values.tlsCerts }}
+            - name: https
+              containerPort: {{ .Values.service.httpsPort | default 8443 }}
+              protocol: TCP
+            {{- end }}
             {{- if .Values.broadcast.enabled }}
             - name: http-b
               containerPort: 8088

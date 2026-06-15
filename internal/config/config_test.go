@@ -4299,3 +4299,138 @@ func TestParseInvalidSecretsFormat(t *testing.T) {
 		t.Fatal("expected error for secrets without colon separator")
 	}
 }
+
+func TestParseTLSCertValid(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=https=:8443,https",
+		"--tls-cert=frontend:my-tls",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.TLSCerts) != 1 {
+		t.Fatalf("expected 1 TLS cert, got %d", len(cfg.TLSCerts))
+	}
+	tc := cfg.TLSCerts[0]
+	if tc.Name != "frontend" || tc.SecretName != "my-tls" || tc.Namespace != "default" {
+		t.Errorf("unexpected TLS cert spec: %+v", tc)
+	}
+}
+
+func TestParseTLSCertCrossNamespace(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=https=:8443,https",
+		"--tls-cert=frontend:certs/my-tls",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tc := cfg.TLSCerts[0]
+	if tc.Namespace != "certs" || tc.SecretName != "my-tls" {
+		t.Errorf("expected cross-namespace resolution, got %+v", tc)
+	}
+}
+
+func TestParseTLSCertRequiresHTTPSListener(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=http=:8080,http",
+		"--tls-cert=frontend:my-tls",
+	})
+	if err == nil {
+		t.Fatal("expected error for --tls-cert without an https listener")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error = %q, want substring 'https'", err)
+	}
+}
+
+func TestParseTLSCertDuplicateName(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=https=:8443,https",
+		"--tls-cert=frontend:my-tls",
+		"--tls-cert=frontend:other-tls",
+	})
+	if err == nil {
+		t.Fatal("expected error for duplicate --tls-cert name")
+	}
+	if !strings.Contains(err.Error(), "duplicate --tls-cert name") {
+		t.Errorf("error = %q, want substring 'duplicate --tls-cert name'", err)
+	}
+}
+
+func TestParseTLSCertMissingColon(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=https=:8443,https",
+		"--tls-cert=noseparator",
+	})
+	if err == nil {
+		t.Fatal("expected error for --tls-cert without colon separator")
+	}
+}
+
+func TestParseTLSCertDebounceInheritsDebounce(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce=7s",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TLSCertDebounce != 7*time.Second {
+		t.Errorf("expected TLSCertDebounce to inherit --debounce (7s), got %v", cfg.TLSCertDebounce)
+	}
+}
+
+func TestParseTLSCertDebounceMaxLessThanDebounce(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--tls-cert-debounce=5s",
+		"--tls-cert-debounce-max=2s",
+	})
+	if err == nil {
+		t.Fatal("expected error for tls-cert-debounce-max < tls-cert-debounce")
+	}
+	if !strings.Contains(err.Error(), "--tls-cert-debounce-max") {
+		t.Errorf("error = %q, want substring '--tls-cert-debounce-max'", err)
+	}
+}

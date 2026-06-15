@@ -433,6 +433,9 @@ jobs:
       run: .github/test/topology-test.sh
     - name: Zero-downtime rollout restart
       run: .github/test/rollout-test.sh
+    - name: TLS certificate test (Varnish 9)
+      if: matrix.dockerfile == 'varnish9/Dockerfile'
+      run: .github/test/tls-test.sh
     - name: Upload E2E test results
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       if: always()
@@ -447,6 +450,7 @@ jobs:
         kubectl get pods -A -o wide
         kubectl describe pods -l app=k8s-httpcache
         kubectl logs -l app=k8s-httpcache --tail=50
+        kubectl logs -l app=k8s-httpcache-tls --tail=50 || true
         kubectl logs -l app=backend --tail=50
         kubectl logs -n test-ns -l app=backend-xns --tail=50
 

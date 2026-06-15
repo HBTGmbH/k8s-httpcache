@@ -134,6 +134,20 @@ Usage: {{ include "k8s-httpcache.foreignNamespaces" . }}
     {{- end }}
   {{- end }}
 {{- end }}
+{{- range .Values.tlsCerts }}
+  {{- if contains "/" .secret }}
+    {{- $parts := splitList "/" .secret }}
+    {{- $ns := first $parts }}
+    {{- if ne $ns $releaseNs }}
+      {{- $existing := dict }}
+      {{- if hasKey $foreign $ns }}
+        {{- $existing = get $foreign $ns }}
+      {{- end }}
+      {{- $_ := set $existing "secrets" true }}
+      {{- $_ := set $foreign $ns $existing }}
+    {{- end }}
+  {{- end }}
+{{- end }}
 {{- range .Values.backendDiscovery }}
   {{- if and .namespace (not .allNamespaces) }}
     {{- $ns := .namespace }}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"k8s-httpcache/internal/broadcast"
 	"k8s-httpcache/internal/config"
 	"k8s-httpcache/internal/redact"
 	"k8s-httpcache/internal/renderer"
@@ -259,12 +260,15 @@ type mockManager struct {
 	reloadFn         func(string) error
 	markBackendFn    func(string) error
 	activeSessionsFn func() (uint64, error)
+	loadCertFn       func(name string, cert, key, ca []byte) error
+	tlsSupported     bool
 	done             chan struct{}
 	err              error
 	reloadCount      int
 	forwardedSigs    []os.Signal
 	markSickCalls    []string
 	sessionsCalls    int
+	loadCertCalls    []string
 }
 
 func (m *mockManager) Reload(vclPath string) error {
@@ -316,6 +320,34 @@ func (m *mockManager) ActiveSessions() (uint64, error) {
 	}
 
 	return 0, nil
+}
+
+func (m *mockManager) LoadCert(name string, cert, key, ca []byte) error {
+	m.mu.Lock()
+	m.loadCertCalls = append(m.loadCertCalls, name)
+	fn := m.loadCertFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(name, cert, key, ca)
+	}
+
+	return nil
+}
+
+func (m *mockManager) TLSSupported() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.tlsSupported
+}
+
+func (m *mockManager) getLoadCertCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dst := make([]string, len(m.loadCertCalls))
+	copy(dst, m.loadCertCalls)
+
+	return dst
 }
 
 func (m *mockManager) getMarkSickCalls() []string {
@@ -390,6 +422,7 @@ type testHarness struct {
 	backendCh  chan backendChange
 	valuesCh   chan valuesChange
 	secretsCh  chan secretsChange
+	tlsCertCh  chan tlsCertChange
 	templateCh chan struct{}
 	sigCh      chan os.Signal
 
@@ -409,6 +442,7 @@ func newTestHarness() *testHarness {
 		backendCh:   make(chan backendChange, 1),
 		valuesCh:    make(chan valuesChange, 1),
 		secretsCh:   make(chan secretsChange, 1),
+		tlsCertCh:   make(chan tlsCertChange, 1),
 		templateCh:  make(chan struct{}, 1),
 		sigCh:       make(chan os.Signal, 1),
 		serviceName: "test-svc",
@@ -426,6 +460,7 @@ func (h *testHarness) loopConfig(bcast broadcaster) *loopConfig {
 		backendCh:  h.backendCh,
 		valuesCh:   h.valuesCh,
 		secretsCh:  h.secretsCh,
+		tlsCertCh:  h.tlsCertCh,
 		templateCh: h.templateCh,
 		sigCh:      h.sigCh,
 
@@ -434,6 +469,8 @@ func (h *testHarness) loopConfig(bcast broadcaster) *loopConfig {
 		frontendDebounceMax:   0,
 		backendDebounce:       1 * time.Millisecond,
 		backendDebounceMax:    0,
+		tlsCertDebounce:       1 * time.Millisecond,
+		tlsCertDebounceMax:    0,
 		shutdownTimeout:       1 * time.Second,
 		broadcastDrainTimeout: 1 * time.Second,
 
@@ -5875,11 +5912,13 @@ type racyShutdownManager struct {
 	err  error
 }
 
-func (*racyShutdownManager) Reload(string) error             { return nil }
-func (m *racyShutdownManager) Done() <-chan struct{}         { return m.done }
-func (m *racyShutdownManager) Err() error                    { return m.err }
-func (*racyShutdownManager) MarkBackendSick(string) error    { return nil }
-func (*racyShutdownManager) ActiveSessions() (uint64, error) { return 0, nil }
+func (*racyShutdownManager) Reload(string) error                           { return nil }
+func (m *racyShutdownManager) Done() <-chan struct{}                       { return m.done }
+func (m *racyShutdownManager) Err() error                                  { return m.err }
+func (*racyShutdownManager) MarkBackendSick(string) error                  { return nil }
+func (*racyShutdownManager) ActiveSessions() (uint64, error)               { return 0, nil }
+func (*racyShutdownManager) LoadCert(string, []byte, []byte, []byte) error { return nil }
+func (*racyShutdownManager) TLSSupported() bool                            { return false }
 
 func (m *racyShutdownManager) ForwardSignal(sig os.Signal) {
 	if sig == syscall.SIGKILL {
@@ -5915,5 +5954,143 @@ func TestRunLoopShutdownTimeoutErrReadAfterKill(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("runLoop did not return after SIGKILL escalation")
+	}
+}
+
+func TestRunLoop_TLSCertUpdateLoadsCert(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	h.mgr.tlsSupported = true
+	rec := h.withRecorder()
+	updBefore := getCounterValue(t, "frontend", h.metrics.TLSCertUpdatesTotal)
+
+	wait := h.runAndWait(h.bcast)
+
+	h.tlsCertCh <- tlsCertChange{
+		name: "frontend",
+		data: watcher.TLSCertData{Cert: []byte("CERT"), Key: []byte("KEY")},
+	}
+	waitFor(t, func() bool { return len(h.mgr.getLoadCertCalls()) >= 1 }, "mgr.LoadCert called")
+
+	// A cert rotation must NOT trigger a VCL reload.
+	if rc := h.mgr.getReloadCount(); rc != 0 {
+		t.Errorf("TLS cert update should not trigger a VCL reload, got reloadCount=%d", rc)
+	}
+	if delta := getCounterValue(t, "frontend", h.metrics.TLSCertUpdatesTotal) - updBefore; delta < 1 {
+		t.Errorf("tls_cert_updates_total(frontend) delta = %v, want >= 1", delta)
+	}
+	requireEvent(t, collectEvents(rec, 1), "TLSCertReloaded", "frontend")
+
+	if code := wait(); code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_TLSCertEmptyKeepsPrevious(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	h.mgr.tlsSupported = true
+	rec := h.withRecorder()
+
+	wait := h.runAndWait(h.bcast)
+
+	// Empty material (Secret deleted): LoadCert is still invoked (a no-op),
+	// and the event makes clear the previous certificate stays active.
+	h.tlsCertCh <- tlsCertChange{name: "frontend", data: watcher.TLSCertData{}}
+	waitFor(t, func() bool { return len(h.mgr.getLoadCertCalls()) >= 1 }, "mgr.LoadCert called")
+
+	requireEvent(t, collectEvents(rec, 1), "TLSCertAbsent", "frontend")
+
+	if code := wait(); code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunLoop_TLSCertReloadFailureRetries(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	h.mgr.tlsSupported = true
+	var attempts atomic.Int32
+	h.mgr.loadCertFn = func(string, []byte, []byte, []byte) error {
+		if attempts.Add(1) == 1 {
+			return errors.New("load failed")
+		}
+
+		return nil
+	}
+	rec := h.withRecorder()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	lc := h.loopConfig(h.bcast)
+	lc.reloadRecoveryInitial = 5 * time.Millisecond
+	lc.reloadRecoveryMax = 20 * time.Millisecond
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.tlsCertCh <- tlsCertChange{
+		name: "frontend",
+		data: watcher.TLSCertData{Cert: []byte("CERT"), Key: []byte("KEY")},
+	}
+
+	// First attempt fails (TLSCertReloadFailed), recovery timer retries and
+	// the second attempt succeeds (TLSCertReloaded).
+	events := collectEvents(rec, 2)
+	requireEvent(t, events, "TLSCertReloadFailed", "frontend")
+	requireEvent(t, events, "TLSCertReloaded", "frontend")
+	if attempts.Load() < 2 {
+		t.Errorf("expected at least 2 LoadCert attempts, got %d", attempts.Load())
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+	if c := int(code.Load()); c != 0 {
+		t.Fatalf("expected exit 0, got %d", c)
+	}
+}
+
+func TestSetBroadcasterNilLeavesInterfaceNil(t *testing.T) {
+	t.Parallel()
+	lc := &loopConfig{}
+	var s *broadcast.Server // typed nil: broadcast disabled (--broadcast-addr=none)
+	setBroadcaster(lc, s)
+	// Must be a true nil interface so the loop's `lc.bcast != nil` guards skip
+	// it. A typed-nil would make the guard true and panic on SetFrontends/Drain.
+	if lc.bcast != nil {
+		t.Fatal("disabled broadcast must leave lc.bcast a true nil interface")
+	}
+}
+
+func TestSetBroadcasterNonNilAssigns(t *testing.T) {
+	t.Parallel()
+	lc := &loopConfig{}
+	s := broadcast.New(broadcast.Options{
+		Addr:    ":0",
+		Metrics: telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+	})
+	setBroadcaster(lc, s)
+	if lc.bcast == nil {
+		t.Fatal("enabled broadcast must be assigned to lc.bcast")
+	}
+}
+
+func TestRunLoop_FrontendChangeWithBroadcastDisabled(t *testing.T) {
+	t.Parallel()
+	// Regression: with broadcast disabled, a frontend endpoint change must not
+	// panic (previously a typed-nil broadcaster defeated the nil guard).
+	h := newTestHarness()
+	wait := h.runAndWait(nil) // nil broadcaster
+
+	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 8080, Name: "p1"}}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after frontend change")
+
+	if code := wait(); code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
 	}
 }

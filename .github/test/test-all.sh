@@ -17,6 +17,7 @@ tests=(
   drain-test.sh
   topology-test.sh
   rollout-test.sh
+  tls-test.sh
 )
 
 for t in "${tests[@]}"; do

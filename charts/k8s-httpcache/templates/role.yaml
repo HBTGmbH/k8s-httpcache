@@ -22,7 +22,7 @@ rules:
     resources: ["configmaps"]
     verbs: ["list", "watch"]
   {{- end }}
-  {{- if .Values.secrets }}
+  {{- if or .Values.secrets .Values.tlsCerts }}
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["list", "watch"]

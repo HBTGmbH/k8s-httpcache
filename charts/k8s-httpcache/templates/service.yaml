@@ -18,6 +18,12 @@ spec:
       protocol: TCP
       port: {{ .Values.service.httpPort }}
       targetPort: http
+    {{- if .Values.tlsCerts }}
+    - name: https
+      protocol: TCP
+      port: {{ .Values.service.httpsPort | default 8443 }}
+      targetPort: https
+    {{- end }}
     {{- if .Values.broadcast.enabled }}
     - name: http-b
       protocol: TCP

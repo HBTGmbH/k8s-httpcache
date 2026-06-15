@@ -181,6 +181,10 @@ type Manager struct {
 	ReloadRetryInterval time.Duration
 	VCLKept             int
 
+	tlsMu      sync.Mutex        // serialises TLS cert stage→commit→discard
+	tlsCertIDs map[string]string // logical cert name → active varnishadm cert id
+	tlsCertDir string            // temp dir holding combined PEM files (lazily created)
+
 	ncsaMu     sync.Mutex // protects ncsaProc
 	ncsaProc   proc
 	ncsaRun    runner // separate runner with prefix writer for ncsa stdout
@@ -240,6 +244,7 @@ func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, v
 		run:              execRunner{stdout: os.Stdout, stderr: os.Stderr},
 		done:             make(chan struct{}),
 		metrics:          metrics,
+		tlsCertIDs:       make(map[string]string),
 		AdminTimeout:     30 * time.Second,
 		NCSARestartDelay: 5 * time.Second,
 		NCSAMaxCrashes:   3,
