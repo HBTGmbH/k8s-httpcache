@@ -194,10 +194,22 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 
 ## Releasing
 
-Releases are automated. When a tag matching `v*` is pushed to `main`, the CI builds multi-arch binaries and container images, creates checksums, and publishes a GitHub release with auto-generated release notes.
+Releases are automated with [release-please](https://github.com/googleapis/release-please). Conventional commits on `main` make release-please open a release PR; merging it tags the repo and cuts a GitHub release. For the binary, the `v*` tag triggers CI to build multi-arch binaries and container images, create checksums, and attach them to the release.
 
 ### Helm chart
 
 The chart in `charts/k8s-httpcache` is versioned independently of the binary, also via release-please. A conventional commit that changes files **under `charts/k8s-httpcache/**`** (e.g. `feat(chart): ...` or `fix(chart): ...`) makes release-please open a separate *chart* release PR that bumps `version` in `Chart.yaml` and updates `charts/k8s-httpcache/CHANGELOG.md`. Merging that PR tags `k8s-httpcache-v<version>`, cuts a GitHub release, and the `publish-chart` job packages the chart and pushes it to `oci://ghcr.io/hbtgmbh/charts/k8s-httpcache:<version>`.
 
 It is the **changed file path**, not the commit scope, that routes a commit to the chart vs. the binary. `appVersion` is not touched by the automation — bump it by hand when the default image version changes.
+
+### Release automation setup (maintainers)
+
+release-please authenticates with a **GitHub App** token rather than the default `GITHUB_TOKEN`. This is required so the `v*` tag it creates can trigger the `Test and Build` workflow — a `GITHUB_TOKEN` cannot trigger other workflows, which would otherwise leave the binary release tagged but unbuilt.
+
+One-time setup:
+
+1. Create a GitHub App (org or personal) with repository permissions **Contents: Read & write** and **Pull requests: Read & write**.
+2. Install the App on this repository.
+3. Add two repository secrets: `RELEASE_PLEASE_APP_ID` (the App's ID) and `RELEASE_PLEASE_APP_PRIVATE_KEY` (a generated private key, PEM contents).
+
+The `Release Please` workflow mints a short-lived installation token from these via `actions/create-github-app-token` (scoped to `contents`/`pull-requests`) and hands it to release-please.

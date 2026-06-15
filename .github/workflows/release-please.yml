@@ -20,10 +20,21 @@ jobs:
       chart_released: ${{ steps.release.outputs['charts/k8s-httpcache--release_created'] }}
       chart_version: ${{ steps.release.outputs['charts/k8s-httpcache--version'] }}
     steps:
+    # Mint a GitHub App installation token so the tags/releases release-please creates
+    # trigger downstream workflows (a GITHUB_TOKEN cannot — see test-and-build.yml on v* tags).
+    - name: Generate token
+      id: app-token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+      with:
+        app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+        private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+        # Scope the token to exactly what release-please needs.
+        permission-contents: write
+        permission-pull-requests: write
     - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
       id: release
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ steps.app-token.outputs.token }}
 
   publish-chart:
     needs: release-please
