@@ -2371,6 +2371,16 @@ func TestSecretsFlagsString(t *testing.T) {
 	}
 }
 
+func TestTLSCertFlagsString(t *testing.T) {
+	t.Parallel()
+	var tcf tlsCertFlags
+	_ = tcf.Set("server:tls-secret")
+	s := tcf.String()
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}
+
 func TestParseDuplicateSecretsNames(t *testing.T) {
 	t.Parallel()
 	vcl := makeTempVCL(t)

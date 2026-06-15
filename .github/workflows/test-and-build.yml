@@ -199,7 +199,15 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.gofiles == 'true' ||
         needs.changes.outputs.ci == 'true'
-      run: deadcode -test ./...
+      # deadcode prints findings to stdout but always exits 0, so fail explicitly
+      # when it reports anything.
+      run: |
+        output=$(deadcode -test ./...)
+        if [ -n "$output" ]; then
+          echo "$output"
+          echo "::error::deadcode found unreachable code"
+          exit 1
+        fi
     - name: ShellCheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
