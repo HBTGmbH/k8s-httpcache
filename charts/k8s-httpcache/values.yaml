@@ -375,14 +375,27 @@ securityContext:
     drop:
       - ALL
 
+container:
+  # -- HTTP port exposed by the varnishd process
+  httpPort: 8080
+  # -- HTTPS port exposed by the varnishd process (only when tlsCerts is set).
+  httpsPort: 8443
+  # -- Boardcast port exposed by the k8s-httpcache container
+  httpBroadcastPort: 8088
+  # -- Metrics port exposed by the k8s-httpcache container
+  httpMetricsPort: 9101
+
 service:
   # -- Service type
   type: ClusterIP
   # -- HTTP port exposed by the Service
   httpPort: 80
-  # -- HTTPS port exposed by the Service (only when tlsCerts is set). Must match
-  # the port of the https listener in listenAddrs (the container targetPort).
-  httpsPort: 8443
+  # -- HTTPS port exposed by the Service (only when tlsCerts is set).
+  httpsPort: 443
+  # -- Boardcast port exposed by the Service
+  httpBroadcastPort: 8088
+  # -- Metrics port exposed by the Service
+  httpMetricsPort: 9101
   # -- Annotations for the Service
   annotations: {}
 

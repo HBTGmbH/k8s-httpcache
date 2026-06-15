@@ -27,12 +27,12 @@ spec:
     {{- if .Values.broadcast.enabled }}
     - name: http-b
       protocol: TCP
-      port: 8088
+      port: {{ .Values.service.httpBroadcastPort | default 8088 }}
       targetPort: http-b
     {{- end }}
     {{- if .Values.metrics.enabled }}
     - name: http-m
       protocol: TCP
-      port: 9101
+      port: {{ .Values.service.httpMetricsPort | default 9101 }}
       targetPort: http-m
     {{- end }}

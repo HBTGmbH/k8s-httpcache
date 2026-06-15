@@ -342,21 +342,21 @@ spec:
             {{- end }}
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: {{ .Values.container.httpPort | default 8443 }}
               protocol: TCP
             {{- if .Values.tlsCerts }}
             - name: https
-              containerPort: {{ .Values.service.httpsPort | default 8443 }}
+              containerPort: {{ .Values.container.httpsPort | default 8443 }}
               protocol: TCP
             {{- end }}
             {{- if .Values.broadcast.enabled }}
             - name: http-b
-              containerPort: 8088
+              containerPort: {{ .Values.container.httpBroadcastPort | default 8088 }}
               protocol: TCP
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: http-m
-              containerPort: 9101
+              containerPort: {{ .Values.container.httpMetricsPort | default 9101 }}
               protocol: TCP
             {{- end }}
           {{- with .Values.startupProbe }}
