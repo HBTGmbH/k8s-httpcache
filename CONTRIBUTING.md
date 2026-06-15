@@ -210,6 +210,6 @@ One-time setup:
 
 1. Create a GitHub App (org or personal) with repository permissions **Contents: Read & write** and **Pull requests: Read & write**.
 2. Install the App on this repository.
-3. Add two repository secrets: `RELEASE_PLEASE_APP_ID` (the App's ID) and `RELEASE_PLEASE_APP_PRIVATE_KEY` (a generated private key, PEM contents).
+3. Add two repository secrets: `RELEASE_PLEASE_APP_CLIENT_ID` (the App's Client ID, shown on the App's General settings page) and `RELEASE_PLEASE_APP_PRIVATE_KEY` (a generated private key, PEM contents).
 
 The `Release Please` workflow mints a short-lived installation token from these via `actions/create-github-app-token` (scoped to `contents`/`pull-requests`) and hands it to release-please.
