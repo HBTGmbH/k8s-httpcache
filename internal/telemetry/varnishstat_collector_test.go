@@ -747,6 +747,56 @@ func TestVarnishstatCollectorSessionGrouping(t *testing.T) {
 	}
 }
 
+// TestVarnishstatCollectorLabelStabilityAcrossScrapes guards against a descCache
+// aliasing bug: a cached prometheus.Desc must own its label-key names and not
+// retain a reference to the reused per-scrape label-key buffer. The bug left the
+// first scrape correct but corrupted every metric's label key on the second and
+// later scrapes (collapsing to whichever key the last counter of the previous
+// scrape happened to use — "id", "backend", or "target", depending on map order).
+func TestVarnishstatCollectorLabelStabilityAcrossScrapes(t *testing.T) {
+	t.Parallel()
+
+	// Counters chosen so each maps to a distinct label key.
+	jsonOutput := `{"version":1,"counters":{
+		"SMA.s0.c_bytes":            {"value":100,"flag":"c","description":"Bytes allocated"},
+		"MAIN.fetch_304":            {"value":1,"flag":"c","description":"Fetch no body (304)"},
+		"LCK.ban.locks":             {"value":34574,"flag":"c","description":"Lock Operations","ident":"ban"},
+		"MEMPOOL.busyobj.allocs":    {"value":18209,"flag":"c","description":"Allocations","ident":"busyobj"},
+		"VBE.boot.be1(10.0.0.1,,80).req": {"value":5730,"flag":"c","description":"Backend requests sent","ident":"boot.be1(10.0.0.1,,80)"}
+	}}`
+	fn := func() (string, int, error) { return jsonOutput, 7, nil }
+	c := NewVarnishstatCollector(fn, nil)
+
+	want := map[string]string{
+		"varnish_sma_c_bytes":     "type",
+		"varnish_main_fetch":      "type",
+		"varnish_lock_operations": "target",
+		"varnish_mempool_allocs":  "id",
+		"varnish_backend_req":     "backend",
+	}
+
+	// Many scrapes through one collector (shared descCache). Map iteration order
+	// varies per range, so loop enough to exercise the corrupting orderings.
+	for scrape := range 50 {
+		families := collectMetrics(t, c)
+		for _, fam := range families {
+			exp, tracked := want[fam.GetName()]
+			if !tracked {
+				continue
+			}
+			for _, m := range fam.GetMetric() {
+				var got string
+				if len(m.GetLabel()) > 0 {
+					got = m.GetLabel()[0].GetName()
+				}
+				if got != exp {
+					t.Fatalf("scrape %d: %s has label key %q, want %q", scrape, fam.GetName(), got, exp)
+				}
+			}
+		}
+	}
+}
+
 // --- Unit tests for internal functions ---
 
 func TestNormalizeBackendName(t *testing.T) {

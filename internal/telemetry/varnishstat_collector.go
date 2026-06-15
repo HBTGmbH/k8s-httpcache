@@ -3,6 +3,7 @@ package telemetry
 import (
 	"cmp"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -185,11 +186,17 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 // cachedDesc returns a cached prometheus.Desc for the given metric name,
 // creating and caching one on first access. This avoids re-allocating
 // identical descriptors on every scrape.
+//
+// labelKeys must be cloned before being handed to NewDesc: callers pass a
+// subslice of a per-scrape buffer that is reused across counters, and NewDesc
+// retains the slice. Without the clone, every cached Desc would alias that
+// buffer and have its label keys overwritten by the last counter of the scrape,
+// corrupting all label keys on subsequent scrapes.
 func (c *VarnishstatCollector) cachedDesc(name, help string, labelKeys []string) *prometheus.Desc {
 	if d, ok := c.descCache[name]; ok {
 		return d
 	}
-	d := prometheus.NewDesc(name, help, labelKeys, nil)
+	d := prometheus.NewDesc(name, help, slices.Clone(labelKeys), nil)
 	c.descCache[name] = d
 
 	return d
