@@ -282,6 +282,8 @@ These flags control which cache binaries k8s-httpcache uses. See [Varnish Cache 
 | `--varnishstat-export` | `false` | Enable varnishstat Prometheus exporter on `/metrics` |
 | `--varnishstat-export-filter` | *(all)* | Counter groups to export (e.g. `MAIN,SMA,VBE`); empty exports all |
 
+Responses from `/metrics` are gzip-compressed (or zstd, when supported) when the scraper advertises it via `Accept-Encoding` — which Prometheus does by default; otherwise the response is served uncompressed.
+
 The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`, `process_*`) plus the following application metrics, all prefixed with `k8s_httpcache_`:
 
 | Metric | Type | Labels | Description |
