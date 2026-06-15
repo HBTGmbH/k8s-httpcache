@@ -7,7 +7,8 @@
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
-      "exclude-paths": ["charts/k8s-httpcache"]
+      "exclude-paths": ["charts/k8s-httpcache"],
+      "pull-request-title-pattern": "chore${scope}: release k8s-httpcache app ${version}"
     },
     "charts/k8s-httpcache": {
       "release-type": "helm",
@@ -15,7 +16,8 @@
       "package-name": "k8s-httpcache",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": false
+      "bump-patch-for-minor-pre-major": false,
+      "pull-request-title-pattern": "chore${scope}: release k8s-httpcache Helm chart ${version}"
     }
   }
 }
