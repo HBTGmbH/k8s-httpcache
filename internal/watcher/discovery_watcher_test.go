@@ -116,8 +116,8 @@ func TestDiscoveryWatcher_InitialDiscovery(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].Host)
 	}
 }
 
@@ -535,7 +535,7 @@ func TestDiscoveryWatcher_EndpointChangeFlowsThrough(t *testing.T) {
 	waitForInitial(t, dw)
 
 	state := dw.InitialState()
-	if eps := state["web"]; len(eps) != 1 || eps[0].IP != "10.0.0.1" {
+	if eps := state["web"]; len(eps) != 1 || eps[0].Host != "10.0.0.1" {
 		t.Fatalf("unexpected initial state: %v", eps)
 	}
 
@@ -763,8 +763,8 @@ func TestDiscoveryWatcher_ExternalNameService(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "example.com" {
-		t.Errorf("IP = %q, want example.com", eps[0].IP)
+	if eps[0].Host != "example.com" {
+		t.Errorf("IP = %q, want example.com", eps[0].Host)
 	}
 	if eps[0].Port != 443 {
 		t.Errorf("Port = %d, want 443", eps[0].Port)
@@ -843,8 +843,8 @@ func TestDiscoveryWatcher_DuplicateNameAcrossNamespaces(t *testing.T) {
 		t.Fatalf("expected 1 endpoint for 'web', got %d", len(eps))
 	}
 	// We can't predict which one wins, but at least one IP should be present.
-	if eps[0].IP != "10.0.0.1" && eps[0].IP != "10.0.0.2" {
-		t.Errorf("unexpected IP %q", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" && eps[0].Host != "10.0.0.2" {
+		t.Errorf("unexpected IP %q", eps[0].Host)
 	}
 }
 
@@ -936,8 +936,8 @@ func TestDiscoveryWatcher_SecondServiceAddedDynamically(t *testing.T) {
 		select {
 		case u := <-dw.Changes():
 			if u.Name == "api" && len(u.Endpoints) > 0 {
-				if u.Endpoints[0].IP != "10.0.0.2" {
-					t.Errorf("IP = %q, want 10.0.0.2", u.Endpoints[0].IP)
+				if u.Endpoints[0].Host != "10.0.0.2" {
+					t.Errorf("IP = %q, want 10.0.0.2", u.Endpoints[0].Host)
 				}
 
 				return // success
@@ -1118,7 +1118,7 @@ removed:
 	for {
 		select {
 		case u := <-dw.Changes():
-			if u.Name == "web" && len(u.Endpoints) > 0 && u.Endpoints[0].IP == "10.0.0.99" {
+			if u.Name == "web" && len(u.Endpoints) > 0 && u.Endpoints[0].Host == "10.0.0.99" {
 				return // success
 			}
 		case <-deadline:
@@ -1157,7 +1157,7 @@ func TestDiscoveryWatcher_ExternalNameToClusterIPTransition(t *testing.T) {
 	if !ok {
 		t.Fatal("expected 'api' in initial state")
 	}
-	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+	if len(eps) != 1 || eps[0].Host != "api.example.com" {
 		t.Fatalf("expected ExternalName endpoint, got %v", eps)
 	}
 
@@ -1188,7 +1188,7 @@ func TestDiscoveryWatcher_ExternalNameToClusterIPTransition(t *testing.T) {
 	for {
 		select {
 		case u := <-dw.Changes():
-			if u.Name == "api" && len(u.Endpoints) > 0 && u.Endpoints[0].IP == "10.0.0.5" {
+			if u.Name == "api" && len(u.Endpoints) > 0 && u.Endpoints[0].Host == "10.0.0.5" {
 				return // success
 			}
 		case <-deadline:
@@ -1235,16 +1235,16 @@ func TestDiscoveryWatcher_InitialSnapshotMixedTypes(t *testing.T) {
 	if !ok {
 		t.Fatal("expected 'web' in initial state")
 	}
-	if len(webEps) != 1 || webEps[0].IP != "10.0.0.1" {
-		t.Errorf("web endpoints = %v, want [{IP:10.0.0.1}]", webEps)
+	if len(webEps) != 1 || webEps[0].Host != "10.0.0.1" {
+		t.Errorf("web endpoints = %v, want [{Host:10.0.0.1}]", webEps)
 	}
 
 	cdnEps, ok := state["cdn"]
 	if !ok {
 		t.Fatal("expected 'cdn' in initial state")
 	}
-	if len(cdnEps) != 1 || cdnEps[0].IP != "cdn.example.com" {
-		t.Errorf("cdn endpoints = %v, want [{IP:cdn.example.com}]", cdnEps)
+	if len(cdnEps) != 1 || cdnEps[0].Host != "cdn.example.com" {
+		t.Errorf("cdn endpoints = %v, want [{Host:cdn.example.com}]", cdnEps)
 	}
 	if cdnEps[0].Port != 8080 {
 		t.Errorf("cdn port = %d, want 8080", cdnEps[0].Port)
@@ -1370,8 +1370,8 @@ func TestDiscoveryWatcher_ServiceAddedDuringInitPhase(t *testing.T) {
 	if !ok {
 		t.Fatal("expected 'web' in initial state")
 	}
-	if len(webEps) != 1 || webEps[0].IP != "10.0.0.1" {
-		t.Errorf("web = %v, want [{IP:10.0.0.1 Port:8080}]", webEps)
+	if len(webEps) != 1 || webEps[0].Host != "10.0.0.1" {
+		t.Errorf("web = %v, want [{Host:10.0.0.1 Port:8080}]", webEps)
 	}
 	if webEps[0].Port != 8080 {
 		t.Errorf("web port = %d, want 8080", webEps[0].Port)
@@ -1381,8 +1381,8 @@ func TestDiscoveryWatcher_ServiceAddedDuringInitPhase(t *testing.T) {
 	if !ok {
 		t.Fatal("expected 'api' in initial state")
 	}
-	if len(apiEps) != 1 || apiEps[0].IP != "10.0.0.2" {
-		t.Errorf("api = %v, want [{IP:10.0.0.2 Port:9090}]", apiEps)
+	if len(apiEps) != 1 || apiEps[0].Host != "10.0.0.2" {
+		t.Errorf("api = %v, want [{Host:10.0.0.2 Port:9090}]", apiEps)
 	}
 	if apiEps[0].Port != 9090 {
 		t.Errorf("api port = %d, want 9090", apiEps[0].Port)
@@ -1631,10 +1631,10 @@ func TestDiscoveryWatcher_DuplicateNameInOtherNamespaceSkipped(t *testing.T) {
 				t.Errorf("Name = %q, want web", u.Name)
 			}
 			for _, ep := range u.Endpoints {
-				if ep.IP == "10.0.0.99" {
+				if ep.Host == "10.0.0.99" {
 					t.Fatal("received endpoints of the same-named Service from another namespace; it should be skipped")
 				}
-				if ep.IP == "10.0.0.2" {
+				if ep.Host == "10.0.0.2" {
 					return // ns1 change arrived without any collision update
 				}
 			}

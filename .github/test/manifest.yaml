@@ -435,7 +435,7 @@ data:
 
     <<- range .Frontends >>
     backend << .Name >> {
-      .host = "<< .IP >>";
+      .host = "<< .Host >>";
       .port = "<< .Port >>";
     }
     <<- end >>
@@ -443,7 +443,7 @@ data:
     <<- range $name, $bg := .Backends >>
     <<- range $bg.Endpoints >>
     backend << .Name >>_<< $name >> {
-      .host = "<< .IP >>";
+      .host = "<< .Host >>";
       .port = "<< .Port >>";
     }
     <<- end >>

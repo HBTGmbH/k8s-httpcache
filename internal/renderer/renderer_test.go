@@ -98,7 +98,7 @@ func TestNew_ConfigurableDelimitersLiteralPassthrough(t *testing.T) {
 
 func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
 	t.Parallel()
-	tmpl := `{{ range .Frontends }}backend {{ .Name }} { .host = "{{ .IP }}"; .port = "{{ .Port }}"; }
+	tmpl := `{{ range .Frontends }}backend {{ .Name }} { .host = "{{ .Host }}"; .port = "{{ .Port }}"; }
 {{ end }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}", "sprig")
@@ -107,8 +107,8 @@ func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
 	}
 
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 8080, Name: "pod-a"},
-		{IP: "10.0.0.2", Port: 8080, Name: "pod-b"},
+		{Host: "10.0.0.1", Port: 8080, Name: "pod-a"},
+		{Host: "10.0.0.2", Port: 8080, Name: "pod-b"},
 	}
 
 	out, err := r.Render(frontends, nil, nil, nil)
@@ -125,7 +125,7 @@ func TestNew_ConfigurableDelimitersWithFrontends(t *testing.T) {
 
 func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
 	t.Parallel()
-	tmpl := `{{ range $name, $bg := .Backends }}{{ range $bg.Endpoints }}{{ .Name }}_{{ $name }}={{ .IP }}:{{ .Port }} {{ end }}{{ end }}`
+	tmpl := `{{ range $name, $bg := .Backends }}{{ range $bg.Endpoints }}{{ .Name }}_{{ $name }}={{ .Host }}:{{ .Port }} {{ end }}{{ end }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
@@ -134,7 +134,7 @@ func TestNew_ConfigurableDelimitersWithBackends(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
+			{Host: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
 		}},
 	}
 
@@ -188,7 +188,7 @@ func TestNew_ConfigurableDelimitersSprigFunctions(t *testing.T) {
 
 func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
 	t.Parallel()
-	tmpl := `vcl 4.1; {{ range .Frontends }}{{ .IP }} {{ end }}`
+	tmpl := `vcl 4.1; {{ range .Frontends }}{{ .Host }} {{ end }}`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "{{", "}}", "sprig")
 	if err != nil {
@@ -196,7 +196,7 @@ func TestNew_ConfigurableDelimitersRenderToFile(t *testing.T) {
 	}
 
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.5", Port: 80, Name: "x"},
+		{Host: "10.0.0.5", Port: 80, Name: "x"},
 	}
 
 	outPath, err := r.RenderToFile(frontends, nil, nil, nil)
@@ -359,7 +359,7 @@ func TestRender_EmptyFrontends(t *testing.T) {
 
 func TestRender_WithFrontends(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range .Frontends >>backend << .Name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
+	tmpl := `<< range .Frontends >>backend << .Name >> { .host = "<< .Host >>"; .port = "<< .Port >>"; }
 << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprig")
@@ -368,8 +368,8 @@ func TestRender_WithFrontends(t *testing.T) {
 	}
 
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 8080, Name: "pod-a"},
-		{IP: "10.0.0.2", Port: 8080, Name: "pod-b"},
+		{Host: "10.0.0.1", Port: 8080, Name: "pod-a"},
+		{Host: "10.0.0.2", Port: 8080, Name: "pod-b"},
 	}
 
 	out, err := r.Render(frontends, nil, nil, nil)
@@ -378,8 +378,8 @@ func TestRender_WithFrontends(t *testing.T) {
 	}
 
 	for _, fe := range frontends {
-		if !strings.Contains(out, fe.IP) {
-			t.Errorf("expected IP %s in output", fe.IP)
+		if !strings.Contains(out, fe.Host) {
+			t.Errorf("expected IP %s in output", fe.Host)
 		}
 		if !strings.Contains(out, fe.Name) {
 			t.Errorf("expected Name %s in output", fe.Name)
@@ -393,7 +393,7 @@ func TestRender_WithFrontends(t *testing.T) {
 func TestRender_SprigFunctions(t *testing.T) {
 	t.Parallel()
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 80, Name: "my-cool-pod"},
+		{Host: "10.0.0.1", Port: 80, Name: "my-cool-pod"},
 	}
 
 	tests := []struct {
@@ -463,12 +463,12 @@ func TestRender_SprigFunctions(t *testing.T) {
 		},
 		{
 			name:     "quote",
-			tmpl:     `<< range .Frontends >><< .IP | quote >><< end >>`,
+			tmpl:     `<< range .Frontends >><< .Host | quote >><< end >>`,
 			expected: `"10.0.0.1"`,
 		},
 		{
 			name:     "squote",
-			tmpl:     `<< range .Frontends >><< .IP | squote >><< end >>`,
+			tmpl:     `<< range .Frontends >><< .Host | squote >><< end >>`,
 			expected: `'10.0.0.1'`,
 		},
 		{
@@ -545,7 +545,7 @@ func TestRender_BackendLabels(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"version": "v2", "tier": "backend"},
 		},
 	}
@@ -572,11 +572,11 @@ func TestRender_BackendLabelsMultipleBackends(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "frontend"},
 		},
 		"worker": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 	}
@@ -611,11 +611,11 @@ func TestRender_BackendLabelsConditional(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "premium"},
 		},
 		"worker": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Labels:    map[string]string{"tier": "basic"},
 		},
 	}
@@ -646,7 +646,7 @@ func TestRender_BackendLabelsUpdate(t *testing.T) {
 	// First render with v1.
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"version": "v1"},
 		},
 	}
@@ -661,7 +661,7 @@ func TestRender_BackendLabelsUpdate(t *testing.T) {
 	// Second render with updated labels.
 	backends = map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"version": "v2"},
 		},
 	}
@@ -693,11 +693,11 @@ func TestRender_BackendLabelsMissingBackend(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 		"static": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 80, Name: "static-0"}},
 			// No labels — Render() will set Labels to empty map.
 		},
 	}
@@ -725,7 +725,7 @@ func TestRender_BackendLabelsEmpty(t *testing.T) {
 	}
 
 	backends := map[string]BackendGroup{
-		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
+		"api": {Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -750,7 +750,7 @@ func TestRender_BackendAnnotations(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Annotations: map[string]string{"example.com/version": "v2", "example.com/tier": "backend"},
 		},
 	}
@@ -775,7 +775,7 @@ func TestRender_BackendAnnotationsEmpty(t *testing.T) {
 	}
 
 	backends := map[string]BackendGroup{
-		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
+		"api": {Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}}},
 	}
 
 	out, err := r.Render(nil, backends, nil, nil)
@@ -800,11 +800,11 @@ func TestRender_BackendAnnotationsMultipleBackends(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Annotations: map[string]string{"example.com/tier": "frontend"},
 		},
 		"worker": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Annotations: map[string]string{"example.com/tier": "backend"},
 		},
 	}
@@ -838,11 +838,11 @@ func TestRender_BackendAnnotationsConditional(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Annotations: map[string]string{"example.com/tier": "premium"},
 		},
 		"worker": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Annotations: map[string]string{"example.com/tier": "basic"},
 		},
 	}
@@ -877,11 +877,11 @@ func TestRender_BackendAnnotationsMissingBackend(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Annotations: map[string]string{"example.com/tier": "backend"},
 		},
 		"static": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 80, Name: "static-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 80, Name: "static-0"}},
 			// No annotations — Render() will set Annotations to empty map.
 		},
 	}
@@ -912,7 +912,7 @@ func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 	// First render with v1.
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Annotations: map[string]string{"example.com/version": "v1"},
 		},
 	}
@@ -927,7 +927,7 @@ func TestRender_BackendAnnotationsUpdate(t *testing.T) {
 	// Second render with updated annotations.
 	backends = map[string]BackendGroup{
 		"api": {
-			Endpoints:   []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints:   []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Annotations: map[string]string{"example.com/version": "v2"},
 		},
 	}
@@ -950,7 +950,7 @@ func TestRender_SprigGetTypedMap(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 	}
@@ -973,7 +973,7 @@ func TestRender_SprigGetTypedMapMissing(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 	}
@@ -988,14 +988,14 @@ func TestRender_SprigGetTypedMapMissing(t *testing.T) {
 
 func TestRender_SprigValuesTypedMap(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.IP >>,<< end >><< end >>`
+	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.Host >>,<< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	backends := map[string]BackendGroup{
-		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
+		"api": {Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}}},
 	}
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -1016,11 +1016,11 @@ func TestRender_SprigPickTypedMap(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 		"worker": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Labels:    map[string]string{"tier": "queue"},
 		},
 	}
@@ -1043,11 +1043,11 @@ func TestRender_SprigOmitTypedMap(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 		"worker": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Labels:    map[string]string{"tier": "queue"},
 		},
 	}
@@ -1063,7 +1063,7 @@ func TestRender_SprigOmitTypedMap(t *testing.T) {
 func TestRender_SproutFunctions(t *testing.T) {
 	t.Parallel()
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 80, Name: "my-cool-pod"},
+		{Host: "10.0.0.1", Port: 80, Name: "my-cool-pod"},
 	}
 
 	tests := []struct {
@@ -1133,12 +1133,12 @@ func TestRender_SproutFunctions(t *testing.T) {
 		},
 		{
 			name:     "quote",
-			tmpl:     `<< range .Frontends >><< .IP | quote >><< end >>`,
+			tmpl:     `<< range .Frontends >><< .Host | quote >><< end >>`,
 			expected: `"10.0.0.1"`,
 		},
 		{
 			name:     "squote",
-			tmpl:     `<< range .Frontends >><< .IP | squote >><< end >>`,
+			tmpl:     `<< range .Frontends >><< .Host | squote >><< end >>`,
 			expected: `'10.0.0.1'`,
 		},
 		{
@@ -1212,7 +1212,7 @@ func TestRender_SproutGetTypedMap(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 	}
@@ -1235,7 +1235,7 @@ func TestRender_SproutGetTypedMapMissing(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 	}
@@ -1250,14 +1250,14 @@ func TestRender_SproutGetTypedMapMissing(t *testing.T) {
 
 func TestRender_SproutValuesTypedMap(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.IP >>,<< end >><< end >>`
+	tmpl := `<< range $bg := values .Backends >><< range $ep := $bg.Endpoints >><< $ep.Host >>,<< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprout")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	backends := map[string]BackendGroup{
-		"api": {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}}},
+		"api": {Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}}},
 	}
 	out, err := r.Render(nil, backends, nil, nil)
 	if err != nil {
@@ -1278,11 +1278,11 @@ func TestRender_SproutPickTypedMap(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 		"worker": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Labels:    map[string]string{"tier": "queue"},
 		},
 	}
@@ -1305,11 +1305,11 @@ func TestRender_SproutOmitTypedMap(t *testing.T) {
 	}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "api-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "api-0"}},
 			Labels:    map[string]string{"tier": "backend"},
 		},
 		"worker": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.2", Port: 9090, Name: "worker-0"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 9090, Name: "worker-0"}},
 			Labels:    map[string]string{"tier": "queue"},
 		},
 	}
@@ -1543,7 +1543,7 @@ backend origin {
 <<- if .Frontends >>
 << range .Frontends >>
 backend << .Name >> {
-    .host = "<< .IP >>";
+    .host = "<< .Host >>";
     .port = "<< .Port >>";
 }
 << end >>
@@ -1596,7 +1596,7 @@ sub vcl_recv {
 <<- range $name, $bg := .Backends >>
 << range $bg.Endpoints >>
 backend << .Name >>_<< $name >> {
-    .host = "<< .IP >>";
+    .host = "<< .Host >>";
     .port = "<< .Port >>";
 }
 << end >>
@@ -1633,8 +1633,8 @@ sub vcl_backend_response {
 	t.Run("with_frontends", func(t *testing.T) {
 		t.Parallel()
 		frontends := []watcher.Frontend{
-			{IP: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
-			{IP: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
+			{Host: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
+			{Host: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
 		}
 		out, err := r.Render(frontends, nil, nil, nil)
 		if err != nil {
@@ -1679,8 +1679,8 @@ sub vcl_backend_response {
 		t.Parallel()
 		backends := map[string]BackendGroup{
 			"api": {Endpoints: []watcher.Endpoint{
-				{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
-				{IP: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
+				{Host: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
+				{Host: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
 			}},
 		}
 		out, err := r.Render(nil, backends, nil, nil)
@@ -1722,7 +1722,7 @@ sub vcl_backend_response {
 
 func TestRenderToFile(t *testing.T) {
 	t.Parallel()
-	tmpl := `vcl 4.1; << range .Frontends >><< .IP >> << end >>`
+	tmpl := `vcl 4.1; << range .Frontends >><< .Host >> << end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
@@ -1730,7 +1730,7 @@ func TestRenderToFile(t *testing.T) {
 	}
 
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.5", Port: 80, Name: "x"},
+		{Host: "10.0.0.5", Port: 80, Name: "x"},
 	}
 
 	outPath, err := r.RenderToFile(frontends, nil, nil, nil)
@@ -1751,7 +1751,7 @@ func TestRenderToFile(t *testing.T) {
 func TestRender_WithBackends(t *testing.T) {
 	t.Parallel()
 	tmpl := `<< range $name, $bg := .Backends >>` +
-		`<< range $bg.Endpoints >>backend << .Name >>_<< $name >> { .host = "<< .IP >>"; .port = "<< .Port >>"; }
+		`<< range $bg.Endpoints >>backend << .Name >>_<< $name >> { .host = "<< .Host >>"; .port = "<< .Port >>"; }
 << end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprig")
@@ -1761,11 +1761,11 @@ func TestRender_WithBackends(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
-			{IP: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
+			{Host: "10.1.0.1", Port: 3000, Name: "api-pod-0"},
+			{Host: "10.1.0.2", Port: 3000, Name: "api-pod-1"},
 		}},
 		"auth": {Endpoints: []watcher.Endpoint{
-			{IP: "10.2.0.1", Port: 8080, Name: "auth-pod-0"},
+			{Host: "10.2.0.1", Port: 8080, Name: "auth-pod-0"},
 		}},
 	}
 
@@ -1802,7 +1802,7 @@ func TestRenderToFile_RenderError(t *testing.T) {
 	}
 
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 80, Name: "a"},
+		{Host: "10.0.0.1", Port: 80, Name: "a"},
 	}
 
 	_, err = r.RenderToFile(frontends, nil, nil, nil)
@@ -1862,8 +1862,8 @@ func TestRollback_NoOp(t *testing.T) {
 
 func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	t.Parallel()
-	tmpl := `frontends:<< range .Frontends >> << .IP >><< end >>` +
-		` backends:<< range $name, $bg := .Backends >><< range $bg.Endpoints >> << .IP >>/<< $name >><< end >><< end >>`
+	tmpl := `frontends:<< range .Frontends >> << .Host >><< end >>` +
+		` backends:<< range $name, $bg := .Backends >><< range $bg.Endpoints >> << .Host >>/<< $name >><< end >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprig")
 	if err != nil {
@@ -1871,11 +1871,11 @@ func TestRender_FrontendsAndBackendsTogether(t *testing.T) {
 	}
 
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 8080, Name: "web-0"},
+		{Host: "10.0.0.1", Port: 8080, Name: "web-0"},
 	}
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.1.0.1", Port: 3000, Name: "api-0"},
+			{Host: "10.1.0.1", Port: 3000, Name: "api-0"},
 		}},
 	}
 
@@ -1943,9 +1943,9 @@ func TestRender_ValuesWithFrontendsAndBackends(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	frontends := []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	frontends := []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	backends := map[string]BackendGroup{
-		"api": {Endpoints: []watcher.Endpoint{{IP: "10.1.0.1", Port: 3000, Name: "api-0"}}},
+		"api": {Endpoints: []watcher.Endpoint{{Host: "10.1.0.1", Port: 3000, Name: "api-0"}}},
 	}
 	values := map[string]map[string]any{
 		"config": {"ttl": "120"},
@@ -2609,7 +2609,7 @@ backend origin {
 
 << range .Frontends >>
 backend << .Name >> {
-  .host = "<< .IP >>";
+  .host = "<< .Host >>";
   .port = "<< .Port >>";
 }
 << end >>
@@ -2627,8 +2627,8 @@ sub vcl_deliver {
 	r.SetDrainBackend("drain_flag")
 
 	frontends := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
-		{IP: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
+		{Host: "10.0.0.1", Port: 8080, Name: "web-pod-0"},
+		{Host: "10.0.0.2", Port: 8080, Name: "web-pod-1"},
 	}
 
 	out, err := r.Render(frontends, nil, nil, nil)
@@ -2804,8 +2804,8 @@ func TestNew_LocalZoneAndEndpointZone(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a", NodeName: "node-1", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
-			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b", NodeName: "node-2"},
+			{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a", NodeName: "node-1", ForZones: []string{"europe-west3-a", "europe-west3-b"}},
+			{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b", NodeName: "node-2"},
 		}},
 	}
 
@@ -2838,8 +2838,8 @@ func TestNew_LocalZoneWeightedDirector(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+			{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
 		}},
 	}
 
@@ -3006,8 +3006,8 @@ remote:<<- range $name, $bg := .Backends >><<- range $bg.RemoteEndpoints >> << .
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+			{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
 		}},
 	}
 
@@ -3038,7 +3038,7 @@ func TestRender_LocalRemoteBackends_EmptyLocalZone(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
 		}},
 	}
 
@@ -3070,9 +3070,9 @@ remote_api:<<- range .Backends.api.RemoteEndpoints >> << .Name >><< end >>`
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
-			{IP: "10.0.0.3", Port: 8080, Name: "pod-c"}, // empty zone -> remote
+			{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+			{Host: "10.0.0.3", Port: 8080, Name: "pod-c"}, // empty zone -> remote
 		}},
 	}
 
@@ -3096,7 +3096,7 @@ func TestRender_LocalRemoteBackends_FallbackDirectorPattern(t *testing.T) {
 	// a plain round-robin when zone info is unavailable.
 	tmpl := `<<- range $name, $bg := .Backends >>
 <<- range $bg.Endpoints >>
-backend << .Name >>_<< $name >> { .host = "<< .IP >>"; }
+backend << .Name >>_<< $name >> { .host = "<< .Host >>"; }
 <<- end >>
 <<- end >>
 sub vcl_init {
@@ -3124,12 +3124,12 @@ sub vcl_init {
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
-			{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-			{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+			{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+			{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
 		}},
 		"web": {Endpoints: []watcher.Endpoint{
-			{IP: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
-			{IP: "10.0.1.2", Port: 80, Name: "web-b", Zone: "europe-west3-a"},
+			{Host: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
+			{Host: "10.0.1.2", Port: 80, Name: "web-b", Zone: "europe-west3-a"},
 		}},
 	}
 
@@ -3251,8 +3251,8 @@ sub vcl_init {
 
 		allLocal := map[string]BackendGroup{
 			"api": {Endpoints: []watcher.Endpoint{
-				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-a"},
+				{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+				{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-a"},
 			}},
 		}
 
@@ -3294,8 +3294,8 @@ sub vcl_init {
 
 		allRemote := map[string]BackendGroup{
 			"api": {Endpoints: []watcher.Endpoint{
-				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b"},
-				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-c"},
+				{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b"},
+				{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-c"},
 			}},
 		}
 
@@ -3337,11 +3337,11 @@ sub vcl_init {
 
 		hinted := map[string]BackendGroup{
 			"api": {Endpoints: []watcher.Endpoint{
-				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}}, // remote zone, but hinted for local -> local
-				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},                                       // remote zone, no hint -> remote
-				{IP: "10.0.0.3", Port: 8080, Name: "pod-c", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}}, // remote zone, hint for other -> remote
-				{IP: "10.0.0.4", Port: 8080, Name: "pod-d", ForZones: []string{"europe-west3-a", "europe-west3-b"}},       // empty zone, hint contains local -> local
-				{IP: "10.0.0.5", Port: 8080, Name: "pod-e", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}}, // local zone, hint for other -> local (zone match wins)
+				{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-b", ForZones: []string{"europe-west3-a"}}, // remote zone, but hinted for local -> local
+				{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},                                       // remote zone, no hint -> remote
+				{Host: "10.0.0.3", Port: 8080, Name: "pod-c", Zone: "europe-west3-b", ForZones: []string{"europe-west3-c"}}, // remote zone, hint for other -> remote
+				{Host: "10.0.0.4", Port: 8080, Name: "pod-d", ForZones: []string{"europe-west3-a", "europe-west3-b"}},       // empty zone, hint contains local -> local
+				{Host: "10.0.0.5", Port: 8080, Name: "pod-e", Zone: "europe-west3-a", ForZones: []string{"europe-west3-c"}}, // local zone, hint for other -> local (zone match wins)
 			}},
 		}
 
@@ -3384,10 +3384,10 @@ sub vcl_init {
 		// One group is all-local, another is all-remote.
 		mixed := map[string]BackendGroup{
 			"api": {Endpoints: []watcher.Endpoint{
-				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+				{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
 			}},
 			"web": {Endpoints: []watcher.Endpoint{
-				{IP: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
+				{Host: "10.0.1.1", Port: 80, Name: "web-a", Zone: "europe-west3-b"},
 			}},
 		}
 
@@ -3431,8 +3431,8 @@ func TestRender_DoesNotMutateInputBackendGroup(t *testing.T) {
 	backends := map[string]BackendGroup{
 		"api": {
 			Endpoints: []watcher.Endpoint{
-				{IP: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
-				{IP: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
+				{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a"},
+				{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b"},
 			},
 			// Labels and Annotations intentionally nil.
 		},
@@ -3481,7 +3481,7 @@ func TestRender_InputLabelsMutationDoesNotAffectPreviousOutput(t *testing.T) {
 	labels := map[string]string{"version": "v1"}
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "pod-a"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "pod-a"}},
 			Labels:    labels,
 		},
 	}
@@ -3519,7 +3519,7 @@ func TestRender_ReplacingBackendGroupIsIndependent(t *testing.T) {
 
 	backends := map[string]BackendGroup{
 		"api": {
-			Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "pod-a"}},
+			Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "pod-a"}},
 			Labels:    map[string]string{"version": "v1"},
 		},
 	}
@@ -3536,7 +3536,7 @@ func TestRender_ReplacingBackendGroupIsIndependent(t *testing.T) {
 	// Labels map should be completely independent of the new one.
 	oldLabels := backends["api"].Labels
 	backends["api"] = BackendGroup{
-		Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 8080, Name: "pod-a"}},
+		Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "pod-a"}},
 		Labels:    map[string]string{"version": "v2"},
 	}
 

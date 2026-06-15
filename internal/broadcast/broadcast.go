@@ -245,7 +245,7 @@ func (s *Server) forward(origReq *http.Request, fe *watcher.Frontend, body []byt
 	}
 	target := url.URL{
 		Scheme:   "http",
-		Host:     net.JoinHostPort(fe.IP, strconv.FormatInt(int64(port), 10)),
+		Host:     net.JoinHostPort(fe.Host, strconv.FormatInt(int64(port), 10)),
 		Path:     origReq.URL.Path,
 		RawPath:  origReq.URL.RawPath,
 		RawQuery: origReq.URL.RawQuery,

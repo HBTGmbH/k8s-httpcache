@@ -20,10 +20,10 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// Endpoint represents a single pod endpoint (IP + port + pod name) with
+// Endpoint represents a single pod endpoint (host + port + pod name) with
 // optional topology metadata.
 type Endpoint struct {
-	IP       string
+	Host     string
 	Port     int32
 	Name     string
 	Zone     string   // topology.kubernetes.io/zone from EndpointSlice
@@ -156,7 +156,7 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 			}
 			for _, addr := range ep.Addresses {
 				endpoints = append(endpoints, Endpoint{
-					IP:       addr,
+					Host:     addr,
 					Port:     port,
 					Name:     name,
 					Zone:     zone,
@@ -168,7 +168,7 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	}
 
 	slices.SortFunc(endpoints, func(a, b Endpoint) int {
-		if c := cmp.Compare(a.IP, b.IP); c != 0 {
+		if c := cmp.Compare(a.Host, b.Host); c != 0 {
 			return c
 		}
 
@@ -177,10 +177,10 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 
 	// The same endpoint can transiently appear in more than one slice during
 	// EndpointSlice rebalancing; the API docs require consumers to
-	// deduplicate. The list is sorted by (IP, Port), so duplicates are
+	// deduplicate. The list is sorted by (Host, Port), so duplicates are
 	// adjacent.
 	endpoints = slices.CompactFunc(endpoints, func(a, b Endpoint) bool {
-		return a.IP == b.IP && a.Port == b.Port
+		return a.Host == b.Host && a.Port == b.Port
 	})
 
 	w.mu.Lock()
@@ -194,11 +194,11 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		added, removed := diffEndpoints(w.previous, endpoints)
 		for _, ep := range added {
 			w.log.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
-				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port), "zone", ep.Zone)
+				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.Host, ep.Port), "zone", ep.Zone)
 		}
 		for _, ep := range removed {
 			w.log.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
-				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port), "zone", ep.Zone)
+				"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.Host, ep.Port), "zone", ep.Zone)
 		}
 	}
 
@@ -242,7 +242,7 @@ func resolvePort(ports []discoveryv1.EndpointPort, override string) int32 {
 // endpointKey returns a comparable string key for use in maps, since Endpoint
 // contains a []string field (ForZones) that makes the struct non-comparable.
 func endpointKey(e *Endpoint) string {
-	return fmt.Sprintf("%s|%d|%s|%s|%s|%s", e.IP, e.Port, e.Name, e.Zone, e.NodeName, strings.Join(e.ForZones, ","))
+	return fmt.Sprintf("%s|%d|%s|%s|%s|%s", e.Host, e.Port, e.Name, e.Zone, e.NodeName, strings.Join(e.ForZones, ","))
 }
 
 func diffEndpoints(old, cur []Endpoint) ([]Endpoint, []Endpoint) {
@@ -271,7 +271,7 @@ func diffEndpoints(old, cur []Endpoint) ([]Endpoint, []Endpoint) {
 
 // endpointEqual compares two Endpoints for equality, including the ForZones slice.
 func endpointEqual(a, b *Endpoint) bool {
-	return a.IP == b.IP && a.Port == b.Port && a.Name == b.Name &&
+	return a.Host == b.Host && a.Port == b.Port && a.Name == b.Name &&
 		a.Zone == b.Zone && a.NodeName == b.NodeName &&
 		slices.Equal(a.ForZones, b.ForZones)
 }

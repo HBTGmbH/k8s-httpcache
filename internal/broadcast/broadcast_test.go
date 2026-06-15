@@ -50,7 +50,7 @@ func frontendFromServer(name string, ts *httptest.Server) watcher.Frontend {
 
 	return watcher.Frontend{
 		Name: name,
-		IP:   parts[0],
+		Host: parts[0],
 		Port: port,
 	}
 }
@@ -642,7 +642,7 @@ func TestRequestBodyReadError(t *testing.T) {
 	t.Parallel()
 	s := newTestServer()
 	s.SetFrontends([]watcher.Frontend{
-		{Name: "pod-0", IP: "127.0.0.1", Port: 9999},
+		{Name: "pod-0", Host: "127.0.0.1", Port: 9999},
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/purge/foo", &errorReader{})
@@ -669,7 +669,7 @@ func TestRequestBodyReadErrorDraining(t *testing.T) {
 	s := newTestServer()
 	s.draining.Store(true)
 	s.SetFrontends([]watcher.Frontend{
-		{Name: "pod-0", IP: "127.0.0.1", Port: 9999},
+		{Name: "pod-0", Host: "127.0.0.1", Port: 9999},
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/purge/foo", &errorReader{})

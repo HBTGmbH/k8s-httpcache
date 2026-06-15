@@ -121,8 +121,8 @@ func TestBackendWatcherExternalNameService(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "api.example.com" {
-		t.Errorf("IP = %q, want api.example.com", eps[0].IP)
+	if eps[0].Host != "api.example.com" {
+		t.Errorf("IP = %q, want api.example.com", eps[0].Host)
 	}
 	if eps[0].Port != 8080 {
 		t.Errorf("Port = %d, want 8080", eps[0].Port)
@@ -215,8 +215,8 @@ func TestBackendWatcherClusterIPService(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].Host)
 	}
 	if eps[0].Port != 8080 {
 		t.Errorf("Port = %d, want 8080", eps[0].Port)
@@ -265,8 +265,8 @@ func TestBackendWatcherServiceAppearsLate(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after late Service creation, got %d", len(eps))
 	}
-	if eps[0].IP != "api.example.com" {
-		t.Errorf("IP = %q, want api.example.com", eps[0].IP)
+	if eps[0].Host != "api.example.com" {
+		t.Errorf("IP = %q, want api.example.com", eps[0].Host)
 	}
 	if eps[0].Port != 8080 {
 		t.Errorf("Port = %d, want 8080", eps[0].Port)
@@ -285,7 +285,7 @@ func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
 	// Initial: ExternalName endpoint.
 	waitForWatch()
 	eps := readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+	if len(eps) != 1 || eps[0].Host != "api.example.com" {
 		t.Fatalf("expected ExternalName endpoint, got %v", eps)
 	}
 
@@ -320,7 +320,7 @@ func TestBackendWatcherExternalNameToClusterIP(t *testing.T) {
 
 	// Should eventually get the ClusterIP endpoints.
 	eps = readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "10.0.0.5" {
+	if len(eps) != 1 || eps[0].Host != "10.0.0.5" {
 		t.Fatalf("expected ClusterIP endpoint 10.0.0.5, got %v", eps)
 	}
 }
@@ -352,7 +352,7 @@ func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
 	// Initial: ClusterIP endpoint.
 	waitForWatch()
 	eps := readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "10.0.0.1" {
+	if len(eps) != 1 || eps[0].Host != "10.0.0.1" {
 		t.Fatalf("expected ClusterIP endpoint, got %v", eps)
 	}
 
@@ -370,8 +370,8 @@ func TestBackendWatcherClusterIPToExternalName(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "cdn.example.com" {
-		t.Errorf("IP = %q, want cdn.example.com", eps[0].IP)
+	if eps[0].Host != "cdn.example.com" {
+		t.Errorf("IP = %q, want cdn.example.com", eps[0].Host)
 	}
 	if eps[0].Name != "external" {
 		t.Errorf("Name = %q, want external", eps[0].Name)
@@ -463,7 +463,7 @@ func TestBackendWatcherExternalNameUpdated(t *testing.T) {
 	// Initial.
 	waitForWatch()
 	eps := readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+	if len(eps) != 1 || eps[0].Host != "api.example.com" {
 		t.Fatalf("expected api.example.com, got %v", eps)
 	}
 
@@ -479,8 +479,8 @@ func TestBackendWatcherExternalNameUpdated(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "api-v2.example.com" {
-		t.Errorf("IP = %q, want api-v2.example.com", eps[0].IP)
+	if eps[0].Host != "api-v2.example.com" {
+		t.Errorf("IP = %q, want api-v2.example.com", eps[0].Host)
 	}
 }
 
@@ -549,7 +549,7 @@ func TestBackendWatcherExternalNameDeletedAndRecreated(t *testing.T) {
 	// Initial: ExternalName endpoint.
 	waitForWatch()
 	eps := readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+	if len(eps) != 1 || eps[0].Host != "api.example.com" {
 		t.Fatalf("expected api.example.com, got %v", eps)
 	}
 
@@ -575,8 +575,8 @@ func TestBackendWatcherExternalNameDeletedAndRecreated(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after re-create, got %d", len(eps))
 	}
-	if eps[0].IP != "api-v2.example.com" {
-		t.Errorf("IP = %q, want api-v2.example.com", eps[0].IP)
+	if eps[0].Host != "api-v2.example.com" {
+		t.Errorf("IP = %q, want api-v2.example.com", eps[0].Host)
 	}
 }
 
@@ -624,8 +624,8 @@ func TestBackendWatcherClusterIPAppearsLate(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].Host)
 	}
 	if eps[0].Port != 9090 {
 		t.Errorf("Port = %d, want 9090", eps[0].Port)
@@ -671,8 +671,8 @@ func TestBackendWatcherExternalNameEmptyHostname(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after fix, got %d", len(eps))
 	}
-	if eps[0].IP != "api.example.com" {
-		t.Errorf("IP = %q, want api.example.com", eps[0].IP)
+	if eps[0].Host != "api.example.com" {
+		t.Errorf("IP = %q, want api.example.com", eps[0].Host)
 	}
 }
 
@@ -861,7 +861,7 @@ func TestBackendWatcher_Labels(t *testing.T) {
 
 	// Should receive a resend with the same endpoints.
 	eps := readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+	if len(eps) != 1 || eps[0].Host != "api.example.com" {
 		t.Errorf("unexpected endpoints after label change: %v", eps)
 	}
 
@@ -982,7 +982,7 @@ func TestBackendWatcher_LabelsOnLateAppearingService(t *testing.T) {
 	for {
 		select {
 		case ep := <-bw.Changes():
-			if len(ep) == 1 && ep[0].IP == "api.example.com" {
+			if len(ep) == 1 && ep[0].Host == "api.example.com" {
 				goto gotEndpoints
 			}
 		case <-deadline:
@@ -1048,7 +1048,7 @@ func TestBackendWatcher_Annotations(t *testing.T) {
 
 	// Should receive a resend with the same endpoints.
 	eps := readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "api.example.com" {
+	if len(eps) != 1 || eps[0].Host != "api.example.com" {
 		t.Errorf("unexpected endpoints after annotation change: %v", eps)
 	}
 
@@ -1169,7 +1169,7 @@ func TestBackendWatcher_AnnotationsOnLateAppearingService(t *testing.T) {
 	for {
 		select {
 		case ep := <-bw.Changes():
-			if len(ep) == 1 && ep[0].IP == "api.example.com" {
+			if len(ep) == 1 && ep[0].Host == "api.example.com" {
 				goto gotEndpoints
 			}
 		case <-deadline:
@@ -1230,8 +1230,8 @@ func TestBackendWatcherClusterIPNoEndpointSlice(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after EndpointSlice appears, got %d", len(eps))
 	}
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].Host)
 	}
 	if eps[0].Port != 8080 {
 		t.Errorf("Port = %d, want 8080", eps[0].Port)
@@ -1333,7 +1333,7 @@ func TestBackendWatcherServiceDeletedRecreatedDifferentType(t *testing.T) {
 	// Initial: ClusterIP endpoint.
 	waitForWatch()
 	eps := readBackendChanges(t, bw)
-	if len(eps) != 1 || eps[0].IP != "10.0.0.1" {
+	if len(eps) != 1 || eps[0].Host != "10.0.0.1" {
 		t.Fatalf("expected ClusterIP endpoint 10.0.0.1, got %v", eps)
 	}
 
@@ -1359,8 +1359,8 @@ func TestBackendWatcherServiceDeletedRecreatedDifferentType(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after recreate as ExternalName, got %d", len(eps))
 	}
-	if eps[0].IP != "cdn.example.com" {
-		t.Errorf("IP = %q, want cdn.example.com", eps[0].IP)
+	if eps[0].Host != "cdn.example.com" {
+		t.Errorf("IP = %q, want cdn.example.com", eps[0].Host)
 	}
 	if eps[0].Port != 8080 {
 		t.Errorf("Port = %d, want 8080", eps[0].Port)
@@ -1582,7 +1582,7 @@ func TestBackendWatcherResendDoesNotDeliverStaleEndpoints(t *testing.T) {
 	// interleaving; either a stale final value or a blocked resend (send
 	// into a full channel outside the lock) indicates the race.
 	bw := NewBackendWatcher(fake.NewClientset(), "default", "web", "")
-	bw.send([]Endpoint{{IP: "10.0.0.1", Port: 1}})
+	bw.send([]Endpoint{{Host: "10.0.0.1", Port: 1}})
 
 	for i := range 100000 {
 		// Drain any buffered value from the previous iteration.
@@ -1591,7 +1591,7 @@ func TestBackendWatcherResendDoesNotDeliverStaleEndpoints(t *testing.T) {
 		default:
 		}
 
-		newEps := []Endpoint{{IP: "10.0.0.1", Port: int32(i%30000 + 2)}}
+		newEps := []Endpoint{{Host: "10.0.0.1", Port: int32(i%30000 + 2)}}
 
 		var wg sync.WaitGroup
 		wg.Go(func() { bw.resend() })

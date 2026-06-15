@@ -590,8 +590,8 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	pods := []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 80, Name: "pod-1"},
-		{IP: "10.0.0.2", Port: 80, Name: "pod-2"},
+		{Host: "10.0.0.1", Port: 80, Name: "pod-1"},
+		{Host: "10.0.0.2", Port: 80, Name: "pod-2"},
 	}
 	h.frontendCh <- pods
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
@@ -631,7 +631,7 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 
 	h.backendCh <- backendChange{
 		name:      backendName,
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
@@ -850,7 +850,7 @@ func TestRunLoop_ReloadErrorRedactsSecretsInEvent(t *testing.T) {
 	// Trigger a backend change to force a reload.
 	h.backendCh <- backendChange{
 		name:      "nginx",
-		endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 80, Name: "pod1"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 80, Name: "pod1"}},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
@@ -1180,7 +1180,7 @@ func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Frontend update (not a template change) → Render fails → no Rollback.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool {
 		return getSingleCounterValue(t, h.metrics.VCLRenderErrorsTotal)-renderErrBefore >= 1
 	}, "render error metric incremented")
@@ -1215,7 +1215,7 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 	wait := h.runAndWait(h.bcast)
 
 	// Frontend update → RenderToFile ok → mgr.Reload fails → no Rollback.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	if h.mgr.getReloadCount() < 1 {
@@ -1268,7 +1268,7 @@ func TestRunLoop_ReloadRecoveryRetriesAfterFailure(t *testing.T) {
 	}()
 
 	// Trigger a single reload via a frontend change.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
 	// Expect 1 initial attempt (fails) + 2 recovery retries (1 fails, 1 succeeds).
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "3 mgr.Reload calls via recovery timer")
@@ -1322,7 +1322,7 @@ func TestRunLoop_ReloadRecoveryDisabledByDefault(t *testing.T) {
 	}()
 
 	// Trigger one reload via a frontend change.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
 	// Wait for the initial reload attempt.
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "initial mgr.Reload call")
@@ -1479,11 +1479,11 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 	}()
 
 	// Two rapid frontend updates within the debounce window → single reload.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	time.Sleep(5 * time.Millisecond)
 	h.frontendCh <- []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 80, Name: "pod-1"},
-		{IP: "10.0.0.2", Port: 80, Name: "pod-2"},
+		{Host: "10.0.0.1", Port: 80, Name: "pod-1"},
+		{Host: "10.0.0.2", Port: 80, Name: "pod-2"},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "debounce fired")
 
@@ -1611,7 +1611,7 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 	}()
 
 	// Frontend update with nil bcast — no panic.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
 
@@ -2217,7 +2217,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 	}()
 
 	// Trigger a frontend update to cause a render.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool {
 		renderMu.Lock()
 		defer renderMu.Unlock()
@@ -2288,7 +2288,7 @@ func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 		close(done)
 	}()
 
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
 	// debounce fires at ~150ms; check at 500ms with generous margin.
 	time.Sleep(500 * time.Millisecond)
@@ -2324,7 +2324,7 @@ func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
 
 	// 5 events, 30ms apart → burst ends at ~120ms.
 	for range 5 {
-		h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+		h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 		time.Sleep(30 * time.Millisecond)
 	}
 
@@ -2362,7 +2362,7 @@ func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 	}()
 
 	// Event #1 at t=0. Timer fires at ~150ms.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	time.Sleep(400 * time.Millisecond) // well past 150ms
 
 	if h.mgr.getReloadCount() != 1 {
@@ -2370,7 +2370,7 @@ func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 	}
 
 	// Event #2 at t=400ms. Timer fires at ~550ms.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.2", Port: 80, Name: "pod-2"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.2", Port: 80, Name: "pod-2"}}
 	time.Sleep(400 * time.Millisecond)
 
 	if h.mgr.getReloadCount() != 2 {
@@ -2411,7 +2411,7 @@ func testDebounceMaxForced(t *testing.T, frontendDebounce, frontendDebounceMax, 
 				return
 			default:
 			}
-			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
@@ -2463,7 +2463,7 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 
 	// First burst: events every 20ms for 600ms → expect at least 1 forced reload.
 	for range 30 {
-		h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+		h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 		time.Sleep(20 * time.Millisecond)
 	}
 	time.Sleep(300 * time.Millisecond) // let pending timer fire
@@ -2479,7 +2479,7 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 
 	// Second burst: new debounceMax window starts fresh.
 	for range 30 {
-		h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.2", Port: 80, Name: "pod-2"}}
+		h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.2", Port: 80, Name: "pod-2"}}
 		time.Sleep(20 * time.Millisecond)
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -2525,7 +2525,7 @@ func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 				return
 			default:
 			}
-			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
@@ -2565,7 +2565,7 @@ func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
 			send: func(h *testHarness) {
 				h.backendCh <- backendChange{
 					name:      "api",
-					endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+					endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 				}
 			},
 		},
@@ -2660,11 +2660,11 @@ func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
 			default:
 			}
 			if i%2 == 0 {
-				h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+				h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 			} else {
 				h.backendCh <- backendChange{
 					name:      "api",
-					endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+					endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 				}
 			}
 			i++
@@ -2704,7 +2704,7 @@ func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
 	}()
 
 	// Send frontend event → should reload at ~50ms.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	time.Sleep(200 * time.Millisecond)
 
 	if h.mgr.getReloadCount() != 1 {
@@ -2714,7 +2714,7 @@ func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
 	// Send backend event → should NOT reload at ~200ms (only at ~500ms).
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 	time.Sleep(200 * time.Millisecond)
 
@@ -2752,10 +2752,10 @@ func TestRunLoop_CrossGroupClearOnReload(t *testing.T) {
 	}()
 
 	// Send both events nearly simultaneously.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 
 	// Frontend timer fires first (50ms), which clears the backend timer too.
@@ -2807,7 +2807,7 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 				return
 			default:
 			}
-			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
@@ -2840,7 +2840,7 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 			}
 			h.backendCh <- backendChange{
 				name:      "api",
-				endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+				endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -2879,7 +2879,7 @@ func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
 	// Send backend event → should reload at ~50ms.
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 	time.Sleep(200 * time.Millisecond)
 
@@ -2888,7 +2888,7 @@ func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
 	}
 
 	// Send frontend event → should NOT reload at ~200ms (only at ~500ms).
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	time.Sleep(200 * time.Millisecond)
 
 	if h.mgr.getReloadCount() != 1 {
@@ -2937,7 +2937,7 @@ func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 			}
 			h.backendCh <- backendChange{
 				name:      "api",
-				endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+				endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -2967,7 +2967,7 @@ func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 				return
 			default:
 			}
-			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
@@ -3114,13 +3114,13 @@ func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 	}()
 
 	// Send 3 frontend events and 2 backend events.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.2", Port: 80, Name: "pod-2"}}
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.3", Port: 80, Name: "pod-3"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.2", Port: 80, Name: "pod-2"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.3", Port: 80, Name: "pod-3"}}
 	time.Sleep(200 * time.Millisecond)
 
-	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}}
-	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.2", Port: 8080, Name: "api-1"}}}
+	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}}}
+	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{Host: "10.0.1.2", Port: 8080, Name: "api-1"}}}
 	time.Sleep(200 * time.Millisecond)
 
 	feEventsAfter := getCounterValue(t, "frontend", h.metrics.DebounceEventsTotal)
@@ -3176,7 +3176,7 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 				return
 			default:
 			}
-			h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+			h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
@@ -3213,7 +3213,7 @@ func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 		close(done)
 	}()
 
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	time.Sleep(200 * time.Millisecond)
 
 	samplesAfter := getHistogramSampleCount(t, "frontend", h.metrics.DebounceLatencySeconds)
@@ -3254,7 +3254,7 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 				return
 			default:
 			}
-			h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}}
+			h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}}}
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
@@ -3291,7 +3291,7 @@ func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
 		close(done)
 	}()
 
-	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}}
+	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}}}
 	time.Sleep(200 * time.Millisecond)
 
 	samplesAfter := getHistogramSampleCount(t, "backend", h.metrics.DebounceLatencySeconds)
@@ -3703,7 +3703,7 @@ func TestRunLoop_EventReasonFrontendEndpoints(t *testing.T) {
 
 	wait := h.runAndWait(h.bcast)
 
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
 	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLReloaded", "frontend endpoints changed")
@@ -3723,7 +3723,7 @@ func TestRunLoop_EventReasonBackendEndpoints(t *testing.T) {
 
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 
 	events := collectEvents(rec, 1)
@@ -3742,7 +3742,7 @@ func TestRunLoop_EventReasonBackendMetadataChanged(t *testing.T) {
 
 	wait := h.runAndWait(h.bcast)
 
-	eps := []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}
+	eps := []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}}
 
 	// First send: new endpoints → "backend endpoints changed".
 	h.backendCh <- backendChange{
@@ -3776,7 +3776,7 @@ func TestRunLoop_EventReasonBackendAnnotationsChanged(t *testing.T) {
 
 	wait := h.runAndWait(h.bcast)
 
-	eps := []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}}
+	eps := []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}}
 
 	// First send: new endpoints → "backend endpoints changed".
 	h.backendCh <- backendChange{
@@ -3848,10 +3848,10 @@ func TestRunLoop_EventReasonMultipleTriggers(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Send both frontend and backend changes within the same debounce window.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 
 	events := collectEvents(rec, 2)
@@ -3902,10 +3902,10 @@ func TestRunLoop_EventReasonAllFourTriggers(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Fire all four trigger types within the same debounce window.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 	h.valuesCh <- valuesChange{name: "tuning", data: map[string]any{"ttl": "300"}}
 	h.templateCh <- struct{}{}
@@ -3952,7 +3952,7 @@ func TestRunLoop_EventRenderFailed(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Frontend update (no template change) → render fails → no rollback.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
 	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLRenderFailed", "VCL render error")
@@ -4036,7 +4036,7 @@ func TestRunLoop_EventReloadFailedNoRollback(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Frontend update (no template change) → render ok → reload fails → no rollback.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
 	events := collectEvents(rec, 1)
 	requireEvent(t, events, "VCLReloadFailed", "VCL reload failed")
@@ -4797,8 +4797,8 @@ func TestRunLoop_StatusStoreUpdatedOnReload(t *testing.T) {
 
 	// Send a frontend change to trigger a reload.
 	h.frontendCh <- []watcher.Frontend{
-		{IP: "10.0.0.1", Port: 80, Name: "pod-1"},
-		{IP: "10.0.0.2", Port: 80, Name: "pod-2"},
+		{Host: "10.0.0.1", Port: 80, Name: "pod-1"},
+		{Host: "10.0.0.2", Port: 80, Name: "pod-2"},
 	}
 	waitForStatus(t, store, func(s statusResponse) bool { return s.ReloadCount >= 1 })
 
@@ -4879,9 +4879,9 @@ func TestRunLoop_StatusStoreBackendCounts(t *testing.T) {
 	h.backendCh <- backendChange{
 		name: "api",
 		endpoints: []watcher.Endpoint{
-			{IP: "10.0.1.1", Port: 8080, Name: "api-0"},
-			{IP: "10.0.1.2", Port: 8080, Name: "api-1"},
-			{IP: "10.0.1.3", Port: 8080, Name: "api-2"},
+			{Host: "10.0.1.1", Port: 8080, Name: "api-0"},
+			{Host: "10.0.1.2", Port: 8080, Name: "api-1"},
+			{Host: "10.0.1.3", Port: 8080, Name: "api-2"},
 		},
 	}
 	waitForStatus(t, store, func(s statusResponse) bool { return s.ReloadCount >= 1 })
@@ -4975,7 +4975,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
 	}()
 
 	// Frontend update → RenderToFile fails → no status update.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
 
@@ -5028,7 +5028,7 @@ func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
 	}()
 
 	// Frontend update → render ok → mgr.Reload fails → no status update.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	snap := store.snapshot()
@@ -5056,8 +5056,8 @@ func TestRunLoop_StatusStoreNotUpdatedOnVarnishReloadError(t *testing.T) {
 func TestBackendCountsMap(t *testing.T) {
 	t.Parallel()
 	backends := map[string]renderer.BackendGroup{
-		"api":   {Endpoints: []watcher.Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a1"}, {IP: "10.0.0.2", Port: 80, Name: "a2"}}},
-		"nginx": {Endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "n1"}}},
+		"api":   {Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a1"}, {Host: "10.0.0.2", Port: 80, Name: "a2"}}},
+		"nginx": {Endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "n1"}}},
 	}
 	got := backendCountsMap(backends)
 	if got["api"] != 2 {
@@ -5222,7 +5222,7 @@ func TestRunLoop_NCSAEventsNilNoPanic(t *testing.T) {
 	wait := h.runAndWait(h.bcast)
 
 	// Trigger a normal reload to confirm the loop is operational.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	code := wait()
@@ -5390,7 +5390,7 @@ func TestRunLoop_BackendRemovedDeletesFromLatest(t *testing.T) {
 	// First add a backend.
 	h.backendCh <- backendChange{
 		name:      "discovered-svc",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload after add")
 
@@ -5425,7 +5425,7 @@ func TestRunLoop_BackendLabelsPassedToRenderer(t *testing.T) {
 
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		labels:    map[string]string{"version": "v2", "tier": "backend"},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
@@ -5460,7 +5460,7 @@ func TestRunLoop_BackendAnnotationsPassedToRenderer(t *testing.T) {
 
 	h.backendCh <- backendChange{
 		name:        "api",
-		endpoints:   []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints:   []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		annotations: map[string]string{"example.com/version": "v2", "example.com/tier": "backend"},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
@@ -5500,7 +5500,7 @@ func TestRunLoop_ExplicitBackendLabelsSeededAtStartup(t *testing.T) {
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
 	lc.latestBackends["api"] = renderer.BackendGroup{
-		Endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		Endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		Labels:    map[string]string{"version": "v1", "tier": "backend"},
 	}
 	go func() {
@@ -5509,7 +5509,7 @@ func TestRunLoop_ExplicitBackendLabelsSeededAtStartup(t *testing.T) {
 	}()
 
 	// Trigger a render via a frontend change.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	// The renderer should have received the pre-seeded labels.
@@ -5556,7 +5556,7 @@ func TestRunLoop_ExplicitBackendAnnotationsSeededAtStartup(t *testing.T) {
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
 	lc.latestBackends["api"] = renderer.BackendGroup{
-		Endpoints:   []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		Endpoints:   []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		Annotations: map[string]string{"example.com/version": "v1", "example.com/tier": "backend"},
 	}
 	go func() {
@@ -5565,7 +5565,7 @@ func TestRunLoop_ExplicitBackendAnnotationsSeededAtStartup(t *testing.T) {
 	}()
 
 	// Trigger a render via a frontend change.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	// The renderer should have received the pre-seeded annotations.
@@ -5614,7 +5614,7 @@ func TestRunLoop_BackendAnnotationsFilteredByWatcher(t *testing.T) {
 	// the watcher — it should NOT appear in the renderer's annotations.
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		annotations: map[string]string{
 			"example.com/version": "v1",
 			"example.com/tier":    "backend",
@@ -5664,7 +5664,7 @@ func TestRunLoop_BackendAnnotationsFilteredSeededAtStartup(t *testing.T) {
 	// Pre-seed with filtered annotations (as main.go would after calling
 	// bw.Annotations() on a watcher with SetExcludeAnnotations).
 	lc.latestBackends["api"] = renderer.BackendGroup{
-		Endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		Endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		Annotations: map[string]string{
 			"example.com/version": "v1",
 			// kubectl.kubernetes.io/last-applied-configuration already excluded
@@ -5676,7 +5676,7 @@ func TestRunLoop_BackendAnnotationsFilteredSeededAtStartup(t *testing.T) {
 	}()
 
 	// Trigger a render via a frontend change.
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
 	h.rend.mu.Lock()
@@ -5741,7 +5741,7 @@ func TestRunLoop_SkipsReloadWhenVCLUnchanged(t *testing.T) {
 	// Send a backend change — should render but skip reload.
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 
 	// Wait for the skipped counter to increment.
@@ -5783,7 +5783,7 @@ func TestRunLoop_BackendGroupReplacementIsIndependent(t *testing.T) {
 	// Send first backend change with labels v1.
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		labels:    map[string]string{"version": "v1"},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload")
@@ -5796,7 +5796,7 @@ func TestRunLoop_BackendGroupReplacementIsIndependent(t *testing.T) {
 	// entire BackendGroup in latestBackends.
 	h.backendCh <- backendChange{
 		name:      "api",
-		endpoints: []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		labels:    map[string]string{"version": "v2"},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "second reload")
@@ -5829,7 +5829,7 @@ func TestRunLoop_MockLastBackendsIndependentOfSubsequentChanges(t *testing.T) {
 	// Send a backend with annotations.
 	h.backendCh <- backendChange{
 		name:        "api",
-		endpoints:   []watcher.Endpoint{{IP: "10.0.1.1", Port: 8080, Name: "api-0"}},
+		endpoints:   []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 		annotations: map[string]string{"example.com/version": "v1"},
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload")
@@ -6087,7 +6087,7 @@ func TestRunLoop_FrontendChangeWithBroadcastDisabled(t *testing.T) {
 	h := newTestHarness()
 	wait := h.runAndWait(nil) // nil broadcaster
 
-	h.frontendCh <- []watcher.Frontend{{IP: "10.0.0.1", Port: 8080, Name: "p1"}}
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 8080, Name: "p1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after frontend change")
 
 	if code := wait(); code != 0 {

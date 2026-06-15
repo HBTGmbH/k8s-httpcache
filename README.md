@@ -117,11 +117,10 @@ Four responsibilities **move** rather than map one-to-one: the Varnish admin por
 
 ### VCL template translation
 
-Your VCL logic carries over unchanged. Only three mechanical things differ:
+Your VCL logic carries over unchanged. Only two mechanical things differ:
 
 1. **Delimiters** `{{ … }}` → `<< … >>` (or keep `{{ … }}` by passing `--template-delims="{{ }}"` to minimize the diff).
-2. **`.Host` → `.IP`** on every endpoint.
-3. **`.Backends` is a map** keyed by backend name, not a flat slice. A single `range .Backends` becomes a nested `range $name, $bg := .Backends` then `range $bg.Endpoints`.
+2. **`.Backends` is a map** keyed by backend name, not a flat slice. A single `range .Backends` becomes a nested `range $name, $bg := .Backends` then `range $bg.Endpoints`.
 
 **Before** (kube-httpcache — `{{ }}`, `.Backends` slice, `.Host`):
 
@@ -141,13 +140,13 @@ sub vcl_init {
 }
 ```
 
-**After** (k8s-httpcache — `<< >>`, `.Backends` map, `.IP`):
+**After** (k8s-httpcache — `<< >>`, `.Backends` map):
 
 ```vcl
 <<- range $name, $bg := .Backends >>
 <<- range $bg.Endpoints >>
 backend << .Name >>_<< $name >> {
-  .host = "<< .IP >>";
+  .host = "<< .Host >>";
   .port = "<< .Port >>";
 }
 <<- end >>
@@ -163,7 +162,7 @@ sub vcl_init {
 }
 ```
 
-The same change applies to `.Frontends` (still a slice; `.Host` → `.IP`). Bump `vcl 4.0;` to `vcl 4.1;` while you are here (recommended; the real constraint is your installed Varnish version). For the full picture — a frontend shard director with self-routing plus PURGE handling — see the [Reference VCL template](#reference-vcl-template) and the [template data model](#data-model).
+`.Frontends` stays a flat slice, so only the delimiter change applies there. Bump `vcl 4.0;` to `vcl 4.1;` while you are here (recommended; the real constraint is your installed Varnish version). For the full picture — a frontend shard director with self-routing plus PURGE handling — see the [Reference VCL template](#reference-vcl-template) and the [template data model](#data-model).
 
 ### Cache invalidation: signaller (`:8090`) → broadcast (`:8088`)
 
@@ -942,7 +941,7 @@ Each `Frontend` / `Endpoint` has:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `.IP` | `string` | Pod IP address (or hostname for ExternalName) |
+| `.Host` | `string` | Pod IP address, or hostname for ExternalName services |
 | `.Port` | `int32` | Resolved port number |
 | `.Name` | `string` | Pod name |
 | `.Zone` | `string` | Topology zone from `topology.kubernetes.io/zone` (EndpointSlice) |
@@ -989,7 +988,7 @@ import std;
 
 <<- range .Frontends >>
 backend << .Name >> {
-  .host = "<< .IP >>";
+  .host = "<< .Host >>";
   .port = "<< .Port >>";
 }
 <<- end >>
@@ -997,7 +996,7 @@ backend << .Name >> {
 <<- range $name, $bg := .Backends >>
 <<- range $bg.Endpoints >>
 backend << .Name >>_<< $name >> {
-  .host = "<< .IP >>";
+  .host = "<< .Host >>";
   .port = "<< .Port >>";
 }
 <<- end >>
@@ -1146,7 +1145,7 @@ import directors;
 <<- range $name, $bg := .Backends >>
 <<- range $bg.Endpoints >>
 backend << .Name >>_<< $name >> {
-  .host = "<< .IP >>";
+  .host = "<< .Host >>";
   .port = "<< .Port >>";
 }
 <<- end >>
@@ -1201,7 +1200,7 @@ When the Service has `service.kubernetes.io/topology-mode: Auto`, the kube-proxy
 ```vcl
 <<- range .Backends.myapp.Endpoints >>
 <<- if has $.LocalZone .ForZones >>
-backend << .Name >>_myapp { .host = "<< .IP >>"; .port = "<< .Port >>"; }
+backend << .Name >>_myapp { .host = "<< .Host >>"; .port = "<< .Port >>"; }
 <<- end >>
 <<- end >>
 ```

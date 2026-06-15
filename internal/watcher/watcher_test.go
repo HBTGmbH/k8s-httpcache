@@ -132,55 +132,55 @@ func TestFrontendsEqual(t *testing.T) {
 		},
 		{
 			name: "equal single",
-			a:    []Frontend{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			b:    []Frontend{{IP: "10.0.0.1", Port: 80, Name: "a"}},
+			a:    []Frontend{{Host: "10.0.0.1", Port: 80, Name: "a"}},
+			b:    []Frontend{{Host: "10.0.0.1", Port: 80, Name: "a"}},
 			want: true,
 		},
 		{
 			name: "different length",
-			a:    []Frontend{{IP: "10.0.0.1", Port: 80, Name: "a"}},
+			a:    []Frontend{{Host: "10.0.0.1", Port: 80, Name: "a"}},
 			b:    []Frontend{},
 			want: false,
 		},
 		{
 			name: "different IP",
-			a:    []Frontend{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			b:    []Frontend{{IP: "10.0.0.2", Port: 80, Name: "a"}},
+			a:    []Frontend{{Host: "10.0.0.1", Port: 80, Name: "a"}},
+			b:    []Frontend{{Host: "10.0.0.2", Port: 80, Name: "a"}},
 			want: false,
 		},
 		{
 			name: "different port",
-			a:    []Frontend{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			b:    []Frontend{{IP: "10.0.0.1", Port: 8080, Name: "a"}},
+			a:    []Frontend{{Host: "10.0.0.1", Port: 80, Name: "a"}},
+			b:    []Frontend{{Host: "10.0.0.1", Port: 8080, Name: "a"}},
 			want: false,
 		},
 		{
 			name: "different name",
-			a:    []Frontend{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			b:    []Frontend{{IP: "10.0.0.1", Port: 80, Name: "b"}},
+			a:    []Frontend{{Host: "10.0.0.1", Port: 80, Name: "a"}},
+			b:    []Frontend{{Host: "10.0.0.1", Port: 80, Name: "b"}},
 			want: false,
 		},
 		{
 			name: "multiple equal",
 			a: []Frontend{
-				{IP: "10.0.0.1", Port: 80, Name: "a"},
-				{IP: "10.0.0.2", Port: 80, Name: "b"},
+				{Host: "10.0.0.1", Port: 80, Name: "a"},
+				{Host: "10.0.0.2", Port: 80, Name: "b"},
 			},
 			b: []Frontend{
-				{IP: "10.0.0.1", Port: 80, Name: "a"},
-				{IP: "10.0.0.2", Port: 80, Name: "b"},
+				{Host: "10.0.0.1", Port: 80, Name: "a"},
+				{Host: "10.0.0.2", Port: 80, Name: "b"},
 			},
 			want: true,
 		},
 		{
 			name: "same elements different order",
 			a: []Frontend{
-				{IP: "10.0.0.1", Port: 80, Name: "a"},
-				{IP: "10.0.0.2", Port: 80, Name: "b"},
+				{Host: "10.0.0.1", Port: 80, Name: "a"},
+				{Host: "10.0.0.2", Port: 80, Name: "b"},
 			},
 			b: []Frontend{
-				{IP: "10.0.0.2", Port: 80, Name: "b"},
-				{IP: "10.0.0.1", Port: 80, Name: "a"},
+				{Host: "10.0.0.2", Port: 80, Name: "b"},
+				{Host: "10.0.0.1", Port: 80, Name: "a"},
 			},
 			want: false,
 		},
@@ -207,31 +207,31 @@ func TestDiffEndpoints(t *testing.T) {
 	}{
 		{
 			name:        "no change",
-			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			cur:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
+			old:         []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}},
+			cur:         []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}},
 			wantAdded:   nil,
 			wantRemoved: nil,
 		},
 		{
 			name:        "add one",
-			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			cur:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}, {IP: "10.0.0.2", Port: 80, Name: "b"}},
-			wantAdded:   []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
+			old:         []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}},
+			cur:         []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}, {Host: "10.0.0.2", Port: 80, Name: "b"}},
+			wantAdded:   []Endpoint{{Host: "10.0.0.2", Port: 80, Name: "b"}},
 			wantRemoved: nil,
 		},
 		{
 			name:        "remove one",
-			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}, {IP: "10.0.0.2", Port: 80, Name: "b"}},
-			cur:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
+			old:         []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}, {Host: "10.0.0.2", Port: 80, Name: "b"}},
+			cur:         []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}},
 			wantAdded:   nil,
-			wantRemoved: []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
+			wantRemoved: []Endpoint{{Host: "10.0.0.2", Port: 80, Name: "b"}},
 		},
 		{
 			name:        "replace",
-			old:         []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
-			cur:         []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
-			wantAdded:   []Endpoint{{IP: "10.0.0.2", Port: 80, Name: "b"}},
-			wantRemoved: []Endpoint{{IP: "10.0.0.1", Port: 80, Name: "a"}},
+			old:         []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}},
+			cur:         []Endpoint{{Host: "10.0.0.2", Port: 80, Name: "b"}},
+			wantAdded:   []Endpoint{{Host: "10.0.0.2", Port: 80, Name: "b"}},
+			wantRemoved: []Endpoint{{Host: "10.0.0.1", Port: 80, Name: "a"}},
 		},
 		{
 			name:        "both nil",
@@ -266,23 +266,23 @@ func TestDebugLogging(t *testing.T) {
 		serviceName: "svc",
 		log:         logger,
 		previous: []Endpoint{
-			{IP: "10.0.0.1", Port: 80, Name: "pod-a"},
+			{Host: "10.0.0.1", Port: 80, Name: "pod-a"},
 		},
 	}
 
 	// Simulate what sync() does for the diff logging path.
 	endpoints := []Endpoint{
-		{IP: "10.0.0.2", Port: 80, Name: "pod-b"},
+		{Host: "10.0.0.2", Port: 80, Name: "pod-b"},
 	}
 
 	added, removed := diffEndpoints(w.previous, endpoints)
 	for _, ep := range added {
 		w.log.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
-			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.Host, ep.Port))
 	}
 	for _, ep := range removed {
 		w.log.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
-			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.Host, ep.Port))
 	}
 
 	output := buf.String()
@@ -337,22 +337,22 @@ func TestDebugLoggingDisabled(t *testing.T) {
 		serviceName: "svc",
 		log:         logger,
 		previous: []Endpoint{
-			{IP: "10.0.0.1", Port: 80, Name: "pod-a"},
+			{Host: "10.0.0.1", Port: 80, Name: "pod-a"},
 		},
 	}
 
 	endpoints := []Endpoint{
-		{IP: "10.0.0.2", Port: 80, Name: "pod-b"},
+		{Host: "10.0.0.2", Port: 80, Name: "pod-b"},
 	}
 
 	added, removed := diffEndpoints(w.previous, endpoints)
 	for _, ep := range added {
 		w.log.Debug("endpoint added", "namespace", w.namespace, "service", w.serviceName,
-			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.Host, ep.Port))
 	}
 	for _, ep := range removed {
 		w.log.Debug("endpoint removed", "namespace", w.namespace, "service", w.serviceName,
-			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.IP, ep.Port))
+			"pod", ep.Name, "addr", fmt.Sprintf("%s:%d", ep.Host, ep.Port))
 	}
 
 	output := buf.String()
@@ -428,8 +428,8 @@ func TestRunDeliversInitialEndpoints(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].Host)
 	}
 	if eps[0].Port != 8080 {
 		t.Errorf("Port = %d, want 8080", eps[0].Port)
@@ -485,7 +485,7 @@ func TestRunDetectsAddedEndpointSlice(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(eps))
 	}
-	if eps[0].IP != "10.0.0.5" || eps[0].Port != 9090 {
+	if eps[0].Host != "10.0.0.5" || eps[0].Port != 9090 {
 		t.Errorf("endpoint = %+v, want IP=10.0.0.5 Port=9090", eps[0])
 	}
 }
@@ -638,11 +638,11 @@ func TestRunFiltersNonReadyEndpoints(t *testing.T) {
 	if len(eps) != 2 {
 		t.Fatalf("expected 2 endpoints (ready + nil-ready), got %d: %v", len(eps), eps)
 	}
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("expected ready endpoint 10.0.0.1, got %s", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("expected ready endpoint 10.0.0.1, got %s", eps[0].Host)
 	}
-	if eps[1].IP != "10.0.0.3" {
-		t.Errorf("expected nil-ready endpoint 10.0.0.3, got %s", eps[1].IP)
+	if eps[1].Host != "10.0.0.3" {
+		t.Errorf("expected nil-ready endpoint 10.0.0.3, got %s", eps[1].Host)
 	}
 }
 
@@ -692,7 +692,7 @@ func TestRunDeduplicatesEndpointsAcrossSlices(t *testing.T) {
 	if len(eps) != 2 {
 		t.Fatalf("expected 2 unique endpoints, got %d: %v", len(eps), eps)
 	}
-	if eps[0].IP != "10.0.0.1" || eps[1].IP != "10.0.0.2" {
+	if eps[0].Host != "10.0.0.1" || eps[1].Host != "10.0.0.2" {
 		t.Errorf("endpoints = %v, want 10.0.0.1 and 10.0.0.2", eps)
 	}
 }
@@ -918,11 +918,11 @@ func TestRunMultipleEndpointSlices(t *testing.T) {
 		t.Fatalf("expected 2 endpoints from 2 slices, got %d: %v", len(eps), eps)
 	}
 	// Endpoints should be sorted by IP.
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("eps[0].IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("eps[0].Host = %q, want 10.0.0.1", eps[0].Host)
 	}
-	if eps[1].IP != "10.0.0.2" {
-		t.Errorf("eps[1].IP = %q, want 10.0.0.2", eps[1].IP)
+	if eps[1].Host != "10.0.0.2" {
+		t.Errorf("eps[1].Host = %q, want 10.0.0.2", eps[1].Host)
 	}
 }
 
@@ -989,8 +989,8 @@ func TestRunDeleteOneOfMultipleSlices(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after deleting one slice, got %d: %v", len(eps), eps)
 	}
-	if eps[0].IP != "10.0.0.2" {
-		t.Errorf("IP = %q, want 10.0.0.2", eps[0].IP)
+	if eps[0].Host != "10.0.0.2" {
+		t.Errorf("IP = %q, want 10.0.0.2", eps[0].Host)
 	}
 }
 
@@ -1043,8 +1043,8 @@ func TestRunReadyStateTransition(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint after ready transition, got %d", len(eps))
 	}
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("IP = %q, want 10.0.0.1", eps[0].Host)
 	}
 }
 
@@ -1199,10 +1199,10 @@ func TestRunIPv4AndIPv6SlicesCoexist(t *testing.T) {
 	}
 
 	// Endpoints are sorted by IP; "10.0.0.1" < "fd00::1".
-	if eps[0].IP != "10.0.0.1" {
-		t.Errorf("eps[0].IP = %q, want 10.0.0.1", eps[0].IP)
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("eps[0].Host = %q, want 10.0.0.1", eps[0].Host)
 	}
-	if eps[1].IP != "fd00::1" {
-		t.Errorf("eps[1].IP = %q, want fd00::1", eps[1].IP)
+	if eps[1].Host != "fd00::1" {
+		t.Errorf("eps[1].Host = %q, want fd00::1", eps[1].Host)
 	}
 }

@@ -244,8 +244,10 @@ func combinePEM(cert, key, ca []byte) ([]byte, error) {
 // writePEMBlock appends a PEM block to buf, normalising it to end with exactly
 // one trailing newline so concatenated blocks stay well-formed.
 func writePEMBlock(buf *bytes.Buffer, block []byte) {
-	buf.Write(bytes.TrimRight(block, "\r\n "))
-	buf.WriteByte('\n')
+	// bytes.Buffer.Write/WriteByte never return a non-nil error (they panic on
+	// overflow), so the errors are safe to discard.
+	_, _ = buf.Write(bytes.TrimRight(block, "\r\n "))
+	_ = buf.WriteByte('\n')
 }
 
 // sanitizeCertFileName maps a logical certificate name to a filesystem-safe
