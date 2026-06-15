@@ -1,3 +1,8 @@
+# Skip release-please-generated changelogs — their formatting (e.g. double blank
+# lines) is controlled by the tool, not us, and they are not hand-authored.
+ignores:
+  - "**/CHANGELOG.md"
+
 config:
   # Allow long lines — tables, CLI examples, and explanatory prose regularly
   # exceed 80 characters and wrapping would hurt readability.
