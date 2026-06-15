@@ -3,8 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"k8s-httpcache/internal/broadcast"
@@ -16,6 +22,7 @@ import (
 	"k8s-httpcache/internal/watcher"
 	"log/slog"
 	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -4514,6 +4521,184 @@ func TestStatusSnapshot(t *testing.T) {
 	}
 	if snap3.ReloadCount != 1 {
 		t.Errorf("ReloadCount = %d after recordReload, want 1", snap3.ReloadCount)
+	}
+}
+
+// makeTestCertPEM generates a self-signed leaf certificate PEM with the given
+// common name, DNS SANs, and expiry. For self-signed certs the issuer equals
+// the subject.
+func makeTestCertPEM(t *testing.T, commonName string, dnsNames []string, notAfter time.Time) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: commonName},
+		NotBefore:    notAfter.Add(-24 * time.Hour),
+		NotAfter:     notAfter,
+		DNSNames:     dnsNames,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestParseTLSCertInfo(t *testing.T) {
+	t.Parallel()
+	notAfter := time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC)
+	certPEM := makeTestCertPEM(t, "example.com", []string{"example.com", "*.example.com"}, notAfter)
+
+	info, err := parseTLSCertInfo("frontend", certPEM)
+	if err != nil {
+		t.Fatalf("parseTLSCertInfo error: %v", err)
+	}
+	if info.Name != "frontend" {
+		t.Errorf("Name = %q, want frontend", info.Name)
+	}
+	if info.Subject != "CN=example.com" {
+		t.Errorf("Subject = %q, want CN=example.com", info.Subject)
+	}
+	if info.Issuer != "CN=example.com" {
+		t.Errorf("Issuer = %q, want CN=example.com (self-signed)", info.Issuer)
+	}
+	if len(info.DNSNames) != 2 || info.DNSNames[0] != "example.com" || info.DNSNames[1] != "*.example.com" {
+		t.Errorf("DNSNames = %v, want [example.com *.example.com]", info.DNSNames)
+	}
+	if !info.NotAfter.Equal(notAfter) {
+		t.Errorf("NotAfter = %v, want %v", info.NotAfter, notAfter)
+	}
+
+	// A leaf with no SANs yields a non-nil empty slice (JSON `[]`, not `null`).
+	noSAN := makeTestCertPEM(t, "no-san", nil, notAfter)
+	infoNoSAN, err := parseTLSCertInfo("x", noSAN)
+	if err != nil {
+		t.Fatalf("parseTLSCertInfo (no SAN) error: %v", err)
+	}
+	if infoNoSAN.DNSNames == nil {
+		t.Error("DNSNames = nil, want non-nil empty slice")
+	}
+
+	// Garbage input (no PEM block) is reported as an error, not a panic.
+	_, err = parseTLSCertInfo("bad", []byte("not a pem"))
+	if err == nil {
+		t.Error("parseTLSCertInfo(garbage) = nil error, want error")
+	}
+
+	// A valid PEM block wrapping invalid DER reaches x509.ParseCertificate and
+	// surfaces its wrapped error.
+	badDER := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not valid der")})
+	_, err = parseTLSCertInfo("bad-der", badDER)
+	if err == nil {
+		t.Error("parseTLSCertInfo(bad DER) = nil error, want error")
+	}
+}
+
+func TestTLSCertChan(t *testing.T) {
+	t.Parallel()
+	if tlsCertChan(nil) != nil {
+		t.Error("tlsCertChan(nil) = non-nil, want nil")
+	}
+	ch := make(chan tlsCertChange)
+	if tlsCertChan(ch) == nil {
+		t.Error("tlsCertChan(non-nil) = nil, want the channel")
+	}
+}
+
+func TestStatusSnapshotTLS(t *testing.T) {
+	t.Parallel()
+	store := &statusStore{startedAt: time.Now()}
+
+	// Default: TLS absent — disabled, no certs, empty (non-nil) list, null reload.
+	snap := store.snapshot()
+	if snap.TLS.Enabled || snap.TLS.ConfiguredCerts != 0 || snap.TLS.ActiveCerts != 0 {
+		t.Errorf("default TLS = %+v, want disabled with zero counts", snap.TLS)
+	}
+	if snap.TLS.Certificates == nil {
+		t.Error("TLS.Certificates = nil, want non-nil empty slice (JSON [])")
+	}
+	if snap.TLS.LastReloadAt != nil {
+		t.Errorf("TLS.LastReloadAt = %v before any load, want nil", snap.TLS.LastReloadAt)
+	}
+
+	// Configure TLS and record two certs (out of order to verify sorting).
+	store.setTLSConfig(true, true, 2)
+	store.recordTLSCert(&tlsCertInfo{Name: "frontend", Subject: "CN=a"})
+	store.recordTLSCert(&tlsCertInfo{Name: "api", Subject: "CN=b"})
+
+	snap = store.snapshot()
+	if !snap.TLS.Enabled || !snap.TLS.Supported || snap.TLS.ConfiguredCerts != 2 {
+		t.Errorf("TLS = %+v, want enabled/supported with configuredCerts 2", snap.TLS)
+	}
+	if snap.TLS.ActiveCerts != 2 || len(snap.TLS.Certificates) != 2 {
+		t.Errorf("ActiveCerts/Certificates = %d/%d, want 2/2", snap.TLS.ActiveCerts, len(snap.TLS.Certificates))
+	}
+	if snap.TLS.Certificates[0].Name != "api" || snap.TLS.Certificates[1].Name != "frontend" {
+		t.Errorf("certificates not sorted by name: %v", snap.TLS.Certificates)
+	}
+	if snap.TLS.LastReloadAt == nil {
+		t.Error("TLS.LastReloadAt = nil after recordTLSCert, want non-nil")
+	}
+
+	// recordTLSCertInfo: a valid cert is parsed and recorded; an unparseable
+	// one is logged and skipped; a nil store is a safe no-op.
+	store2 := &statusStore{startedAt: time.Now()}
+	recordTLSCertInfo(store2, "frontend", makeTestCertPEM(t, "ex.com", []string{"ex.com"}, time.Now().Add(time.Hour)))
+	recordTLSCertInfo(store2, "bad", []byte("not a certificate"))
+	recordTLSCertInfo(nil, "frontend", makeTestCertPEM(t, "x", nil, time.Now().Add(time.Hour)))
+
+	snap2 := store2.snapshot()
+	if len(snap2.TLS.Certificates) != 1 || snap2.TLS.Certificates[0].Name != "frontend" {
+		t.Errorf("recordTLSCertInfo: certificates = %v, want exactly one named 'frontend'", snap2.TLS.Certificates)
+	}
+}
+
+// TestStatusHandlerNoTLS asserts the served JSON when no TLS is configured and
+// no certificates are installed: a `tls` object with disabled flags, zero
+// counts, a null lastReloadAt, and an empty (not null) certificates array.
+func TestStatusHandlerNoTLS(t *testing.T) {
+	t.Parallel()
+	store := &statusStore{version: "v0.1.0", startedAt: time.Now()}
+
+	handler := statusHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/status", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	body := rec.Body.String()
+	// The wire format must use an empty array, never null, for certificates.
+	if !strings.Contains(body, `"certificates":[]`) {
+		t.Errorf("response should contain \"certificates\":[], got: %s", body)
+	}
+	// lastReloadAt inside the tls object must be null before any cert loads.
+	if !strings.Contains(body, `"lastReloadAt":null`) {
+		t.Errorf("response should contain a null lastReloadAt, got: %s", body)
+	}
+
+	var resp statusResponse
+	err := json.NewDecoder(strings.NewReader(body)).Decode(&resp)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if resp.TLS.Enabled || resp.TLS.Supported {
+		t.Errorf("TLS flags = enabled:%v supported:%v, want both false", resp.TLS.Enabled, resp.TLS.Supported)
+	}
+	if resp.TLS.ConfiguredCerts != 0 || resp.TLS.ActiveCerts != 0 {
+		t.Errorf("cert counts = %d/%d, want 0/0", resp.TLS.ConfiguredCerts, resp.TLS.ActiveCerts)
+	}
+	if resp.TLS.LastReloadAt != nil {
+		t.Errorf("TLS.LastReloadAt = %v, want nil", resp.TLS.LastReloadAt)
+	}
+	if len(resp.TLS.Certificates) != 0 {
+		t.Errorf("TLS.Certificates = %v, want empty", resp.TLS.Certificates)
 	}
 }
 

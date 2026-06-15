@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -145,6 +147,33 @@ type statusStore struct {
 	lastReloadAt  time.Time
 	reloadCount   int64
 	varnishdUp    bool
+
+	// TLS. tlsEnabled/tlsSupported/tlsConfiguredCerts are set once at startup;
+	// tlsCerts and tlsLastReloadAt are updated as certificates (re)load.
+	tlsEnabled         bool
+	tlsSupported       bool
+	tlsConfiguredCerts int
+	tlsLastReloadAt    time.Time
+	tlsCerts           map[string]tlsCertInfo
+}
+
+// tlsCertInfo is the parsed metadata for one loaded TLS certificate.
+type tlsCertInfo struct {
+	Name     string    `json:"name"`
+	Subject  string    `json:"subject"`
+	DNSNames []string  `json:"dnsNames"`
+	NotAfter time.Time `json:"notAfter"`
+	Issuer   string    `json:"issuer"`
+}
+
+// tlsStatus is the TLS section of the /status response.
+type tlsStatus struct {
+	Enabled         bool          `json:"enabled"`
+	Supported       bool          `json:"supported"`
+	ConfiguredCerts int           `json:"configuredCerts"`
+	ActiveCerts     int           `json:"activeCerts"`
+	LastReloadAt    *time.Time    `json:"lastReloadAt"`
+	Certificates    []tlsCertInfo `json:"certificates"`
 }
 
 // statusResponse is the JSON structure returned by the /status endpoint.
@@ -165,6 +194,7 @@ type statusResponse struct {
 	LastReloadAt        *time.Time     `json:"lastReloadAt"`
 	ReloadCount         int64          `json:"reloadCount"`
 	VarnishdUp          bool           `json:"varnishdUp"`
+	TLS                 tlsStatus      `json:"tls"`
 }
 
 // snapshot returns a JSON-ready copy of the current status.
@@ -177,6 +207,17 @@ func (s *statusStore) snapshot() statusResponse {
 		t := s.lastReloadAt
 		lastReload = &t
 	}
+
+	var tlsLastReload *time.Time
+	if !s.tlsLastReloadAt.IsZero() {
+		t := s.tlsLastReloadAt
+		tlsLastReload = &t
+	}
+	certs := make([]tlsCertInfo, 0, len(s.tlsCerts))
+	for _, c := range s.tlsCerts {
+		certs = append(certs, c)
+	}
+	slices.SortFunc(certs, func(a, b tlsCertInfo) int { return strings.Compare(a.Name, b.Name) })
 
 	return statusResponse{
 		Version:             s.version,
@@ -195,6 +236,14 @@ func (s *statusStore) snapshot() statusResponse {
 		LastReloadAt:        lastReload,
 		ReloadCount:         s.reloadCount,
 		VarnishdUp:          s.varnishdUp,
+		TLS: tlsStatus{
+			Enabled:         s.tlsEnabled,
+			Supported:       s.tlsSupported,
+			ConfiguredCerts: s.tlsConfiguredCerts,
+			ActiveCerts:     len(certs),
+			LastReloadAt:    tlsLastReload,
+			Certificates:    certs,
+		},
 	}
 }
 
@@ -244,6 +293,70 @@ func (s *statusStore) setSourceCounts(values, secrets int) {
 	defer s.mu.Unlock()
 	s.valuesCount = values
 	s.secretsCount = secrets
+}
+
+// setTLSConfig records the static TLS configuration shown by /status.
+func (s *statusStore) setTLSConfig(enabled, supported bool, configured int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tlsEnabled = enabled
+	s.tlsSupported = supported
+	s.tlsConfiguredCerts = configured
+}
+
+// recordTLSCert records metadata for a successfully (re)loaded TLS certificate.
+func (s *statusStore) recordTLSCert(info *tlsCertInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tlsCerts == nil {
+		s.tlsCerts = make(map[string]tlsCertInfo)
+	}
+	s.tlsCerts[info.Name] = *info
+	s.tlsLastReloadAt = time.Now()
+}
+
+// errNoPEMBlock is returned when a certificate has no decodable PEM block.
+var errNoPEMBlock = errors.New("no PEM block in certificate")
+
+// parseTLSCertInfo extracts /status metadata from a leaf certificate PEM (the
+// first PEM block of a kubernetes.io/tls `tls.crt`).
+func parseTLSCertInfo(name string, certPEM []byte) (tlsCertInfo, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return tlsCertInfo{}, errNoPEMBlock
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return tlsCertInfo{}, fmt.Errorf("parse certificate: %w", err)
+	}
+	dnsNames := cert.DNSNames
+	if dnsNames == nil {
+		dnsNames = []string{}
+	}
+
+	return tlsCertInfo{
+		Name:     name,
+		Subject:  cert.Subject.String(),
+		DNSNames: dnsNames,
+		NotAfter: cert.NotAfter,
+		Issuer:   cert.Issuer.String(),
+	}, nil
+}
+
+// recordTLSCertInfo parses a leaf certificate and records its metadata in the
+// status store. Parse failures are logged but never fatal — the certificate has
+// already been validated and loaded by the manager.
+func recordTLSCertInfo(store *statusStore, name string, certPEM []byte) {
+	if store == nil {
+		return
+	}
+	info, err := parseTLSCertInfo(name, certPEM)
+	if err != nil {
+		slog.Warn("could not parse TLS certificate for /status", "cert", name, "error", err)
+
+		return
+	}
+	store.recordTLSCert(&info)
 }
 
 // statusHandler returns an HTTP handler that serves the /status JSON endpoint.
@@ -761,6 +874,8 @@ func main() {
 	}
 	defer mgr.CleanupTLS()
 
+	status.setTLSConfig(len(cfg.TLSCerts) > 0, mgr.TLSSupported(), len(cfg.TLSCerts))
+
 	// Install initial TLS certificates before the pod becomes Ready: the https
 	// listener exists but has no certificate until loaded. A present-but-broken
 	// certificate is fatal (don't go Ready with a failing https listener); an
@@ -775,6 +890,7 @@ func main() {
 		}
 		if !d.Empty() {
 			loadedCerts++
+			recordTLSCertInfo(status, name, d.Cert)
 		} else {
 			slog.Warn("TLS certificate Secret is empty at startup; https listener has no certificate until it appears", "cert", name)
 		}
@@ -1351,6 +1467,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 
 				continue
 			}
+			recordTLSCertInfo(lc.status, name, d.Cert)
 			slog.Info("TLS certificate reloaded", "cert", name)
 			emitEvent(lc, v1.EventTypeNormal, "TLSCertReloaded", fmt.Sprintf("TLS certificate %q reloaded", name))
 		}

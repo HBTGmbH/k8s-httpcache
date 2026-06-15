@@ -376,11 +376,27 @@ curl -s http://localhost:9101/status | jq .
   "valuesCount": 1,
   "lastReloadAt": "2025-01-15T11:29:55Z",
   "reloadCount": 42,
-  "varnishdUp": true
+  "varnishdUp": true,
+  "tls": {
+    "enabled": true,
+    "supported": true,
+    "configuredCerts": 1,
+    "activeCerts": 1,
+    "lastReloadAt": "2025-01-15T11:00:00Z",
+    "certificates": [
+      {
+        "name": "frontend",
+        "subject": "CN=example.com",
+        "dnsNames": ["example.com", "*.example.com"],
+        "notAfter": "2026-09-01T00:00:00Z",
+        "issuer": "CN=R3,O=Let's Encrypt,C=US"
+      }
+    ]
+  }
 }
 ```
 
-`lastReloadAt` is `null` before the first VCL reload. The endpoint only accepts `GET` requests.
+`lastReloadAt` is `null` before the first VCL reload. The `tls` object reports TLS state — `enabled`/`supported` flags, configured vs. active certificate counts, the last certificate (re)load time (`null` if none), and per-certificate metadata (subject, DNS SANs, `notAfter` expiry, issuer) parsed from the loaded leaf certificates; `certificates` is empty when TLS is not configured. The endpoint only accepts `GET` requests.
 
 #### Health endpoints
 
