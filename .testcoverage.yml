@@ -1,0 +1,4 @@
+profile: coverage.out
+local-prefix: k8s-httpcache
+threshold:
+  total: 84

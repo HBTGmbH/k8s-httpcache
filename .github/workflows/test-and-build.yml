@@ -39,6 +39,7 @@ jobs:
             - 'go.mod'
             - 'go.sum'
             - '.golangci.yml'
+            - '.testcoverage.yml'
           gofiles:
             - '**/*.go'
           src:
@@ -89,10 +90,27 @@ jobs:
       with:
         path: ~/go/bin/gotestsum
         key: gotestsum-1.13.0-linux-amd64
+    - name: Restore go-test-coverage
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      id: go-test-coverage
+      with:
+        path: ~/go/bin/go-test-coverage
+        key: go-test-coverage-2.18.8
+    - name: Install go-test-coverage
+      if: steps.go-test-coverage.outputs.cache-hit != 'true'
+      run: go install github.com/vladopajic/go-test-coverage/v2@v2.18.8
+    - name: Save go-test-coverage
+      if: steps.go-test-coverage.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: ~/go/bin/go-test-coverage
+        key: go-test-coverage-2.18.8
     - name: Run tests with coverage
       run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
     - name: Display coverage
       run: go tool cover -func=coverage.out
+    - name: Coverage gate
+      run: go-test-coverage --config=.testcoverage.yml
     - name: Generate coverage HTML
       if: always()
       run: go tool cover -html=coverage.out -o coverage.html
@@ -187,6 +205,39 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.ci == 'true'
       run: shellcheck .github/test/*.sh
+    - name: Restore actionlint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true'
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      id: actionlint
+      with:
+        path: ~/tools/actionlint
+        key: actionlint-1.7.12-linux-amd64
+    - name: Install actionlint
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.actionlint.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/tools
+        curl -sfL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+          | tar -xz -C ~/tools actionlint
+        chmod +x ~/tools/actionlint
+    - name: Save actionlint
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.actionlint.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: ~/tools/actionlint
+        key: actionlint-1.7.12-linux-amd64
+    - name: Actionlint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true'
+      run: ~/tools/actionlint -color
     - name: Install yamllint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -270,6 +321,52 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.ci == 'true'
       run: helm lint --strict charts/k8s-httpcache
+    - name: Restore kubeconform
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.yaml == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      id: kubeconform
+      with:
+        path: ~/tools/kubeconform
+        key: kubeconform-0.8.0-linux-amd64
+    - name: Install kubeconform
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.yaml == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.kubeconform.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/tools
+        curl -sfL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+          | tar -xz -C ~/tools kubeconform
+        chmod +x ~/tools/kubeconform
+    - name: Save kubeconform
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.yaml == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.kubeconform.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: ~/tools/kubeconform
+        key: kubeconform-0.8.0-linux-amd64
+    - name: Kubeconform
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.yaml == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      run: |
+        set -o pipefail
+        helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
+          | ~/tools/kubeconform -strict -summary -ignore-missing-schemas
+        ~/tools/kubeconform -strict -summary -ignore-missing-schemas \
+          .github/test/manifest.yaml .github/test/manifest-tls.yaml
 
 
   go-build:
