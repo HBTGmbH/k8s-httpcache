@@ -1,0 +1,26 @@
+{{- if .Values.istio.authorizationPolicy.enabled -}}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.istio.authorizationPolicy.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
+  action: {{ .Values.istio.authorizationPolicy.action }}
+  {{- with .Values.istio.authorizationPolicy.provider }}
+  provider:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.istio.authorizationPolicy.rules }}
+  rules:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

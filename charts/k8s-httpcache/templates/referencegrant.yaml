@@ -1,0 +1,26 @@
+{{- if .Values.referenceGrant.enabled -}}
+{{- /* Allows HTTPRoutes (or other resources) in other namespaces to reference
+       this chart's Service across the namespace boundary. */}}
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.referenceGrant.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  from:
+    {{- toYaml .Values.referenceGrant.from | nindent 4 }}
+  to:
+    {{- if .Values.referenceGrant.to }}
+    {{- toYaml .Values.referenceGrant.to | nindent 4 }}
+    {{- else }}
+    - group: ""
+      kind: Service
+      name: {{ include "k8s-httpcache.fullname" . }}
+    {{- end }}
+{{- end }}

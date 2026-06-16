@@ -89,18 +89,6 @@ and pinning by digest (image.digest takes precedence over image.tag).
 {{- end }}
 
 {{/*
-Image pull secrets, merging global.imagePullSecrets with imagePullSecrets.
-Renders the full "imagePullSecrets:" block (or nothing when both are empty).
-*/}}
-{{- define "k8s-httpcache.imagePullSecrets" -}}
-{{- $pull := concat (default (list) (.Values.global).imagePullSecrets) (default (list) .Values.imagePullSecrets) }}
-{{- with $pull }}
-imagePullSecrets:
-  {{- toYaml . | nindent 2 }}
-{{- end }}
-{{- end }}
-
-{{/*
 Fully qualified in-cluster Service DNS name.
 */}}
 {{- define "k8s-httpcache.serviceFQDN" -}}

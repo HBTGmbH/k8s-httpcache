@@ -82,6 +82,11 @@ documentation.
 | global | object | `{"imagePullSecrets":[],"imageRegistry":""}` | Global values shared with subcharts (and consumed by this chart). |
 | global.imagePullSecrets | list | `[]` | Global image pull secrets; merged with imagePullSecrets. |
 | global.imageRegistry | string | `""` | Global image registry; used when image.registry is empty. |
+| grafanaDashboards.annotations | object | `{}` | Annotations added to each dashboard ConfigMap (e.g. k8s-sidecar folder) |
+| grafanaDashboards.dashboards | object | `{}` | Dashboards to render, keyed by name. Each value is dashboard JSON (string) or an object (rendered to JSON). Each becomes a ConfigMap data key, the entry name suffixed with .json. |
+| grafanaDashboards.enabled | bool | `false` | Enable Grafana dashboard ConfigMaps (one per entry) |
+| grafanaDashboards.label | string | `"grafana_dashboard"` | Label key the Grafana sidecar watches for dashboard auto-import |
+| grafanaDashboards.labelValue | string | `"1"` | Value for the dashboard label |
 | hostAliases | list | `[]` | Host aliases (extra entries for the pod's /etc/hosts) |
 | httpRoute.annotations | object | `{}` | Annotations for the HTTPRoute |
 | httpRoute.enabled | bool | `false` | Enable HTTPRoute (Gateway API) |
@@ -99,11 +104,23 @@ documentation.
 | ingress.enabled | bool | `false` | Enable Ingress |
 | ingress.hosts | list | `[{"host":"chart-example.local","paths":[{"path":"/","pathType":"Prefix"}]}]` | Ingress hosts |
 | ingress.tls | list | `[]` | TLS configuration |
+| istio.authorizationPolicy.action | string | `"ALLOW"` | Action: ALLOW, DENY, AUDIT, CUSTOM |
+| istio.authorizationPolicy.annotations | object | `{}` | Annotations for the AuthorizationPolicy |
+| istio.authorizationPolicy.enabled | bool | `false` | Enable Istio AuthorizationPolicy (L7 access control) |
+| istio.authorizationPolicy.provider | object | `{}` | External authorization provider (only for action: CUSTOM) |
+| istio.authorizationPolicy.rules | list | `[]` | Authorization rules |
 | istio.destinationRule.annotations | object | `{}` | Annotations for the DestinationRule |
 | istio.destinationRule.enabled | bool | `false` | Enable Istio DestinationRule |
 | istio.destinationRule.host | string | `""` | Host (empty = the in-cluster Service FQDN) |
 | istio.destinationRule.subsets | list | `[]` | Subsets for traffic splitting |
 | istio.destinationRule.trafficPolicy | object | `{}` | Traffic policy (load balancing, connection pool, outlier detection, TLS) |
+| istio.peerAuthentication.annotations | object | `{}` | Annotations for the PeerAuthentication |
+| istio.peerAuthentication.enabled | bool | `false` | Enable Istio PeerAuthentication (mTLS mode) |
+| istio.peerAuthentication.mtls | object | `{"mode":"STRICT"}` | Mesh-wide mTLS settings for the workload |
+| istio.peerAuthentication.portLevelMtls | object | `{}` | Per-port mTLS overrides (port number -> { mode }) |
+| istio.requestAuthentication.annotations | object | `{}` | Annotations for the RequestAuthentication |
+| istio.requestAuthentication.enabled | bool | `false` | Enable Istio RequestAuthentication (JWT validation) |
+| istio.requestAuthentication.jwtRules | list | `[]` | JWT rules (issuer, jwksUri, etc.) |
 | istio.sidecar.annotations | object | `{}` | Annotations for the Sidecar |
 | istio.sidecar.egress | list | `[]` | Egress hosts. When empty, defaults to this namespace plus istio-system. |
 | istio.sidecar.enabled | bool | `false` | Enable Istio Sidecar resource |
@@ -125,6 +142,7 @@ documentation.
 | metrics.addr | string | `""` | Listen address for the metrics server (empty = app default ":9101") |
 | metrics.enabled | bool | `true` |  |
 | metrics.readHeaderTimeout | string | `""` | Max time to read request headers on metrics server (empty = app default 10s) |
+| metrics.scrapeAnnotations | bool | `false` | Add the de-facto prometheus.io/{scrape,path,port} annotations to the pods for annotation-based Prometheus discovery. Leave false when using the ServiceMonitor or PodMonitor to avoid double scraping. |
 | metrics.varnishstatExport | bool | `false` | Enable varnishstat Prometheus exporter |
 | metrics.varnishstatExportFilter | string | `""` | Counter groups to export (empty = all). Only effective when varnishstatExport is true. |
 | minReadySeconds | string | `""` | Minimum seconds a new pod must be ready before it is considered available (empty = omit) |
@@ -150,9 +168,18 @@ documentation.
 | podMonitor.scrapeTimeout | string | `""` | Scrape timeout |
 | podSecurityContext | object | `{}` | Pod-level security context |
 | priorityClassName | string | `""` | Priority class name for pod scheduling priority |
+| prometheusRule.defaultRules | bool | `true` | Include the built-in default alert rules (varnishd down, no ready backend endpoints, VCL render errors, VCL rollbacks) |
+| prometheusRule.enabled | bool | `false` | Enable Prometheus PrometheusRule (alerting/recording rules) |
+| prometheusRule.labels | object | `{}` | Additional labels for the PrometheusRule (e.g. to match the Prometheus ruleSelector) |
+| prometheusRule.namespace | string | `""` | Namespace for the PrometheusRule (defaults to release namespace) |
+| prometheusRule.rules | list | `[]` | Extra rule groups (passthrough, appended after the default group) |
 | rbac.create | bool | `true` | Create RBAC resources (Role, RoleBinding) |
 | rbac.createClusterRole | string | `"auto"` | Create ClusterRole for node access (zone auto-detection). "auto" creates it when template.zone is empty; set true/false to override. |
 | readinessProbe | object | `{"failureThreshold":1,"httpGet":{"path":"/readyz","port":"http-m"},"periodSeconds":1}` | Readiness probe configuration (only used when metrics.enabled is true) |
+| referenceGrant.annotations | object | `{}` | Annotations for the ReferenceGrant |
+| referenceGrant.enabled | bool | `false` | Enable a ReferenceGrant allowing cross-namespace references to the Service |
+| referenceGrant.from | list | `[]` | Allowed referents (list of { group, kind, namespace }), e.g. HTTPRoutes in another namespace. |
+| referenceGrant.to | list | `[]` | Targets the grant permits references to (empty = this chart's Service) |
 | replicaCount | int | `1` | Number of replicas (ignored when autoscaling.enabled is true) |
 | resources | object | `{}` | Resource requests and limits |
 | revisionHistoryLimit | string | `""` | Number of old ReplicaSets to retain for rollback |

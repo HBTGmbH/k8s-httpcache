@@ -179,6 +179,10 @@ metrics:
   varnishstatExport: false
   # -- Counter groups to export (empty = all). Only effective when varnishstatExport is true.
   varnishstatExportFilter: ""
+  # -- Add the de-facto prometheus.io/{scrape,path,port} annotations to the pods
+  # for annotation-based Prometheus discovery. Leave false when using the
+  # ServiceMonitor or PodMonitor to avoid double scraping.
+  scrapeAnnotations: false
 
 # ===========================================================================
 # Access logging (varnishncsa)
@@ -705,6 +709,34 @@ istio:
     egress: []
     # -- Outbound traffic policy (e.g. mode: REGISTRY_ONLY)
     outboundTrafficPolicy: {}
+  authorizationPolicy:
+    # -- Enable Istio AuthorizationPolicy (L7 access control)
+    enabled: false
+    # -- Annotations for the AuthorizationPolicy
+    annotations: {}
+    # -- Action: ALLOW, DENY, AUDIT, CUSTOM
+    action: ALLOW
+    # -- External authorization provider (only for action: CUSTOM)
+    provider: {}
+    # -- Authorization rules
+    rules: []
+  peerAuthentication:
+    # -- Enable Istio PeerAuthentication (mTLS mode)
+    enabled: false
+    # -- Annotations for the PeerAuthentication
+    annotations: {}
+    # -- Mesh-wide mTLS settings for the workload
+    mtls:
+      mode: STRICT
+    # -- Per-port mTLS overrides (port number -> { mode })
+    portLevelMtls: {}
+  requestAuthentication:
+    # -- Enable Istio RequestAuthentication (JWT validation)
+    enabled: false
+    # -- Annotations for the RequestAuthentication
+    annotations: {}
+    # -- JWT rules (issuer, jwksUri, etc.)
+    jwtRules: []
 
 # ===========================================================================
 # PodMonitor (optional, requires Prometheus Operator)
@@ -723,3 +755,59 @@ podMonitor:
   scrapeTimeout: ""
   # -- Relabelings
   relabelings: []
+
+# ===========================================================================
+# PrometheusRule (optional, requires Prometheus Operator)
+# ===========================================================================
+prometheusRule:
+  # -- Enable Prometheus PrometheusRule (alerting/recording rules)
+  enabled: false
+  # -- Namespace for the PrometheusRule (defaults to release namespace)
+  namespace: ""
+  # -- Additional labels for the PrometheusRule (e.g. to match the Prometheus ruleSelector)
+  labels: {}
+  # -- Include the built-in default alert rules (varnishd down, no ready backend
+  # endpoints, VCL render errors, VCL rollbacks)
+  defaultRules: true
+  # -- Extra rule groups (passthrough, appended after the default group)
+  rules: []
+  #  - name: my-extra-rules
+  #    rules:
+  #      - alert: MyAlert
+  #        expr: vector(1)
+
+# ===========================================================================
+# Grafana dashboards (optional)
+# ===========================================================================
+grafanaDashboards:
+  # -- Enable Grafana dashboard ConfigMaps (one per entry)
+  enabled: false
+  # -- Label key the Grafana sidecar watches for dashboard auto-import
+  label: grafana_dashboard
+  # -- Value for the dashboard label
+  labelValue: "1"
+  # -- Annotations added to each dashboard ConfigMap (e.g. k8s-sidecar folder)
+  annotations: {}
+  # -- Dashboards to render, keyed by name. Each value is dashboard JSON (string)
+  # or an object (rendered to JSON). Each becomes a ConfigMap data key, the entry
+  # name suffixed with .json.
+  dashboards: {}
+  #  overview: |
+  #    { "title": "k8s-httpcache", "panels": [] }
+
+# ===========================================================================
+# Gateway API ReferenceGrant (optional, requires Gateway API CRDs)
+# ===========================================================================
+referenceGrant:
+  # -- Enable a ReferenceGrant allowing cross-namespace references to the Service
+  enabled: false
+  # -- Annotations for the ReferenceGrant
+  annotations: {}
+  # -- Allowed referents (list of { group, kind, namespace }), e.g. HTTPRoutes in
+  # another namespace.
+  from: []
+  #  - group: gateway.networking.k8s.io
+  #    kind: HTTPRoute
+  #    namespace: other-namespace
+  # -- Targets the grant permits references to (empty = this chart's Service)
+  to: []

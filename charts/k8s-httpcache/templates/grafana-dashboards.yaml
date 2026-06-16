@@ -1,0 +1,26 @@
+{{- if .Values.grafanaDashboards.enabled }}
+{{- /* One labeled ConfigMap per dashboard for the Grafana sidecar to auto-import.
+       Each value may be a JSON string or a YAML/object (rendered to JSON). */}}
+{{- range $name, $dash := .Values.grafanaDashboards.dashboards }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-httpcache.fullname" $ }}-dashboard-{{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" $ | nindent 4 }}
+    {{ $.Values.grafanaDashboards.label }}: {{ $.Values.grafanaDashboards.labelValue | quote }}
+  {{- with $.Values.grafanaDashboards.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{ $name }}.json: |-
+    {{- if typeIs "string" $dash }}
+    {{- $dash | nindent 4 }}
+    {{- else }}
+    {{- $dash | toJson | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

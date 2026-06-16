@@ -1,0 +1,125 @@
+{{- if .Values.prometheusRule.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Values.prometheusRule.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with include "k8s-httpcache.annotations" (dict "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    {{- if .Values.prometheusRule.defaultRules }}
+    - name: {{ include "k8s-httpcache.fullname" . }}
+      rules:
+        # --- Availability ---
+        - alert: K8sHttpcacheVarnishdDown
+          expr: 'k8s_httpcache_varnishd_up == 0'
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: varnishd is down on pod {{`{{ $labels.pod }}`}}
+            description: The varnishd process managed by k8s-httpcache has been down for more than 5 minutes.
+        - alert: K8sHttpcacheVarnishdFlapping
+          expr: 'changes(k8s_httpcache_varnishd_up[15m]) > 3'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: varnishd is flapping on pod {{`{{ $labels.pod }}`}}
+            description: The varnishd process restarted more than 3 times in 15 minutes.
+        - alert: K8sHttpcacheNoReadyBackendEndpoints
+          expr: 'k8s_httpcache_endpoints{role="backend"} == 0'
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: No ready backend endpoints for service {{`{{ $labels.service }}`}}
+            description: k8s-httpcache sees zero ready backend endpoints for more than 10 minutes; cache misses will fail.
+        - alert: K8sHttpcacheNoReadyFrontendEndpoints
+          expr: 'k8s_httpcache_endpoints{role="frontend"} == 0'
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: No ready frontend endpoints for service {{`{{ $labels.service }}`}}
+            description: k8s-httpcache discovered zero ready frontend (cache) pods for more than 10 minutes; broadcast invalidation cannot fan out.
+        # --- VCL reload pipeline ---
+        - alert: K8sHttpcacheVCLReloadFailures
+          expr: 'increase(k8s_httpcache_vcl_reloads_total{result="error"}[15m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: VCL reload failures on pod {{`{{ $labels.pod }}`}}
+            description: One or more varnishd VCL reloads failed in the last 15 minutes; the cache may be serving a stale configuration.
+        - alert: K8sHttpcacheVCLRenderErrors
+          expr: 'increase(k8s_httpcache_vcl_render_errors_total[15m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: VCL template render errors on pod {{`{{ $labels.pod }}`}}
+            description: k8s-httpcache failed to render the VCL template in the last 15 minutes.
+        - alert: K8sHttpcacheVCLTemplateParseErrors
+          expr: 'increase(k8s_httpcache_vcl_template_parse_errors_total[15m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: VCL template parse errors on pod {{`{{ $labels.pod }}`}}
+            description: The VCL template failed to parse in the last 15 minutes; check the template syntax.
+        - alert: K8sHttpcacheVCLRollbacks
+          expr: 'increase(k8s_httpcache_vcl_rollbacks_total[15m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: VCL rollbacks on pod {{`{{ $labels.pod }}`}}
+            description: k8s-httpcache rolled back to a previous VCL version, indicating failed reloads.
+        - alert: K8sHttpcacheHighVCLReloadRetries
+          expr: 'increase(k8s_httpcache_vcl_reload_retries_total[15m]) > 5'
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Frequent VCL reload retries on pod {{`{{ $labels.pod }}`}}
+            description: More than 5 VCL reload retries occurred in 15 minutes, indicating a flaky varnishd reload.
+        # --- Broadcast invalidation ---
+        - alert: K8sHttpcacheBroadcastServerErrors
+          expr: 'increase(k8s_httpcache_broadcast_requests_total{status=~"5.."}[15m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Broadcast invalidation server errors on pod {{`{{ $labels.pod }}`}}
+            description: The broadcast endpoint returned 5xx responses in the last 15 minutes (e.g. no frontend pods to fan out to).
+        # --- TLS certificates ---
+        - alert: K8sHttpcacheTLSCertReloadFailures
+          expr: 'increase(k8s_httpcache_tls_cert_reloads_total{result="error"}[15m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: TLS certificate reload failures on pod {{`{{ $labels.pod }}`}}
+            description: One or more TLS certificate reloads failed in the last 15 minutes; frontend TLS may be serving a stale certificate.
+        - alert: K8sHttpcacheTLSCertOperationFailures
+          expr: 'increase(k8s_httpcache_tls_cert_operations_total{result="error"}[15m]) > 0'
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: TLS certificate operation failures on pod {{`{{ $labels.pod }}`}}
+            description: varnishadm TLS certificate operations failed in the last 15 minutes.
+    {{- end }}
+    {{- with .Values.prometheusRule.rules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

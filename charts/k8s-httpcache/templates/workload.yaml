@@ -61,6 +61,11 @@ spec:
     metadata:
       annotations:
         checksum/vcl: {{ .Values.vclTemplateContent | sha256sum }}
+        {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: {{ .Values.container.httpMetricsPort | default 9101 | quote }}
+        {{- end }}
       {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -70,7 +75,10 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- include "k8s-httpcache.imagePullSecrets" . | nindent 6 }}
+      {{- with (concat (default (list) (.Values.global).imagePullSecrets) (default (list) .Values.imagePullSecrets)) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "k8s-httpcache.serviceAccountName" . }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if ne (toString .Values.enableServiceLinks) "" }}
