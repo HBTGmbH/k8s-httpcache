@@ -375,6 +375,48 @@ jobs:
           | ~/tools/kubeconform -strict -summary -ignore-missing-schemas
         ~/tools/kubeconform -strict -summary -ignore-missing-schemas \
           .github/test/manifest.yaml .github/test/manifest-tls.yaml
+    - name: Restore helm-docs
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      id: helm-docs
+      with:
+        path: ~/tools/helm-docs
+        key: helm-docs-1.14.2-linux-amd64
+    - name: Install helm-docs
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.helm-docs.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/tools
+        curl -sfL https://github.com/norwoodj/helm-docs/releases/download/v1.14.2/helm-docs_1.14.2_Linux_x86_64.tar.gz \
+          | tar -xz -C ~/tools helm-docs
+        chmod +x ~/tools/helm-docs
+    - name: Save helm-docs
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.helm-docs.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: ~/tools/helm-docs
+        key: helm-docs-1.14.2-linux-amd64
+    - name: Helm docs up to date
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      run: |
+        ~/tools/helm-docs --chart-search-root charts/k8s-httpcache --log-level warning
+        if ! git diff --exit-code -- charts/k8s-httpcache/README.md; then
+          echo "::error::charts/k8s-httpcache/README.md is out of date; run helm-docs and commit it."
+          exit 1
+        fi
 
 
   go-build:
