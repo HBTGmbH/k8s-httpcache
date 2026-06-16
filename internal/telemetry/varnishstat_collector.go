@@ -174,13 +174,27 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 			if parseErr == nil && parsed&1 != 0 {
 				upValue = 1.0
 			}
-			ch <- prometheus.MustNewConstMetric(c.cachedDesc("varnish_backend_up", "Whether the backend is healthy according to the latest probe", labelKeys), prometheus.GaugeValue, upValue, labelValues...)
+			c.emit(ch, c.cachedDesc("varnish_backend_up", "Whether the backend is healthy according to the latest probe", labelKeys), prometheus.GaugeValue, upValue, labelValues)
 
 			continue
 		}
 
-		ch <- prometheus.MustNewConstMetric(c.cachedDesc(metricName, desc, labelKeys), valueType, counter.Value, labelValues...)
+		c.emit(ch, c.cachedDesc(metricName, desc, labelKeys), valueType, counter.Value, labelValues)
 	}
+}
+
+// emit builds a const metric and sends it on ch, skipping it if construction
+// fails. Using the non-panicking NewConstMetric keeps a scrape robust: a counter
+// that disagrees with a cached desc's label cardinality (or yields an invalid
+// metric name) is dropped rather than crashing the whole Collect call. The first
+// counter seen for a metric name caches its desc, so well-formed varnishstat
+// output is unaffected.
+func (*VarnishstatCollector) emit(ch chan<- prometheus.Metric, desc *prometheus.Desc, valueType prometheus.ValueType, value float64, labelValues []string) {
+	m, err := prometheus.NewConstMetric(desc, valueType, value, labelValues...)
+	if err != nil {
+		return
+	}
+	ch <- m
 }
 
 // cachedDesc returns a cached prometheus.Desc for the given metric name,

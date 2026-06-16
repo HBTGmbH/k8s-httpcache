@@ -2272,3 +2272,40 @@ func TestVarnishstatCollectorConcurrentCollect(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestCollectNoPanicOnLabelCardinalityMismatch guards against a scrape-crashing
+// panic: two counters that fold into the same metric name with different label
+// sets (a MAIN.sess_* counter carrying an ident vs. one without both map to
+// varnish_main_sessions) must not panic Collect. The mismatched counter is
+// dropped via the non-panicking NewConstMetric; the rest of the scrape proceeds.
+func TestCollectNoPanicOnLabelCardinalityMismatch(t *testing.T) {
+	t.Parallel()
+	data := `{"counters":{` +
+		`"MAIN.sess_conn":{"value":1,"flag":"c","ident":"weird"},` +
+		`"MAIN.sess_drop":{"value":2,"flag":"c"},` +
+		`"MAIN.cache_hit":{"value":7,"flag":"c"}` +
+		`}}`
+	c := NewVarnishstatCollector(func() (string, int, error) { return data, 7, nil }, nil)
+
+	ch := make(chan prometheus.Metric, 256)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Collect panicked: %v", r)
+			}
+		}()
+		c.Collect(ch)
+	}()
+	close(ch)
+
+	// The unrelated, well-formed counter must still be emitted.
+	found := false
+	for m := range ch {
+		if strings.Contains(m.Desc().String(), "varnish_main_cache_hit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected varnish_main_cache_hit to be emitted despite the mismatched sess counters")
+	}
+}
