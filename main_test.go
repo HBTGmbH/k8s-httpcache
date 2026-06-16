@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -189,6 +190,87 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 		t.Fatal("unexpected notification after context cancel")
 	case <-time.After(300 * time.Millisecond):
 		// OK — goroutine stopped
+	}
+}
+
+// TestWriteInitialVCLFileCleanup verifies the initial-VCL temp-file helper that
+// run() relies on: it creates the file with the rendered contents and returns a
+// cleanup func that removes it (idempotently). run() wires this cleanup into a
+// defer, which only runs because main is the thin [os.Exit](run()) wrapper.
+func TestWriteInitialVCLFileCleanup(t *testing.T) {
+	t.Parallel()
+
+	const contents = "vcl 4.1; /* initial */"
+	path, cleanup, err := writeInitialVCLFile(contents)
+	if err != nil {
+		t.Fatalf("writeInitialVCLFile: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading temp VCL %q: %v", path, err)
+	}
+	if string(got) != contents {
+		t.Errorf("contents = %q, want %q", got, contents)
+	}
+
+	cleanup()
+	_, statErr := os.Stat(path)
+	if !os.IsNotExist(statErr) {
+		t.Errorf("expected temp VCL %q removed after cleanup, stat err = %v", path, statErr)
+	}
+
+	// Cleanup must be safe to call more than once (it runs via defer and may
+	// also run on an explicit error path).
+	cleanup()
+}
+
+// TestRunExitPatternRunsDeferredCleanup reproduces: a
+// program structured as [os.Exit](run()) — with cleanup registered via defer
+// inside run — removes its temp file before exiting, whereas the previous
+// [os.Exit](runLoop()) shape (with the cleanups stranded as defers in main)
+// would skip them, leaking the file. Because [os.Exit] terminates the test
+// process and the real run() needs a cluster + varnishd, this is verified in a
+// re-exec'd child that emulates the exact main/run structure.
+func TestRunExitPatternRunsDeferredCleanup(t *testing.T) {
+	if os.Getenv("CLEANUP_CHILD") == "1" {
+		// Child: mirror main(){ os.Exit(run()) }, where run registers a defer
+		// that removes a temp file. Report the path on stdout before exiting.
+		os.Exit(func() int {
+			f, err := os.CreateTemp(t.TempDir(), "cleanup-proof-*")
+			if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "create:", err)
+
+				return 3
+			}
+			path := f.Name()
+			_ = f.Close()
+			defer func() { _ = os.Remove(path) }()
+			_, _ = fmt.Fprintln(os.Stdout, path)
+
+			return 0
+		}())
+
+		return
+	}
+
+	t.Parallel()
+
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestRunExitPatternRunsDeferredCleanup$") //nolint:gosec // re-exec of the test binary itself
+	cmd.Env = append(os.Environ(), "CLEANUP_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child process failed: %v\noutput:\n%s", err, out)
+	}
+
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		t.Fatalf("child did not report a temp path; output:\n%s", out)
+	}
+	_, statErr := os.Stat(path)
+	if !os.IsNotExist(statErr) {
+		_ = os.Remove(path) // safety net if the deferred cleanup was skipped
+		t.Errorf("deferred cleanup did not run: %q still exists (stat err=%v)", path, statErr)
 	}
 }
 

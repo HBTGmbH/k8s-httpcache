@@ -497,13 +497,24 @@ type loopConfig struct {
 	lastVCLHash [sha256.Size]byte
 }
 
+// main is a thin wrapper around run. It exists so that run's deferred cleanups
+// (the initial VCL temp file and the TLS temp dir) execute before the process
+// exits: [os.Exit] does not run deferred functions, so the cleanup must live in
+// a function that returns its exit code rather than calling [os.Exit] directly.
 func main() {
+	os.Exit(run())
+}
+
+// run wires up every component and drives the event loop, returning the process
+// exit code. All cleanup is registered with defer here so it runs on every
+// return path (including startup failures), which [os.Exit] in main would skip.
+func run() int {
 	cfg, err := config.Parse(version, os.Args)
 	if errors.Is(err, config.ErrHelp) {
-		os.Exit(0)
+		return 0
 	}
 	if err != nil {
-		os.Exit(2)
+		return 2
 	}
 
 	logOpts := &slog.HandlerOptions{Level: cfg.LogLevel}
@@ -548,7 +559,9 @@ func main() {
 	// Build Kubernetes client.
 	clientset, err := buildClientset()
 	if err != nil {
-		log.Fatalf("kubernetes client: %v", err)
+		slog.Error("kubernetes client", "error", err)
+
+		return 1
 	}
 
 	// Set up Kubernetes event recorder if POD_NAME is available.
@@ -608,14 +621,18 @@ func main() {
 
 	err = mgr.DetectVersion()
 	if err != nil {
-		log.Fatalf("cache version: %v", err)
+		slog.Error("cache version", "error", err)
+
+		return 1
 	}
 	status.setVarnishMajorVersion(mgr.MajorVersion())
 
 	// Native TLS requires Varnish/Vinyl 9+. Fail fast rather than serving an
 	// https listener that has no certificate (every handshake would fail).
 	if len(cfg.TLSCerts) > 0 && !mgr.TLSSupported() {
-		log.Fatalf("--tls-cert requires Varnish/Vinyl major version >= 9 (detected %d)", mgr.MajorVersion())
+		slog.Error("--tls-cert requires Varnish/Vinyl major version >= 9", "detected", mgr.MajorVersion())
+
+		return 1
 	}
 
 	// Register varnishstat Prometheus exporter if enabled.
@@ -628,7 +645,9 @@ func main() {
 	// Parse VCL template.
 	rend, err := renderer.New(cfg.VCLTemplate, cfg.TemplateDelimLeft, cfg.TemplateDelimRight, cfg.TemplateFuncs)
 	if err != nil {
-		log.Fatalf("renderer: %v", err)
+		slog.Error("renderer", "error", err)
+
+		return 1
 	}
 	if cfg.Drain {
 		rend.SetDrainBackend(drainBackendName)
@@ -849,28 +868,24 @@ func main() {
 	initialVCLStr, err := rend.Render(latestFrontends, latestBackends, latestValues, latestSecrets)
 	metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
-		log.Fatalf("initial render: %v", err) //nolint:gocritic // fatal before Start is intentional; deferred cancel is harmless to skip
+		slog.Error("initial render", "error", err)
+
+		return 1
 	}
 	initialVCLHash := sha256.Sum256([]byte(initialVCLStr))
-	initialVCLFile, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
+	initialVCL, cleanupVCL, err := writeInitialVCLFile(initialVCLStr)
 	if err != nil {
-		log.Fatalf("creating initial VCL temp file: %v", err)
+		slog.Error("initial VCL temp file", "error", err)
+
+		return 1
 	}
-	initialVCL := initialVCLFile.Name()
-	_, err = initialVCLFile.WriteString(initialVCLStr)
-	if err != nil {
-		_ = initialVCLFile.Close()
-		log.Fatalf("writing initial VCL temp file: %v", err)
-	}
-	err = initialVCLFile.Close()
-	if err != nil {
-		log.Fatalf("closing initial VCL temp file: %v", err)
-	}
-	defer func() { _ = os.Remove(initialVCL) }()
+	defer cleanupVCL()
 
 	err = mgr.Start(initialVCL)
 	if err != nil {
-		log.Fatalf("varnish start: %v", err)
+		slog.Error("varnish start", "error", err)
+
+		return 1
 	}
 	defer mgr.CleanupTLS()
 
@@ -886,7 +901,9 @@ func main() {
 		d := initialTLS[name]
 		err = mgr.LoadCert(name, d.Cert, d.Key, d.CA)
 		if err != nil {
-			log.Fatalf("loading initial TLS certificate %q: %v", name, err)
+			slog.Error("loading initial TLS certificate", "cert", name, "error", err)
+
+			return 1
 		}
 		if !d.Empty() {
 			loadedCerts++
@@ -1061,7 +1078,7 @@ func main() {
 	// `lc.bcast != nil` true and panicking when the loop calls into it.
 	setBroadcaster(lc, bcast)
 
-	os.Exit(runLoop(ctx, cancel, lc))
+	return runLoop(ctx, cancel, lc)
 }
 
 // setBroadcaster assigns bcast to lc.bcast only when bcast is non-nil, so that
@@ -1887,6 +1904,36 @@ func buildNCSAArgs(cfg *config.Config) []string {
 	}
 
 	return args
+}
+
+// writeInitialVCLFile writes the rendered VCL to a new temp file and returns
+// its path along with a cleanup function that removes it. The cleanup is safe
+// to call more than once and is wired into run via defer so the file is removed
+// on every exit path. On any error nothing is left behind and cleanup is nil.
+func writeInitialVCLFile(contents string) (string, func(), error) {
+	f, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating initial VCL temp file: %w", err)
+	}
+	path := f.Name()
+	cleanup := func() { _ = os.Remove(path) }
+
+	_, err = f.WriteString(contents)
+	if err != nil {
+		_ = f.Close()
+		cleanup()
+
+		return "", nil, fmt.Errorf("writing initial VCL temp file: %w", err)
+	}
+
+	err = f.Close()
+	if err != nil {
+		cleanup()
+
+		return "", nil, fmt.Errorf("closing initial VCL temp file: %w", err)
+	}
+
+	return path, cleanup, nil
 }
 
 // watchFile polls a file for content changes and sends on the returned channel

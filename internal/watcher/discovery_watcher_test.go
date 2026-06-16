@@ -1389,6 +1389,60 @@ func TestDiscoveryWatcher_ServiceAddedDuringInitPhase(t *testing.T) {
 	}
 }
 
+// TestDiscoveryWatcher_InitialCollectionSkipsRemovedBackend reproduces a
+// startup-hang race: if a discovered Service is removed during the window
+// between the initial reconciliation and the initial-state collection, the
+// child watcher's context is cancelled and its Changes() channel never
+// delivers. collectInitialState must skip such a backend instead of blocking
+// forever (which would leave Initial() unclosed and varnishd unstarted).
+func TestDiscoveryWatcher_InitialCollectionSkipsRemovedBackend(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// Backend "a": healthy — its first endpoint set is already buffered, and
+	// its context is live.
+	bwA := NewBackendWatcher(clientset, "default", "a", "")
+	bwA.ch <- []Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "a-pod-0"}}
+	ctxA, cancelA := context.WithCancel(ctx)
+	defer cancelA()
+	mbA := &managedBackend{watcher: bwA, ctx: ctxA, cancel: cancelA, namespace: "default", name: "a"}
+
+	// Backend "b": its Service was removed mid-startup — the child watcher is
+	// cancelled and will never deliver on Changes().
+	bwB := NewBackendWatcher(clientset, "default", "b", "")
+	ctxB, cancelB := context.WithCancel(ctx)
+	cancelB()
+	mbB := &managedBackend{watcher: bwB, ctx: ctxB, cancel: cancelB, namespace: "default", name: "b"}
+
+	pending := map[string]*managedBackend{"default/a": mbA, "default/b": mbB}
+
+	done := make(chan error, 1)
+	go func() { done <- dw.collectInitialState(ctx, pending) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("collectInitialState returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("collectInitialState hung: a backend removed mid-collection blocked the initial sync")
+	}
+
+	state := dw.InitialState()
+	if _, ok := state["a"]; !ok {
+		t.Errorf("expected healthy backend 'a' in initial state, got %v", state)
+	}
+	if _, ok := state["b"]; ok {
+		t.Error("removed backend 'b' should be skipped, but it is present in initial state")
+	}
+}
+
 // --- Stub lister for syncServices unit tests ---
 
 type stubServiceLister struct {

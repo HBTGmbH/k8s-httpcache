@@ -27,7 +27,11 @@ type BackendUpdate struct {
 
 // managedBackend tracks a child BackendWatcher spawned for a discovered Service.
 type managedBackend struct {
-	watcher   *BackendWatcher
+	watcher *BackendWatcher
+	//nolint:containedctx // the child context is retained so the initial
+	// collection loop can observe this backend being cancelled (its Service
+	// was removed mid-startup) and skip it instead of blocking forever.
+	ctx       context.Context
 	cancel    context.CancelFunc
 	fwdCancel context.CancelFunc // stops the forwarding goroutine (nil before forwarding starts)
 	namespace string
@@ -177,17 +181,9 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 	pendingInit := maps.Clone(dw.backends)
 	dw.mu.Unlock()
 
-	for _, mb := range pendingInit {
-		select {
-		case <-ctx.Done():
-			return ctx.Err() //nolint:wrapcheck // context cancellation
-		case eps := <-mb.watcher.Changes():
-			dw.mu.Lock()
-			dw.initialState[mb.name] = eps
-			dw.initialLabels[mb.name] = mb.watcher.Labels()
-			dw.initialAnnotations[mb.name] = mb.watcher.Annotations()
-			dw.mu.Unlock()
-		}
+	err = dw.collectInitialState(ctx, pendingInit)
+	if err != nil {
+		return err
 	}
 
 	// Now start forwarding goroutines for all initial backends.
@@ -218,6 +214,34 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 	}
 	dw.backends = nil
 	dw.mu.Unlock()
+
+	return nil
+}
+
+// collectInitialState blocks until each backend in pending has delivered its
+// first endpoint set, recording it in the initial* maps. It runs before the
+// forwarding goroutines are started, so it is the sole consumer of each
+// backend's Changes() channel during this phase.
+func (dw *BackendDiscoveryWatcher) collectInitialState(ctx context.Context, pending map[string]*managedBackend) error {
+	for _, mb := range pending {
+		select {
+		case <-ctx.Done():
+			return ctx.Err() //nolint:wrapcheck // context cancellation
+		case <-mb.ctx.Done():
+			// This backend's Service was removed during the initial sync
+			// window: its child watcher is cancelled and will never deliver
+			// its first endpoint set. Skip it rather than blocking forever
+			// (which would leave Initial() unclosed and stall startup). The
+			// removal is reconciled later via the normal update path.
+			continue
+		case eps := <-mb.watcher.Changes():
+			dw.mu.Lock()
+			dw.initialState[mb.name] = eps
+			dw.initialLabels[mb.name] = mb.watcher.Labels()
+			dw.initialAnnotations[mb.name] = mb.watcher.Annotations()
+			dw.mu.Unlock()
+		}
+	}
 
 	return nil
 }
@@ -318,6 +342,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 
 		mb := &managedBackend{
 			watcher:   bw,
+			ctx:       childCtx,
 			cancel:    childCancel,
 			namespace: svc.Namespace,
 			name:      svc.Name,
