@@ -1,0 +1,23 @@
+{{- if .Values.istio.destinationRule.enabled -}}
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.istio.destinationRule.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  host: {{ .Values.istio.destinationRule.host | default (include "k8s-httpcache.serviceFQDN" .) }}
+  {{- with .Values.istio.destinationRule.trafficPolicy }}
+  trafficPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.istio.destinationRule.subsets }}
+  subsets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

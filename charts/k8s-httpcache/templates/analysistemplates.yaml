@@ -1,0 +1,16 @@
+{{- if .Values.argoRollouts.enabled }}
+{{- /* AnalysisTemplates for Argo Rollouts. Reference them by name from the
+       canary/blueGreen steps configured in argoRollouts.strategy. */}}
+{{- range .Values.argoRollouts.analysisTemplates }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ include "k8s-httpcache.fullname" $ }}-{{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" $ | nindent 4 }}
+spec:
+  {{- toYaml .spec | nindent 2 }}
+{{- end }}
+{{- end }}

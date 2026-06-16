@@ -1,0 +1,46 @@
+{{- if .Values.istio.virtualService.enabled -}}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.istio.virtualService.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  hosts:
+    {{- if .Values.istio.virtualService.hosts }}
+    {{- range .Values.istio.virtualService.hosts }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- else }}
+    - {{ include "k8s-httpcache.fullname" . | quote }}
+    {{- end }}
+  {{- with .Values.istio.virtualService.gateways }}
+  gateways:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if .Values.istio.virtualService.http }}
+  http:
+    {{- toYaml .Values.istio.virtualService.http | nindent 4 }}
+  {{- else }}
+  {{- /* Default: route all HTTP traffic to the Service. */}}
+  http:
+    - route:
+        - destination:
+            host: {{ include "k8s-httpcache.serviceFQDN" . }}
+            port:
+              number: {{ .Values.service.httpPort }}
+  {{- end }}
+  {{- with .Values.istio.virtualService.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.istio.virtualService.tcp }}
+  tcp:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

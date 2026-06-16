@@ -71,16 +71,50 @@ ServiceAccount name.
 {{- end }}
 
 {{/*
-Image reference.
+Image reference. Supports an optional registry (falling back to global.imageRegistry)
+and pinning by digest (image.digest takes precedence over image.tag).
 */}}
 {{- define "k8s-httpcache.image" -}}
 {{- $repo := required "image.repository is required" .Values.image.repository }}
-{{- $tag := default .Chart.AppVersion .Values.image.tag }}
-{{- if .Values.image.registry }}
-{{- printf "%s/%s:%s" .Values.image.registry $repo $tag }}
-{{- else }}
-{{- printf "%s:%s" $repo $tag }}
+{{- $registry := .Values.image.registry | default (.Values.global).imageRegistry }}
+{{- $ref := $repo }}
+{{- if $registry }}
+{{- $ref = printf "%s/%s" $registry $repo }}
 {{- end }}
+{{- if .Values.image.digest }}
+{{- printf "%s@%s" $ref .Values.image.digest }}
+{{- else }}
+{{- printf "%s:%s" $ref (default .Chart.AppVersion .Values.image.tag) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Image pull secrets, merging global.imagePullSecrets with imagePullSecrets.
+Renders the full "imagePullSecrets:" block (or nothing when both are empty).
+*/}}
+{{- define "k8s-httpcache.imagePullSecrets" -}}
+{{- $pull := concat (default (list) (.Values.global).imagePullSecrets) (default (list) .Values.imagePullSecrets) }}
+{{- with $pull }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+
+{{/*
+Fully qualified in-cluster Service DNS name.
+*/}}
+{{- define "k8s-httpcache.serviceFQDN" -}}
+{{- printf "%s.%s.svc.%s" (include "k8s-httpcache.fullname" .) .Release.Namespace (.Values.clusterDomain | default "cluster.local") }}
+{{- end }}
+
+{{/*
+Workload apiVersion/kind for scale targets (Argo Rollouts Rollout vs Deployment).
+*/}}
+{{- define "k8s-httpcache.workloadApiVersion" -}}
+{{- if .Values.argoRollouts.enabled -}}argoproj.io/v1alpha1{{- else -}}apps/v1{{- end -}}
+{{- end }}
+{{- define "k8s-httpcache.workloadKind" -}}
+{{- if .Values.argoRollouts.enabled -}}Rollout{{- else -}}Deployment{{- end -}}
 {{- end }}
 
 {{/*

@@ -15,8 +15,13 @@
 {{- fail "tlsCerts is set but no listenAddrs entry uses the 'https' protocol; add an https listener, e.g. listenAddrs: [\"http=:8080,http\", \"https=:8443,https\"]" }}
 {{- end }}
 {{- end }}
+{{- if .Values.argoRollouts.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+{{- else }}
 apiVersion: apps/v1
 kind: Deployment
+{{- end }}
 metadata:
   name: {{ include "k8s-httpcache.fullname" . }}
   namespace: {{ .Release.Namespace }}
@@ -33,9 +38,21 @@ spec:
   {{- with .Values.revisionHistoryLimit }}
   revisionHistoryLimit: {{ . }}
   {{- end }}
+  {{- if ne (toString .Values.minReadySeconds) "" }}
+  minReadySeconds: {{ .Values.minReadySeconds }}
+  {{- end }}
+  {{- if .Values.argoRollouts.enabled }}
+  strategy:
+    {{- if .Values.argoRollouts.strategy }}
+    {{- toYaml .Values.argoRollouts.strategy | nindent 4 }}
+    {{- else }}
+    canary: {}
+    {{- end }}
+  {{- else }}
   {{- with .Values.strategy }}
   strategy:
     {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- end }}
   selector:
     matchLabels:
@@ -53,17 +70,24 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "k8s-httpcache.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "k8s-httpcache.serviceAccountName" . }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if ne (toString .Values.enableServiceLinks) "" }}
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
+      {{- end }}
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
+      {{- with .Values.schedulerName }}
+      schedulerName: {{ . }}
+      {{- end }}
       {{- with .Values.runtimeClassName }}
       runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.dnsPolicy }}
       dnsPolicy: {{ . }}

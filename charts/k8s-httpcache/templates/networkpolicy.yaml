@@ -1,0 +1,65 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.networkPolicy.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
+  {{- with .Values.networkPolicy.policyTypes }}
+  policyTypes:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if has "Ingress" .Values.networkPolicy.policyTypes }}
+  ingress:
+    {{- if .Values.networkPolicy.ingress }}
+    {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
+    {{- else }}
+    {{- /* Default: allow traffic to the exposed container ports from any source. */}}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.container.httpPort | default 8080 }}
+        {{- if .Values.tlsCerts }}
+        - protocol: TCP
+          port: {{ .Values.container.httpsPort | default 8443 }}
+        {{- end }}
+        {{- if .Values.broadcast.enabled }}
+        - protocol: TCP
+          port: {{ .Values.container.httpBroadcastPort | default 8088 }}
+        {{- end }}
+        {{- if .Values.metrics.enabled }}
+        - protocol: TCP
+          port: {{ .Values.container.httpMetricsPort | default 9101 }}
+        {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- if has "Egress" .Values.networkPolicy.policyTypes }}
+  egress:
+    {{- if or .Values.networkPolicy.allowDNS .Values.networkPolicy.egress }}
+    {{- if .Values.networkPolicy.allowDNS }}
+    {{- /* Allow DNS resolution. Egress to the Kubernetes API server and to backends
+           is cluster-specific — add rules via networkPolicy.egress as needed. */}}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- else }}
+    []
+    {{- end }}
+  {{- end }}
+{{- end }}

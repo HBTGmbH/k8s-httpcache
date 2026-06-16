@@ -1,0 +1,26 @@
+{{- if .Values.verticalPodAutoscaler.enabled -}}
+{{- /* Requires the VerticalPodAutoscaler CRD. Do not combine VPA with the HPA on
+       the same (CPU/memory) resource — they will fight each other. */}}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.verticalPodAutoscaler.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  targetRef:
+    apiVersion: {{ include "k8s-httpcache.workloadApiVersion" . }}
+    kind: {{ include "k8s-httpcache.workloadKind" . }}
+    name: {{ include "k8s-httpcache.fullname" . }}
+  updatePolicy:
+    updateMode: {{ .Values.verticalPodAutoscaler.updateMode | quote }}
+  {{- with .Values.verticalPodAutoscaler.resourcePolicy }}
+  resourcePolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

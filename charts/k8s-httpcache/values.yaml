@@ -1,3 +1,10 @@
+# -- Global values shared with subcharts (and consumed by this chart).
+global:
+  # -- Global image registry; used when image.registry is empty.
+  imageRegistry: ""
+  # -- Global image pull secrets; merged with imagePullSecrets.
+  imagePullSecrets: []
+
 # -- Number of replicas (ignored when autoscaling.enabled is true)
 replicaCount: 1
 
@@ -11,8 +18,11 @@ image:
   pullPolicy: IfNotPresent
   # -- Image tag (defaults to appVersion)
   tag: ""
+  # -- Image digest (e.g. "sha256:..."). When set, the image is referenced by
+  # digest (repository@digest) and takes precedence over tag.
+  digest: ""
 
-# -- Image pull secrets
+# -- Image pull secrets (merged with global.imagePullSecrets)
 imagePullSecrets: []
 # -- Override the chart name
 nameOverride: ""
@@ -28,10 +38,9 @@ commonAnnotations: {}
 # created and the old ReplicaSet to be orphaned.
 selectorLabels: {}
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # CLI flag groups
-# ---------------------------------------------------------------------------
-
+# ===========================================================================
 # -- Service name passed to --service-name (defaults to chart fullname)
 serviceName: ""
 # -- Namespace passed to --namespace (defaults to Release.Namespace)
@@ -107,9 +116,9 @@ valuesDirPollInterval: ""
 excludeAnnotations: []
 # - kubectl.kubernetes.io/*
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Cache binary paths (Varnish Cache / Vinyl Cache)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # When neither varnish nor vinyl paths are set, auto-detection is used:
 # if "vinyld" is found on PATH, Vinyl Cache binaries are preferred,
 # otherwise Varnish Cache binaries are used.
@@ -133,9 +142,9 @@ vinyl:
   # -- Path to vinylncsa binary (Vinyl Cache 9+; takes precedence over varnishncsa.path)
   vinylncsaPath: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Broadcast settings
-# ---------------------------------------------------------------------------
+# ===========================================================================
 broadcast:
   # -- Enable the broadcast HTTP server (false sets --broadcast-addr=none)
   enabled: true
@@ -156,9 +165,9 @@ broadcast:
   # -- Timeout for each fan-out request (empty = app default 3s)
   clientTimeout: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Metrics / Prometheus
-# ---------------------------------------------------------------------------
+# ===========================================================================
 metrics:
   # -- Enable the metrics HTTP server (false sets --metrics-addr=none)
   enabled: true
@@ -171,9 +180,9 @@ metrics:
   # -- Counter groups to export (empty = all). Only effective when varnishstatExport is true.
   varnishstatExportFilter: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Access logging (varnishncsa)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 varnishncsa:
   # -- Enable varnishncsa access logging subprocess
   enabled: false
@@ -190,9 +199,9 @@ varnishncsa:
   # -- Prefix for each access log line on stdout (empty = app default "[access] ")
   prefix: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Drain (graceful connection draining)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 drain:
   # -- Enable graceful connection draining on shutdown
   enabled: false
@@ -203,9 +212,9 @@ drain:
   # -- Max time to wait for sessions to reach 0 (empty = app default 0s)
   timeout: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Template settings
-# ---------------------------------------------------------------------------
+# ===========================================================================
 template:
   # -- Template delimiters (empty = app default "<< >>")
   delims: ""
@@ -214,9 +223,9 @@ template:
   # -- Topology zone override (empty = auto-detect from NODE_NAME)
   zone: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Debounce settings
-# ---------------------------------------------------------------------------
+# ===========================================================================
 debounce:
   # -- Debounce duration for endpoint changes (empty = app default 2s)
   duration: ""
@@ -233,18 +242,18 @@ debounce:
   # -- Histogram bucket boundaries for debounce_latency_seconds metric (empty = app default)
   latencyBuckets: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Logging
-# ---------------------------------------------------------------------------
+# ===========================================================================
 logging:
   # -- Log level: DEBUG, INFO, WARN, ERROR (empty = app default INFO)
   level: ""
   # -- Log format: text, json (empty = app default text)
   format: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # VCL settings
-# ---------------------------------------------------------------------------
+# ===========================================================================
 vcl:
   # -- Time to wait for varnishd to exit before SIGKILL (empty = app default 30s)
   shutdownTimeout: ""
@@ -260,18 +269,19 @@ vcl:
   # -- Number of old VCL objects to retain after reload (empty = app default 0)
   kept: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Extra varnishd arguments (passed after --)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # -- Extra arguments passed to varnishd after the -- separator
 # Example: ["-s", "default,1M", "-p", "default_grace=0"]
 varnishdExtraArgs: []
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # VCL template content
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # -- VCL template rendered into the ConfigMap.
 # This default provides a simple round-robin setup that works out of the box.
+# @default -- a round-robin VCL template (see values.yaml)
 vclTemplateContent: |
   vcl 4.1;
 
@@ -334,10 +344,9 @@ vclTemplateContent: |
     return (synth(200, "Purged"));
   }
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Kubernetes resources
-# ---------------------------------------------------------------------------
-
+# ===========================================================================
 serviceAccount:
   # -- Create a ServiceAccount
   create: true
@@ -399,12 +408,44 @@ service:
   # -- Annotations for the Service
   annotations: {}
 
-# -- Deployment strategy
+# -- Deployment strategy (ignored when argoRollouts.enabled is true)
 strategy:
   type: RollingUpdate
   rollingUpdate:
     maxSurge: 1
     maxUnavailable: 0
+
+# ===========================================================================
+# Argo Rollouts (optional, requires the Argo Rollouts controller and CRDs)
+# ===========================================================================
+argoRollouts:
+  # -- Render the workload as an Argo Rollouts Rollout instead of a Deployment.
+  # The HPA/VPA scale target ref is switched to the Rollout automatically.
+  enabled: false
+  # -- Rollout strategy (canary or blueGreen). When empty, defaults to a basic
+  # canary (`canary: {}`). Reference analysisTemplates from the steps here.
+  strategy: {}
+  #  canary:
+  #    steps:
+  #      - setWeight: 25
+  #      - pause: { duration: 60 }
+  #      - analysis:
+  #          templates:
+  #            - templateName: <release>-success-rate
+  # -- AnalysisTemplates to render (list of { name, spec }). Each is named after
+  # the chart fullname plus the entry name. Only rendered when argoRollouts.enabled is true.
+  analysisTemplates: []
+  #  - name: success-rate
+  #    spec:
+  #      metrics:
+  #        - name: success-rate
+  #          interval: 1m
+  #          successCondition: result[0] >= 0.95
+  #          provider:
+  #            prometheus:
+  #              address: http://prometheus.monitoring:9090
+  #              query: |
+  #                sum(rate(k8s_httpcache_... [1m]))
 
 # -- Resource requests and limits
 resources: {}
@@ -426,14 +467,25 @@ topologySpreadConstraints: []
 terminationGracePeriodSeconds: 90
 # -- Priority class name for pod scheduling priority
 priorityClassName: ""
+# -- Scheduler name for the pods
+schedulerName: ""
 # -- Runtime class name (e.g. gVisor, Kata Containers)
 runtimeClassName: ""
 # -- DNS policy (ClusterFirst, Default, None, ClusterFirstWithHostNet)
 dnsPolicy: ""
 # -- Custom DNS configuration
 dnsConfig: {}
+# -- Host aliases (extra entries for the pod's /etc/hosts)
+hostAliases: []
+# -- Inject Service environment variables. Empty = Kubernetes default (true);
+# set false to reduce environment clutter.
+enableServiceLinks: ""
+# -- Cluster DNS domain, used to build the in-cluster Service FQDN (e.g. for Istio resources)
+clusterDomain: cluster.local
 # -- Number of old ReplicaSets to retain for rollback
 revisionHistoryLimit: ""
+# -- Minimum seconds a new pod must be ready before it is considered available (empty = omit)
+minReadySeconds: ""
 
 # -- Startup probe configuration
 startupProbe:
@@ -475,10 +527,19 @@ extraVolumeMounts: []
 extraEnv: []
 # -- Extra arguments appended before the -- separator
 extraArgs: []
+# -- Extra raw manifests to render with the release. Each entry is a Kubernetes
+# object (or a templated string) rendered through `tpl`, e.g. an ExternalSecret.
+extraManifests: []
+#  - apiVersion: v1
+#    kind: ConfigMap
+#    metadata:
+#      name: '{{ include "k8s-httpcache.fullname" . }}-extra'
+#    data:
+#      key: value
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Ingress (optional)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 ingress:
   # -- Enable Ingress
   enabled: false
@@ -498,9 +559,9 @@ ingress:
   #    hosts:
   #      - chart-example.local
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Gateway API HTTPRoute (optional, requires Gateway API CRDs)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 httpRoute:
   # -- Enable HTTPRoute (Gateway API)
   enabled: false
@@ -521,9 +582,9 @@ httpRoute:
             type: PathPrefix
             value: /
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # ServiceMonitor (optional, requires Prometheus Operator)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 serviceMonitor:
   # -- Enable Prometheus ServiceMonitor
   enabled: false
@@ -538,9 +599,9 @@ serviceMonitor:
   # -- Relabelings
   relabelings: []
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # PodDisruptionBudget (optional)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 podDisruptionBudget:
   # -- Enable PDB
   enabled: false
@@ -549,9 +610,9 @@ podDisruptionBudget:
   # -- Maximum unavailable pods
   maxUnavailable: ""
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # HorizontalPodAutoscaler (optional)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 autoscaling:
   # -- Enable HPA
   enabled: false
@@ -563,3 +624,102 @@ autoscaling:
   targetCPU: ""
   # -- Target memory utilization percentage
   targetMemory: ""
+  # -- Scaling behavior (scaleUp/scaleDown stabilization windows and policies)
+  behavior: {}
+
+# ===========================================================================
+# VerticalPodAutoscaler (optional, requires the VPA CRD)
+# ===========================================================================
+verticalPodAutoscaler:
+  # -- Enable VerticalPodAutoscaler. Do not combine with autoscaling (HPA) on the
+  # same CPU/memory resource.
+  enabled: false
+  # -- Annotations for the VPA
+  annotations: {}
+  # -- Update mode: Off, Initial, Recreate, Auto
+  updateMode: "Off"
+  # -- Per-container resource policy (minAllowed/maxAllowed/controlledResources)
+  resourcePolicy: {}
+
+# ===========================================================================
+# NetworkPolicy (optional)
+# ===========================================================================
+networkPolicy:
+  # -- Enable NetworkPolicy
+  enabled: false
+  # -- Annotations for the NetworkPolicy
+  annotations: {}
+  # -- Policy types to enforce
+  policyTypes:
+    - Ingress
+    - Egress
+  # -- Allow DNS egress (UDP/TCP 53). Egress to the Kubernetes API server and to
+  # backends is cluster-specific and must be added via networkPolicy.egress.
+  allowDNS: true
+  # -- Ingress rules. When empty, a default rule allows traffic to the exposed
+  # ports (http, plus https/broadcast/metrics when enabled) from any source.
+  ingress: []
+  # -- Additional egress rules (appended after the DNS rule when allowDNS is true)
+  egress: []
+
+# ===========================================================================
+# Istio (optional, requires Istio CRDs)
+# ===========================================================================
+istio:
+  virtualService:
+    # -- Enable Istio VirtualService
+    enabled: false
+    # -- Annotations for the VirtualService
+    annotations: {}
+    # -- Gateways to bind (empty = mesh-internal only)
+    gateways: []
+    # -- Hosts to match (empty = the Service short name)
+    hosts: []
+    # -- HTTP routes. When empty, a default route to the Service is generated.
+    http: []
+    # -- TLS routes
+    tls: []
+    # -- TCP routes
+    tcp: []
+  destinationRule:
+    # -- Enable Istio DestinationRule
+    enabled: false
+    # -- Annotations for the DestinationRule
+    annotations: {}
+    # -- Host (empty = the in-cluster Service FQDN)
+    host: ""
+    # -- Traffic policy (load balancing, connection pool, outlier detection, TLS)
+    trafficPolicy: {}
+    # -- Subsets for traffic splitting
+    subsets: []
+  sidecar:
+    # -- Enable Istio Sidecar resource
+    enabled: false
+    # -- Annotations for the Sidecar
+    annotations: {}
+    # -- Scope the Sidecar to this app's pods via a workloadSelector (false = namespace-wide)
+    workloadSelector: true
+    # -- Inbound listeners
+    ingress: []
+    # -- Egress hosts. When empty, defaults to this namespace plus istio-system.
+    egress: []
+    # -- Outbound traffic policy (e.g. mode: REGISTRY_ONLY)
+    outboundTrafficPolicy: {}
+
+# ===========================================================================
+# PodMonitor (optional, requires Prometheus Operator)
+# ===========================================================================
+# Alternative to serviceMonitor — scrapes pods directly. Enable only one.
+podMonitor:
+  # -- Enable Prometheus PodMonitor
+  enabled: false
+  # -- Namespace for the PodMonitor (defaults to release namespace)
+  namespace: ""
+  # -- Additional labels for the PodMonitor
+  labels: {}
+  # -- Scrape interval
+  interval: ""
+  # -- Scrape timeout
+  scrapeTimeout: ""
+  # -- Relabelings
+  relabelings: []

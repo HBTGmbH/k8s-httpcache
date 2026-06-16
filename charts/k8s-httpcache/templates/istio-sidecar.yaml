@@ -1,0 +1,36 @@
+{{- if .Values.istio.sidecar.enabled -}}
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.istio.sidecar.annotations "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.istio.sidecar.workloadSelector }}
+  workloadSelector:
+    labels:
+      {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
+  {{- end }}
+  {{- with .Values.istio.sidecar.ingress }}
+  ingress:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  egress:
+    {{- if .Values.istio.sidecar.egress }}
+    {{- toYaml .Values.istio.sidecar.egress | nindent 4 }}
+    {{- else }}
+    {{- /* Default: this namespace plus the Istio control plane. */}}
+    - hosts:
+        - "./*"
+        - "istio-system/*"
+    {{- end }}
+  {{- with .Values.istio.sidecar.outboundTrafficPolicy }}
+  outboundTrafficPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

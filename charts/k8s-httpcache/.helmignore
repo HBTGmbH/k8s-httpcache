@@ -8,3 +8,5 @@
 .idea/
 .vscode/
 *.orig
+# helm-docs template (README.md is generated from it)
+*.gotmpl

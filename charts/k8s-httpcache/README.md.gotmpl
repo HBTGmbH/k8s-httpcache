@@ -1,0 +1,35 @@
+{{ template "chart.header" . }}
+
+{{ template "chart.deprecationWarning" . }}
+
+{{ template "chart.badgesSection" . }}
+
+{{ template "chart.description" . }}
+
+{{ template "chart.homepageLine" . }}
+
+## Installing the chart
+
+The chart is published as an OCI artifact. To install a release named `my-release`:
+
+```sh
+helm install my-release oci://ghcr.io/hbtgmbh/charts/k8s-httpcache
+```
+
+To uninstall the release:
+
+```sh
+helm uninstall my-release
+```
+
+See the [project README](https://github.com/HBTGmbH/k8s-httpcache#readme) for full
+configuration, VCL templating, broadcast/invalidation, TLS, metrics, and usage
+documentation.
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "chart.maintainersSection" . }}
+
+{{ template "chart.sourcesSection" . }}

@@ -1,0 +1,13 @@
+{{- /*
+Render arbitrary user-supplied manifests alongside the release. Each entry may be
+a YAML/JSON object or a (templated) string. Strings and objects are both passed
+through `tpl` so they can reference release values, e.g. {{ printf "{{ .Release.Namespace }}" }}.
+*/}}
+{{- range .Values.extraManifests }}
+---
+{{- if typeIs "string" . }}
+{{ tpl . $ }}
+{{- else }}
+{{ tpl (toYaml .) $ }}
+{{- end }}
+{{- end }}
