@@ -20,7 +20,7 @@ spec:
           set -e
           echo "Testing /metrics contains varnish_up..."
           curl --silent --show-error --fail --max-time 5 \
-            http://{{ include "k8s-httpcache.fullname" . }}:9101/metrics \
+            http://{{ include "k8s-httpcache.fullname" . }}:{{ .Values.service.httpMetricsPort | default 9101 }}/metrics \
           | grep -q 'varnish_up'
           echo "varnishstat export check passed."
 {{- end }}

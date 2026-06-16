@@ -24,7 +24,7 @@ Ingress:
 {{- end }}
 
 {{- if .Values.metrics.enabled }}
-Metrics: port 9101 (/metrics)
+Metrics: port {{ .Values.service.httpMetricsPort | default 9101 }} (/metrics)
 {{- end }}
 
 {{- if .Values.serviceMonitor.enabled }}
