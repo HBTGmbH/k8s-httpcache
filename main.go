@@ -696,11 +696,18 @@ func run() int {
 	for _, b := range cfg.Backends {
 		explicitNames[b.Name] = true
 	}
+	// Shared across all discovery watchers so a backend name is managed by at
+	// most one Service even when selectors overlap (the consumer keys backends
+	// by bare name). Selector overlap is a runtime property, so it cannot be
+	// rejected at startup; the first watcher to discover a name owns it and the
+	// others skip it.
+	nameRegistry := watcher.NewNameRegistry()
 	discoveryWatchers := make([]*watcher.BackendDiscoveryWatcher, 0, len(cfg.BackendSelectors))
 	for _, bs := range cfg.BackendSelectors {
 		sel, _ := labels.Parse(bs.Selector) // already validated in config
 		dw := watcher.NewBackendDiscoveryWatcher(clientset, bs.Namespace, bs.AllNamespaces, sel, bs.Port, explicitNames)
 		dw.SetExcludeAnnotations(excludeAnnotation)
+		dw.SetNameRegistry(nameRegistry)
 		go func() {
 			runErr := dw.Run(ctx)
 			if runErr != nil {

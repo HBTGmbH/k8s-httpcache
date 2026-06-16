@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"sync"
+	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +46,52 @@ type managedBackend struct {
 	gen       uint64 // generation tag, assigned at creation from genCounter
 }
 
+// discoveryWatcherSeq assigns each BackendDiscoveryWatcher a process-unique id
+// so a shared NameRegistry can tell two watchers apart even when they manage the
+// same namespace/serviceName.
+var discoveryWatcherSeq atomic.Uint64
+
+// NameRegistry coordinates bare backend-name ownership across all discovery
+// watchers. The event-loop consumer keys backends by bare name, so a given name
+// must be forwarded by exactly one Service. The first watcher to discover a name
+// owns it; others skip that name (logging a warning) until the owner releases it
+// (on removal). Two label selectors can only collide on a name at runtime, so
+// this is enforced as a graceful first-come-first-served claim rather than a
+// startup error.
+type NameRegistry struct {
+	mu     sync.Mutex
+	owners map[string]string // bare name -> owner token
+}
+
+// NewNameRegistry creates an empty shared name registry.
+func NewNameRegistry() *NameRegistry {
+	return &NameRegistry{owners: make(map[string]string)}
+}
+
+// claim records owner as the holder of name. It returns true if the claim
+// succeeded (name was free, or already held by this exact owner) and false if a
+// different owner already holds it.
+func (r *NameRegistry) claim(name, owner string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur, held := r.owners[name]; held {
+		return cur == owner
+	}
+	r.owners[name] = owner
+
+	return true
+}
+
+// release relinquishes name iff it is currently held by owner. Releasing a name
+// held by someone else (or not held at all) is a no-op.
+func (r *NameRegistry) release(name, owner string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.owners[name] == owner {
+		delete(r.owners, name)
+	}
+}
+
 // BackendDiscoveryWatcher watches Services matching a label selector and
 // manages child BackendWatchers for each discovered Service. Updates are
 // emitted on a single channel as BackendUpdate values.
@@ -57,6 +104,8 @@ type BackendDiscoveryWatcher struct {
 	explicitNames     map[string]bool // names reserved by --backend flags
 	excludeAnnotation func(string) bool
 	log               *slog.Logger
+	id                uint64        // process-unique watcher id, for NameRegistry owner tokens
+	registry          *NameRegistry // shared cross-watcher name claim; nil = no cross-watcher coordination
 
 	mu          sync.Mutex
 	backends    map[string]*managedBackend // keyed by "namespace/serviceName"
@@ -87,6 +136,7 @@ func NewBackendDiscoveryWatcher(
 		portOverride:       portOverride,
 		explicitNames:      explicitNames,
 		log:                slog.Default(),
+		id:                 discoveryWatcherSeq.Add(1),
 		backends:           make(map[string]*managedBackend),
 		updateCh:           make(chan BackendUpdate, 16),
 		initialState:       make(map[string][]Endpoint),
@@ -100,6 +150,14 @@ func NewBackendDiscoveryWatcher(
 // propagated to all child BackendWatchers. Must be called before Run.
 func (dw *BackendDiscoveryWatcher) SetExcludeAnnotations(exclude func(string) bool) {
 	dw.excludeAnnotation = exclude
+}
+
+// SetNameRegistry installs a shared NameRegistry so this watcher coordinates
+// bare backend-name ownership with the other discovery watchers using the same
+// registry. Must be called before Run. When unset, the watcher only dedups names
+// within itself (via nameClaimedLocked).
+func (dw *BackendDiscoveryWatcher) SetNameRegistry(r *NameRegistry) {
+	dw.registry = r
 }
 
 // Initial returns a channel that is closed after the initial sync completes.
@@ -212,13 +270,17 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 
-	// Stop all child watchers.
+	// Stop all child watchers and release their registry claims so another
+	// watcher sharing the registry can take over the names if it outlives us.
 	dw.mu.Lock()
-	for _, mb := range dw.backends {
+	for key, mb := range dw.backends {
 		if mb.fwdCancel != nil {
 			mb.fwdCancel()
 		}
 		mb.cancel()
+		if dw.registry != nil {
+			dw.registry.release(mb.name, dw.ownerToken(key))
+		}
 	}
 	dw.backends = nil
 	dw.mu.Unlock()
@@ -344,6 +406,15 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 
 			continue
 		}
+		// Cross-watcher claim: another --backend-selector may already manage a
+		// Service with this bare name. The consumer keys backends by bare name,
+		// so only the first claimant forwards updates for it.
+		if dw.registry != nil && !dw.registry.claim(svc.Name, dw.ownerToken(key)) {
+			dw.log.Warn("skipping discovered Service: backend name already claimed by another --backend-selector",
+				"namespace", svc.Namespace, "service", svc.Name)
+
+			continue
+		}
 
 		bw := NewBackendWatcher(dw.clientset, svc.Namespace, svc.Name, dw.portOverride)
 		bw.SetExcludeAnnotations(dw.excludeAnnotation)
@@ -395,6 +466,9 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		}
 		mb.cancel()
 		delete(dw.backends, key)
+		if dw.registry != nil {
+			dw.registry.release(mb.name, dw.ownerToken(key))
+		}
 		dw.log.Info("removed discovered backend Service",
 			"namespace", mb.namespace, "service", mb.name)
 		removed = append(removed, removal{name: mb.name, gen: mb.gen})
@@ -419,6 +493,12 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 // name, so a second same-named Service would fight over the same backend
 // group downstream; the first discovered Service wins. Must be called with
 // dw.mu held.
+//
+// Because syncServices runs its add pass before its remove pass, a departing
+// winner still suppresses a same-named survivor within the same reconcile: the
+// survivor is adopted on the next reconcile that observes the conflict cleared,
+// never two same-named Services at once. This lazy promotion is intentional — we
+// don't silently re-point a backend at another namespace mid-reconcile.
 func (dw *BackendDiscoveryWatcher) nameClaimedLocked(name, namespace string) bool {
 	for _, mb := range dw.backends {
 		if mb.name == name && mb.namespace != namespace {
@@ -439,4 +519,11 @@ func (dw *BackendDiscoveryWatcher) nextGenLocked() uint64 {
 	dw.genCounter++
 
 	return dw.genCounter
+}
+
+// ownerToken returns this watcher's registry owner token for a backend keyed by
+// "namespace/serviceName". The watcher id makes the token unique even when two
+// watchers manage the same namespace/serviceName.
+func (dw *BackendDiscoveryWatcher) ownerToken(key string) string {
+	return fmt.Sprintf("%d/%s", dw.id, key)
 }

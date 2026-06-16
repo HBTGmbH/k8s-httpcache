@@ -1599,6 +1599,338 @@ drain:
 	}
 }
 
+// TestDiscoveryWatcher_RemovalCarriesIncarnationGen pins the generation
+// contract the event-loop consumer relies on to drop stale forward updates (the
+// resurrection fix): a removal update carries the gen of the removed
+// incarnation, and a subsequent re-add gets a strictly higher gen. If the
+// watcher ever stopped stamping the gen, reused it, or decreased it, the
+// consumer would either resurrect removed backends or drop legitimate re-adds.
+func TestDiscoveryWatcher_RemovalCarriesIncarnationGen(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	present := &stubServiceLister{services: []*corev1.Service{svc}}
+	absent := &stubServiceLister{}
+
+	// Initial discovery assigns a gen. Forwarding stays off (initialized=false)
+	// so updateCh receives only the removal triggered below, keeping the read
+	// deterministic.
+	dw.syncServices(ctx, present)
+
+	dw.mu.Lock()
+	mb1, ok := dw.backends["default/web"]
+	dw.mu.Unlock()
+	if !ok {
+		t.Fatal("expected 'web' to be discovered")
+	}
+	g1 := mb1.gen
+	if g1 == 0 {
+		t.Fatal("discovered backend has gen 0; discovery incarnations must use a non-zero gen")
+	}
+
+	// Removal must carry the removed incarnation's gen.
+	dw.syncServices(ctx, absent)
+	select {
+	case u := <-dw.updateCh:
+		if u.Name != "web" || u.Endpoints != nil {
+			t.Fatalf("expected removal of 'web' (nil endpoints), got %+v", u)
+		}
+		if u.Gen != g1 {
+			t.Fatalf("removal gen = %d, want %d (the removed incarnation's gen)", u.Gen, g1)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for removal update")
+	}
+
+	// Re-add must get a strictly higher gen so the consumer accepts it over the
+	// tombstone left by the removal.
+	dw.syncServices(ctx, present)
+	dw.mu.Lock()
+	mb2, ok := dw.backends["default/web"]
+	dw.mu.Unlock()
+	if !ok {
+		t.Fatal("expected 'web' to be re-added")
+	}
+	if mb2.gen <= g1 {
+		t.Fatalf("re-added gen = %d, want strictly greater than %d", mb2.gen, g1)
+	}
+}
+
+// TestDiscoveryWatcher_NameRegistrySkipsCrossWatcherCollision verifies that two
+// discovery watchers sharing a NameRegistry never both manage a backend with the
+// same bare name (the consumer keys backends by bare name). The first to claim
+// it wins; the second skips; and the name becomes claimable again once the owner
+// releases it on removal.
+func TestDiscoveryWatcher_NameRegistrySkipsCrossWatcherCollision(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	dwA := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dwA.SetNameRegistry(reg)
+	dwB := NewBackendDiscoveryWatcher(clientset, "ns2", false, sel, "", nil)
+	dwB.SetNameRegistry(reg)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	svcA := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	svcB := makeDiscoverableService("ns2", "web", map[string]string{"app": "web"})
+	listerA := &stubServiceLister{services: []*corev1.Service{svcA}}
+	listerB := &stubServiceLister{services: []*corev1.Service{svcB}}
+
+	// A claims "web" first; B must skip it.
+	dwA.syncServices(ctx, listerA)
+	dwB.syncServices(ctx, listerB)
+
+	if !backendExists(dwA, "ns1/web") {
+		t.Fatal("watcher A should manage 'web'")
+	}
+	if backendExists(dwB, "ns2/web") {
+		t.Fatal("watcher B must skip 'web' while A owns the name")
+	}
+
+	// A's Service goes away: A releases the claim, so B can take over "web".
+	dwA.syncServices(ctx, &stubServiceLister{})
+	dwB.syncServices(ctx, listerB)
+
+	if backendExists(dwA, "ns1/web") {
+		t.Fatal("watcher A should have removed 'web'")
+	}
+	if !backendExists(dwB, "ns2/web") {
+		t.Fatal("watcher B should manage 'web' after A released it")
+	}
+}
+
+// TestDiscoveryWatcher_NameRegistrySameServiceTwoWatchers covers the case two
+// watchers match the exact same namespace/serviceName (overlapping selectors).
+// The per-watcher id in the owner token must keep them distinct so only one
+// claims the name.
+func TestDiscoveryWatcher_NameRegistrySameServiceTwoWatchers(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	dwA := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dwA.SetNameRegistry(reg)
+	dwB := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dwB.SetNameRegistry(reg)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	lister := &stubServiceLister{services: []*corev1.Service{svc}}
+
+	dwA.syncServices(ctx, lister)
+	dwB.syncServices(ctx, lister)
+
+	if !backendExists(dwA, "ns1/web") {
+		t.Fatal("watcher A should manage 'ns1/web'")
+	}
+	if backendExists(dwB, "ns1/web") {
+		t.Fatal("watcher B must skip 'ns1/web' — same name already claimed by A")
+	}
+}
+
+func backendExists(dw *BackendDiscoveryWatcher, key string) bool {
+	dw.mu.Lock()
+	defer dw.mu.Unlock()
+	_, ok := dw.backends[key]
+
+	return ok
+}
+
+//nolint:unparam // generic helper; current callers all happen to query "web".
+func registryClaimed(r *NameRegistry, name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.owners[name]
+
+	return ok
+}
+
+// TestDiscoveryWatcher_NameRegistryThreeWatchersSingleOwner verifies that when
+// three watchers sharing a registry all match the same Service, exactly one
+// ends up managing it.
+func TestDiscoveryWatcher_NameRegistryThreeWatchersSingleOwner(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	lister := &stubServiceLister{services: []*corev1.Service{svc}}
+
+	owners := 0
+	for range 3 {
+		dw := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+		dw.SetNameRegistry(reg)
+		dw.syncServices(ctx, lister)
+		if backendExists(dw, "ns1/web") {
+			owners++
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("exactly one of three watchers should own 'web', got %d", owners)
+	}
+}
+
+// TestDiscoveryWatcher_NameRegistryDisabledNoCrossWatcherDedup documents that
+// cross-watcher dedup is opt-in: without a shared registry, two watchers each
+// manage their own same-named Service (the pre-registry behavior).
+func TestDiscoveryWatcher_NameRegistryDisabledNoCrossWatcherDedup(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	dwA := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dwB := NewBackendDiscoveryWatcher(clientset, "ns2", false, sel, "", nil)
+	// Neither watcher gets a registry.
+
+	dwA.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{
+		makeDiscoverableService("ns1", "web", map[string]string{"app": "web"}),
+	}})
+	dwB.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{
+		makeDiscoverableService("ns2", "web", map[string]string{"app": "web"}),
+	}})
+
+	if !backendExists(dwA, "ns1/web") || !backendExists(dwB, "ns2/web") {
+		t.Fatal("without a shared registry, each watcher should manage its own 'web'")
+	}
+}
+
+// TestDiscoveryWatcher_NameRegistryExplicitNameNotClaimed verifies a Service
+// whose name is reserved by an explicit --backend is skipped before the registry
+// is consulted, so it neither becomes a backend nor consumes a claim.
+func TestDiscoveryWatcher_NameRegistryExplicitNameNotClaimed(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	dw := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", map[string]bool{"web": true})
+	dw.SetNameRegistry(reg)
+
+	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{
+		makeDiscoverableService("ns1", "web", map[string]string{"app": "web"}),
+	}})
+
+	if backendExists(dw, "ns1/web") {
+		t.Fatal("a Service whose name is an explicit --backend must be skipped")
+	}
+	if registryClaimed(reg, "web") {
+		t.Fatal("explicit-name skip must not consume a registry claim")
+	}
+}
+
+// TestDiscoveryWatcher_NameRegistryReclaimAfterRemovalSameWatcher verifies that
+// removal releases the claim and the same watcher can re-claim the name with a
+// strictly higher generation (the registry and gen tombstone working together).
+func TestDiscoveryWatcher_NameRegistryReclaimAfterRemovalSameWatcher(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	dw := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dw.SetNameRegistry(reg)
+
+	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	present := &stubServiceLister{services: []*corev1.Service{svc}}
+
+	dw.syncServices(ctx, present)
+	dw.mu.Lock()
+	gen1 := dw.backends["ns1/web"].gen
+	dw.mu.Unlock()
+	if !registryClaimed(reg, "web") {
+		t.Fatal("discovering 'web' should claim it in the registry")
+	}
+
+	// Remove → claim released.
+	dw.syncServices(ctx, &stubServiceLister{})
+	if registryClaimed(reg, "web") {
+		t.Fatal("removal must release the registry claim")
+	}
+
+	// Re-add by the same watcher → re-claims with a strictly higher gen.
+	dw.syncServices(ctx, present)
+	dw.mu.Lock()
+	mb, ok := dw.backends["ns1/web"]
+	dw.mu.Unlock()
+	if !ok {
+		t.Fatal("same watcher should re-claim 'web' after releasing it")
+	}
+	if mb.gen <= gen1 {
+		t.Fatalf("re-added gen = %d, want strictly greater than %d", mb.gen, gen1)
+	}
+}
+
+// TestDiscoveryWatcher_NameRegistryShutdownReleasesClaims drives the real Run()
+// path: a running watcher holds its claim, and shutting it down (ctx cancel)
+// releases the claim so another watcher sharing the registry can take over.
+func TestDiscoveryWatcher_NameRegistryShutdownReleasesClaims(t *testing.T) {
+	t.Parallel()
+	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	slice := makeDiscoverableEndpointSlice("ns1", "web", "web-abc", "10.0.0.1", 8080)
+	clientset := fake.NewClientset(svc, slice)
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	dwA := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dwA.SetNameRegistry(reg)
+
+	ctxA, cancelA := context.WithCancel(t.Context())
+	go func() { _ = dwA.Run(ctxA) }()
+	waitForInitial(t, dwA)
+
+	if !registryClaimed(reg, "web") {
+		t.Fatal("a running watcher should hold the 'web' claim")
+	}
+
+	// Shut A down; Run's cleanup must release the claim.
+	cancelA()
+	deadline := time.After(5 * time.Second)
+	for registryClaimed(reg, "web") {
+		select {
+		case <-deadline:
+			t.Fatal("shutdown did not release the registry claim")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// A fresh watcher sharing the registry can now claim "web".
+	dwB := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dwB.SetNameRegistry(reg)
+	dwB.syncServices(t.Context(), &stubServiceLister{services: []*corev1.Service{svc}})
+	if !backendExists(dwB, "ns1/web") {
+		t.Fatal("after A shut down, B should claim 'web'")
+	}
+}
+
 func TestDiscoveryWatcher_ScaleToZeroIsNotRemoval(t *testing.T) {
 	t.Parallel()
 	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
@@ -1695,6 +2027,54 @@ func TestDiscoveryWatcher_DuplicateNameInOtherNamespaceSkipped(t *testing.T) {
 		case <-deadline:
 			t.Fatal("timeout waiting for ns1 endpoint update")
 		}
+	}
+}
+
+// TestDiscoveryWatcher_SurvivorLazilyPromotedAfterWinnerRemoved locks in the
+// intentional handling of the ambiguous "same bare name in two namespaces"
+// config. The first match wins (first-come-first-served) and the same-name
+// Service in the other namespace is skipped. When the winner is removed, the
+// survivor is NOT promoted in that same reconcile (the add pass still sees the
+// about-to-be-removed winner), but IS adopted on the next reconcile that
+// observes the conflict cleared. The watcher never manages two same-named
+// Services at once and never re-points a backend mid-reconcile.
+func TestDiscoveryWatcher_SurvivorLazilyPromotedAfterWinnerRemoved(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "", true, sel, "", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	svc1 := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	svc2 := makeDiscoverableService("ns2", "web", map[string]string{"app": "web"})
+
+	// Both present: exactly one wins.
+	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{svc1, svc2}})
+	has1, has2 := backendExists(dw, "ns1/web"), backendExists(dw, "ns2/web")
+	if has1 == has2 {
+		t.Fatalf("expected exactly one winner, got ns1/web=%v ns2/web=%v", has1, has2)
+	}
+
+	winnerKey, survivorKey, survivor := "ns1/web", "ns2/web", svc2
+	if has2 {
+		winnerKey, survivorKey, survivor = "ns2/web", "ns1/web", svc1
+	}
+
+	// Reconcile that removes the winner: the winner is cleanly removed and the
+	// survivor is NOT promoted in the same pass.
+	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{survivor}})
+	if backendExists(dw, winnerKey) {
+		t.Errorf("removed winner %q should no longer be managed", winnerKey)
+	}
+	if backendExists(dw, survivorKey) {
+		t.Errorf("survivor %q must not be promoted in the winner's removal reconcile", survivorKey)
+	}
+
+	// Next reconcile (conflict cleared): the survivor is adopted.
+	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{survivor}})
+	if !backendExists(dw, survivorKey) {
+		t.Errorf("survivor %q should be adopted on the next reconcile after the winner is gone", survivorKey)
 	}
 }
 
