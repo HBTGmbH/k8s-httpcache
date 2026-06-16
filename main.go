@@ -957,6 +957,7 @@ func run() int {
 						labels:      update.Labels,
 						annotations: update.Annotations,
 						removed:     update.Endpoints == nil,
+						gen:         update.Gen,
 					}
 				}
 			}()
@@ -1233,6 +1234,13 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 	// pendingCertNames tracks names awaiting a (re)load.
 	latestTLS := make(map[string]watcher.TLSCertData)
 	pendingCertNames := make(map[string]struct{})
+
+	// removedGen tombstones the generation of the most recently removed
+	// discovery incarnation per backend name. A late endpoint update emitted by
+	// a cancelled forwarding goroutine carries that incarnation's gen, so an ADD
+	// whose gen is <= the tombstone is dropped instead of resurrecting a removed
+	// backend. Explicit --backend watchers carry gen 0 and are never tombstoned.
+	removedGen := make(map[string]uint64)
 
 	// nextRecoveryDelay returns the delay for the next recovery retry:
 	// reloadRecoveryInitial the first time, then double (capped at max).
@@ -1521,8 +1529,19 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&frontend, lc.frontendDebounce, lc.frontendDebounceMax)
 
 		case bc := <-backendChan(lc.backendCh):
+			// Drop a stale ADD emitted by a cancelled forwarding goroutine for a
+			// discovery incarnation that was already removed (its gen is <= the
+			// gen recorded at removal). Without this, a late ADD could resurrect
+			// a removed backend in the rendered VCL. gen 0 is an explicit
+			// --backend watcher and is never dropped.
+			if !bc.removed && bc.gen != 0 && bc.gen <= removedGen[bc.name] {
+				continue
+			}
 			epsChanged := !watcher.EndpointsEqual(lc.latestBackends[bc.name].Endpoints, bc.endpoints)
 			if bc.removed {
+				if bc.gen > removedGen[bc.name] {
+					removedGen[bc.name] = bc.gen
+				}
 				delete(lc.latestBackends, bc.name)
 				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
 			} else {
@@ -1805,7 +1824,8 @@ type backendChange struct {
 	endpoints   []watcher.Endpoint
 	labels      map[string]string
 	annotations map[string]string
-	removed     bool // true when a discovered service disappears
+	removed     bool   // true when a discovered service disappears
+	gen         uint64 // discovery incarnation generation (0 for explicit --backend watchers)
 }
 
 type valuesChange struct {

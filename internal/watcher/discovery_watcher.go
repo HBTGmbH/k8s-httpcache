@@ -23,6 +23,12 @@ type BackendUpdate struct {
 	Endpoints   []Endpoint        // nil = removed
 	Labels      map[string]string // Service labels at the time of the update
 	Annotations map[string]string // Service annotations at the time of the update
+	// Gen is the generation of the managedBackend incarnation that produced
+	// this update. It increases monotonically each time a Service name is
+	// (re)discovered, letting the consumer drop a late update emitted by a
+	// cancelled forwarding goroutine after the incarnation's removal (which
+	// would otherwise resurrect a removed backend).
+	Gen uint64
 }
 
 // managedBackend tracks a child BackendWatcher spawned for a discovered Service.
@@ -36,6 +42,7 @@ type managedBackend struct {
 	fwdCancel context.CancelFunc // stops the forwarding goroutine (nil before forwarding starts)
 	namespace string
 	name      string
+	gen       uint64 // generation tag, assigned at creation from genCounter
 }
 
 // BackendDiscoveryWatcher watches Services matching a label selector and
@@ -54,6 +61,7 @@ type BackendDiscoveryWatcher struct {
 	mu          sync.Mutex
 	backends    map[string]*managedBackend // keyed by "namespace/serviceName"
 	initialized bool                       // true after initial sync; enables forwarding in syncServices
+	genCounter  uint64                     // monotonic; assigns each managedBackend its gen
 
 	updateCh           chan BackendUpdate
 	initialState       map[string][]Endpoint
@@ -253,6 +261,7 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 	fwdCtx, fwdCancel := context.WithCancel(ctx)
 	mb.fwdCancel = fwdCancel
 	svcName := mb.name
+	gen := mb.gen
 	bw := mb.watcher
 	go func() {
 		for {
@@ -271,7 +280,7 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 					eps = []Endpoint{}
 				}
 				select {
-				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: bw.Labels(), Annotations: bw.Annotations()}:
+				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: bw.Labels(), Annotations: bw.Annotations(), Gen: gen}:
 				case <-fwdCtx.Done():
 					return
 				}
@@ -346,6 +355,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 			cancel:    childCancel,
 			namespace: svc.Namespace,
 			name:      svc.Name,
+			gen:       dw.nextGenLocked(),
 		}
 
 		go func() {
@@ -367,8 +377,15 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 			"namespace", svc.Namespace, "service", svc.Name)
 	}
 
-	// Remove backends that no longer match.
-	var removedNames []string
+	// Remove backends that no longer match. Record each removed incarnation's
+	// gen alongside its name: the removal is stamped with that gen so the
+	// consumer can tombstone exactly this incarnation and drop any late update
+	// a cancelled forwarding goroutine may still emit for it.
+	type removal struct {
+		name string
+		gen  uint64
+	}
+	var removed []removal
 	for key, mb := range dw.backends {
 		if _, exists := current[key]; exists {
 			continue
@@ -380,7 +397,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		delete(dw.backends, key)
 		dw.log.Info("removed discovered backend Service",
 			"namespace", mb.namespace, "service", mb.name)
-		removedNames = append(removedNames, mb.name)
+		removed = append(removed, removal{name: mb.name, gen: mb.gen})
 	}
 	dw.mu.Unlock()
 
@@ -388,9 +405,9 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 	// produces no further events that could correct a dropped notification,
 	// so block until the consumer drains the channel instead of dropping on
 	// overflow.
-	for _, name := range removedNames {
+	for _, r := range removed {
 		select {
-		case dw.updateCh <- BackendUpdate{Name: name, Endpoints: nil}:
+		case dw.updateCh <- BackendUpdate{Name: r.name, Endpoints: nil, Gen: r.gen}:
 		case <-ctx.Done():
 			return
 		}
@@ -410,4 +427,16 @@ func (dw *BackendDiscoveryWatcher) nameClaimedLocked(name, namespace string) boo
 	}
 
 	return false
+}
+
+// nextGenLocked returns the next monotonically increasing generation tag.
+// Each (re)discovery of a Service gets a strictly higher gen than the previous
+// incarnation, so the consumer can distinguish a genuine re-add from a stale
+// update emitted by a cancelled forwarding goroutine. Must be called with
+// dw.mu held. Generations start at 1, leaving 0 as a "never removed" sentinel
+// on the consumer side.
+func (dw *BackendDiscoveryWatcher) nextGenLocked() uint64 {
+	dw.genCounter++
+
+	return dw.genCounter
 }

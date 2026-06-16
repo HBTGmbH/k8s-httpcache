@@ -5685,6 +5685,113 @@ func TestRunLoop_BackendRemovedDeletesFromLatest(t *testing.T) {
 	}
 }
 
+// TestRunLoop_LateForwardDoesNotResurrectRemovedBackend reproduces the
+// discovery removal/forwarding race: a cancelled forwarding goroutine can emit
+// one final endpoint update (tagged with the removed incarnation's generation)
+// that lands after the authoritative removal. The event loop must drop it so
+// the removed backend is not resurrected in the rendered VCL. Without the
+// generation guard, the stale ADD re-creates "discovered-svc" with empty
+// endpoints and this test fails.
+func TestRunLoop_LateForwardDoesNotResurrectRemovedBackend(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	wait := h.runAndWait(h.bcast)
+
+	// Discovery incarnation 1 of "discovered-svc" appears.
+	h.backendCh <- backendChange{
+		name:      "discovered-svc",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+
+	// The Service is removed: the authoritative removal carries the same gen.
+	h.backendCh <- backendChange{name: "discovered-svc", removed: true, gen: 1}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after removal")
+
+	// A late update from incarnation 1's cancelled forwarder arrives after the
+	// removal. Endpoints are a non-nil empty slice (scale-to-zero normalisation),
+	// so the fan-in treats it as an ADD, not a removal. It must be dropped: its
+	// gen (1) is <= the removed incarnation's gen.
+	h.backendCh <- backendChange{
+		name:      "discovered-svc",
+		endpoints: []watcher.Endpoint{},
+		gen:       1,
+	}
+	// Trigger a fresh reload via an unrelated backend so we can observe the
+	// rendered state after the stale update was processed. Both sends are on the
+	// same channel, so the stale update is handled first (FIFO, single-threaded
+	// loop).
+	h.backendCh <- backendChange{
+		name:      "other",
+		endpoints: []watcher.Endpoint{{Host: "10.0.2.1", Port: 8080, Name: "other-0"}},
+		gen:       2,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "reload after trigger")
+
+	h.rend.mu.Lock()
+	lastBackends := h.rend.lastBackends
+	h.rend.mu.Unlock()
+
+	if _, exists := lastBackends["discovered-svc"]; exists {
+		t.Error("removed backend 'discovered-svc' was resurrected by a stale late update")
+	}
+	if _, exists := lastBackends["other"]; !exists {
+		t.Error("expected unrelated backend 'other' to be present")
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+// TestRunLoop_ReaddedBackendWithHigherGenIsHonored verifies the generation
+// tombstone does not block a genuine re-add: a new discovery incarnation gets a
+// strictly higher gen, so its updates are applied even though the same name was
+// previously removed.
+func TestRunLoop_ReaddedBackendWithHigherGenIsHonored(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	wait := h.runAndWait(h.bcast)
+
+	h.backendCh <- backendChange{
+		name:      "discovered-svc",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+
+	h.backendCh <- backendChange{name: "discovered-svc", removed: true, gen: 1}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after removal")
+
+	// Re-add as a new incarnation with a strictly higher gen.
+	h.backendCh <- backendChange{
+		name:      "discovered-svc",
+		endpoints: []watcher.Endpoint{{Host: "10.0.9.9", Port: 8080, Name: "pod-1"}},
+		gen:       2,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "reload after re-add")
+
+	h.rend.mu.Lock()
+	bg, ok := h.rend.lastBackends["discovered-svc"]
+	h.rend.mu.Unlock()
+
+	if !ok {
+		t.Fatal("re-added backend 'discovered-svc' (higher gen) should be present")
+	}
+	if len(bg.Endpoints) != 1 || bg.Endpoints[0].Host != "10.0.9.9" {
+		t.Errorf("expected re-added endpoint 10.0.9.9, got %+v", bg.Endpoints)
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
 func TestRunLoop_BackendLabelsPassedToRenderer(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
