@@ -3,7 +3,7 @@
 [![Test and Build](https://github.com/HBTGmbH/k8s-httpcache/actions/workflows/test-and-build.yml/badge.svg)](https://github.com/HBTGmbH/k8s-httpcache/actions/workflows/test-and-build.yml)
 [![CodeQL](https://github.com/HBTGmbH/k8s-httpcache/actions/workflows/codeql.yml/badge.svg)](https://github.com/HBTGmbH/k8s-httpcache/actions/workflows/codeql.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/HBTGmbH/k8s-httpcache)](https://goreportcard.com/report/github.com/HBTGmbH/k8s-httpcache)
-[![License](https://img.shields.io/github/license/HBTGmbH/k8s-httpcache)](https://github.com/HBTGmbH/k8s-httpcache/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/HBTGmbH/k8s-httpcache/blob/main/LICENSE)
 
 A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) with many more additional features (see list below). Already running kube-httpcache? See [Migrating from kube-httpcache](#migrating-from-kube-httpcache).
 
