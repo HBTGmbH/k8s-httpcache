@@ -836,6 +836,37 @@ func TestNewPanicsOnNilMetrics(t *testing.T) {
 	})
 }
 
+func TestNewPropagatesServerTimeouts(t *testing.T) {
+	t.Parallel()
+	s := New(Options{
+		Addr:              ":0",
+		ServerIdleTimeout: 120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		ClientTimeout:     3 * time.Second,
+		ClientIdleTimeout: 4 * time.Second,
+		ShutdownTimeout:   5 * time.Second,
+		Metrics:           telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+	})
+
+	checks := []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{"ReadHeaderTimeout", s.srv.ReadHeaderTimeout, 10 * time.Second},
+		{"ReadTimeout", s.srv.ReadTimeout, 15 * time.Second},
+		{"WriteTimeout", s.srv.WriteTimeout, 30 * time.Second},
+		{"IdleTimeout", s.srv.IdleTimeout, 120 * time.Second},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("srv.%s = %v, want %v", c.name, c.got, c.want)
+		}
+	}
+}
+
 func TestForwardPreservesHostHeader(t *testing.T) {
 	t.Parallel()
 

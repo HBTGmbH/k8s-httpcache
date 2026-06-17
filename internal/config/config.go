@@ -336,6 +336,8 @@ type Config struct {
 	BroadcastShutdownTimeout   time.Duration
 	BroadcastServerIdleTimeout time.Duration
 	BroadcastReadHeaderTimeout time.Duration
+	BroadcastReadTimeout       time.Duration
+	BroadcastWriteTimeout      time.Duration
 	BroadcastClientIdleTimeout time.Duration
 	BroadcastClientTimeout     time.Duration
 	Debounce                   time.Duration
@@ -346,6 +348,7 @@ type Config struct {
 	BackendDebounceMax         time.Duration
 	ShutdownTimeout            time.Duration
 	StartupTimeout             time.Duration
+	KubeAPITimeout             time.Duration
 	Backends                   []BackendSpec
 	BackendSelectors           []BackendSelectorSpec
 	Values                     []ValuesSpec
@@ -357,6 +360,9 @@ type Config struct {
 	ValuesDirPollInterval      time.Duration
 	MetricsAddr                string
 	MetricsReadHeaderTimeout   time.Duration
+	MetricsReadTimeout         time.Duration
+	MetricsWriteTimeout        time.Duration
+	MetricsIdleTimeout         time.Duration
 	ExtraVarnishd              []string // Additional args passed to varnishd (after --)
 	LogLevel                   slog.Level
 	LogFormat                  string // "text" or "json"
@@ -717,6 +723,20 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Value:       3 * time.Second,
 				Destination: &c.BroadcastClientTimeout,
 			},
+			&cli.DurationFlag{
+				Name:        "broadcast-read-timeout",
+				Category:    catBroadcast,
+				Usage:       "Max time to read the entire request (headers + body) on the broadcast server; bounds slow-body clients (`0` disables; only effective when broadcast is enabled)",
+				Value:       15 * time.Second,
+				Destination: &c.BroadcastReadTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "broadcast-write-timeout",
+				Category:    catBroadcast,
+				Usage:       "Max time from end of request headers to end of response write on the broadcast server; bounds slow-read clients. Must exceed --broadcast-read-timeout + --broadcast-client-timeout (`0` disables; only effective when broadcast is enabled)",
+				Value:       30 * time.Second,
+				Destination: &c.BroadcastWriteTimeout,
+			},
 
 			// Metrics
 			&cli.StringFlag{
@@ -732,6 +752,27 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Usage:       "Max time to read request headers on the metrics server",
 				Value:       10 * time.Second,
 				Destination: &c.MetricsReadHeaderTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "metrics-read-timeout",
+				Category:    catMetrics,
+				Usage:       "Max time to read the entire request on the metrics server (`0` disables)",
+				Value:       15 * time.Second,
+				Destination: &c.MetricsReadTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "metrics-write-timeout",
+				Category:    catMetrics,
+				Usage:       "Max time to write the response on the metrics server; bounds slow-read clients (`0` disables)",
+				Value:       15 * time.Second,
+				Destination: &c.MetricsWriteTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "metrics-idle-timeout",
+				Category:    catMetrics,
+				Usage:       "Max time a keep-alive connection to the metrics server can stay idle (`0` disables)",
+				Value:       120 * time.Second,
+				Destination: &c.MetricsIdleTimeout,
 			},
 			&cli.BoolFlag{
 				Name:        "varnishstat-export",
@@ -918,6 +959,13 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Usage:       "Max time to wait for the initial endpoint snapshot from all watchers before giving up (0 disables the limit). Guards against hanging startup when the Kubernetes API is unreachable",
 				Value:       3 * time.Minute,
 				Destination: &c.StartupTimeout,
+			},
+			&cli.DurationFlag{
+				Name:        "kube-api-timeout",
+				Category:    catTiming,
+				Usage:       "Timeout for one-shot Kubernetes API calls made at startup (node zone lookup, pod UID lookup); does not affect informer watches (`0` disables the limit)",
+				Value:       30 * time.Second,
+				Destination: &c.KubeAPITimeout,
 			},
 			&cli.DurationFlag{
 				Name:        "vcl-template-watch-interval",
@@ -1171,6 +1219,36 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 			if c.StartupTimeout < 0 {
 				actionErr = validationError(cmd, "--startup-timeout must be >= 0, got %v", c.StartupTimeout)
+
+				return nil
+			}
+			if c.KubeAPITimeout < 0 {
+				actionErr = validationError(cmd, "--kube-api-timeout must be >= 0, got %v", c.KubeAPITimeout)
+
+				return nil
+			}
+			if c.BroadcastReadTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-read-timeout must be >= 0, got %v", c.BroadcastReadTimeout)
+
+				return nil
+			}
+			if c.BroadcastWriteTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-write-timeout must be >= 0, got %v", c.BroadcastWriteTimeout)
+
+				return nil
+			}
+			if c.MetricsReadTimeout < 0 {
+				actionErr = validationError(cmd, "--metrics-read-timeout must be >= 0, got %v", c.MetricsReadTimeout)
+
+				return nil
+			}
+			if c.MetricsWriteTimeout < 0 {
+				actionErr = validationError(cmd, "--metrics-write-timeout must be >= 0, got %v", c.MetricsWriteTimeout)
+
+				return nil
+			}
+			if c.MetricsIdleTimeout < 0 {
+				actionErr = validationError(cmd, "--metrics-idle-timeout must be >= 0, got %v", c.MetricsIdleTimeout)
 
 				return nil
 			}

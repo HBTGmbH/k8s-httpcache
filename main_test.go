@@ -5391,9 +5391,31 @@ func TestAppendUnique(t *testing.T) {
 	}
 }
 
+func TestKubeContext(t *testing.T) {
+	t.Parallel()
+
+	// Positive timeout → context carries a deadline within the budget.
+	ctx, cancel := kubeContext(50 * time.Millisecond)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected a deadline for a positive timeout")
+	}
+	if until := time.Until(deadline); until <= 0 || until > time.Second {
+		t.Fatalf("deadline is %v from now, want within (0, 1s]", until)
+	}
+	cancel()
+
+	// Zero timeout → no deadline (limit disabled), and cancel is a safe no-op.
+	ctx, cancel = kubeContext(0)
+	defer cancel()
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("expected no deadline when timeout is 0")
+	}
+}
+
 func TestDetectLocalZone_NodeNameNotSet(t *testing.T) {
 	t.Parallel()
-	zone := detectLocalZone(slog.New(slog.DiscardHandler), fake.NewClientset(), "")
+	zone := detectLocalZone(t.Context(), slog.New(slog.DiscardHandler), fake.NewClientset(), "")
 	if zone != "" {
 		t.Errorf("expected empty zone when NODE_NAME is unset, got %q", zone)
 	}
@@ -5408,7 +5430,7 @@ func TestDetectLocalZone_NodeWithZoneLabel(t *testing.T) {
 		},
 	}
 	cs := fake.NewClientset(node)
-	zone := detectLocalZone(slog.New(slog.DiscardHandler), cs, "node-1")
+	zone := detectLocalZone(t.Context(), slog.New(slog.DiscardHandler), cs, "node-1")
 	if zone != "europe-west3-a" {
 		t.Errorf("expected zone europe-west3-a, got %q", zone)
 	}
@@ -5422,7 +5444,7 @@ func TestDetectLocalZone_NodeWithoutZoneLabel(t *testing.T) {
 		},
 	}
 	cs := fake.NewClientset(node)
-	zone := detectLocalZone(slog.New(slog.DiscardHandler), cs, "node-2")
+	zone := detectLocalZone(t.Context(), slog.New(slog.DiscardHandler), cs, "node-2")
 	if zone != "" {
 		t.Errorf("expected empty zone when label is absent, got %q", zone)
 	}
@@ -5431,7 +5453,7 @@ func TestDetectLocalZone_NodeWithoutZoneLabel(t *testing.T) {
 func TestDetectLocalZone_NodeNotFound(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset() // no nodes
-	zone := detectLocalZone(slog.New(slog.DiscardHandler), cs, "nonexistent-node")
+	zone := detectLocalZone(t.Context(), slog.New(slog.DiscardHandler), cs, "nonexistent-node")
 	if zone != "" {
 		t.Errorf("expected empty zone when node is not found, got %q", zone)
 	}
@@ -5450,7 +5472,7 @@ func TestDetectLocalZone_ForbiddenRBAC(t *testing.T) {
 			errors.New("RBAC: access denied"),
 		)
 	})
-	zone := detectLocalZone(log, cs, "node-1")
+	zone := detectLocalZone(t.Context(), log, cs, "node-1")
 	if zone != "" {
 		t.Errorf("expected empty zone when RBAC forbids node access, got %q", zone)
 	}

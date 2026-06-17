@@ -34,6 +34,8 @@ type Options struct {
 	TargetPort        int32              // Varnish listen port to target for fan-out (overrides frontend port)
 	ServerIdleTimeout time.Duration      // max idle time for client keep-alive connections
 	ReadHeaderTimeout time.Duration      // max time to read request headers
+	ReadTimeout       time.Duration      // max time to read the whole request (headers + body); bounds slow-body clients
+	WriteTimeout      time.Duration      // max time to write the response; bounds slow-read clients
 	ClientTimeout     time.Duration      // per-pod fan-out request timeout
 	ClientIdleTimeout time.Duration      // max idle time for connections to Varnish pods
 	ShutdownTimeout   time.Duration      // grace period for in-flight requests after drain
@@ -60,7 +62,7 @@ type Server struct {
 
 // New creates a broadcast server with the given options.
 // Panics if opts.Metrics is nil.
-func New(opts Options) *Server {
+func New(opts Options) *Server { //nolint:gocritic // hugeParam: Options is copied once at startup; the copy cost is irrelevant and a value receiver keeps the call site clean
 	if opts.Metrics == nil {
 		panic("broadcast: Options.Metrics must not be nil")
 	}
@@ -85,6 +87,8 @@ func New(opts Options) *Server {
 		ConnState:         s.connState,
 		IdleTimeout:       opts.ServerIdleTimeout,
 		ReadHeaderTimeout: opts.ReadHeaderTimeout,
+		ReadTimeout:       opts.ReadTimeout,
+		WriteTimeout:      opts.WriteTimeout,
 	}
 
 	return s

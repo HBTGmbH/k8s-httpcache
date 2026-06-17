@@ -1611,10 +1611,13 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		"--backend-debounce-max=8s",
 		"--shutdown-timeout=60s",
 		"--startup-timeout=120s",
+		"--kube-api-timeout=25s",
 		"--broadcast-drain-timeout=45s",
 		"--broadcast-shutdown-timeout=10s",
 		"--broadcast-server-idle-timeout=180s",
 		"--broadcast-read-header-timeout=15s",
+		"--broadcast-read-timeout=22s",
+		"--broadcast-write-timeout=44s",
 		"--broadcast-client-idle-timeout=8s",
 		"--broadcast-client-timeout=6s",
 		"--drain-poll-interval=2s",
@@ -1622,6 +1625,9 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		"--drain-timeout=90s",
 		"--values-dir-poll-interval=10s",
 		"--metrics-read-header-timeout=20s",
+		"--metrics-read-timeout=25s",
+		"--metrics-write-timeout=26s",
+		"--metrics-idle-timeout=140s",
 		"--vcl-template-watch-interval=10s",
 		"--vcl-reload-retry-interval=5s",
 	})
@@ -1642,10 +1648,13 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		{"BackendDebounceMax", cfg.BackendDebounceMax, 8 * time.Second},
 		{"ShutdownTimeout", cfg.ShutdownTimeout, 60 * time.Second},
 		{"StartupTimeout", cfg.StartupTimeout, 120 * time.Second},
+		{"KubeAPITimeout", cfg.KubeAPITimeout, 25 * time.Second},
 		{"BroadcastDrainTimeout", cfg.BroadcastDrainTimeout, 45 * time.Second},
 		{"BroadcastShutdownTimeout", cfg.BroadcastShutdownTimeout, 10 * time.Second},
 		{"BroadcastServerIdleTimeout", cfg.BroadcastServerIdleTimeout, 180 * time.Second},
 		{"BroadcastReadHeaderTimeout", cfg.BroadcastReadHeaderTimeout, 15 * time.Second},
+		{"BroadcastReadTimeout", cfg.BroadcastReadTimeout, 22 * time.Second},
+		{"BroadcastWriteTimeout", cfg.BroadcastWriteTimeout, 44 * time.Second},
 		{"BroadcastClientIdleTimeout", cfg.BroadcastClientIdleTimeout, 8 * time.Second},
 		{"BroadcastClientTimeout", cfg.BroadcastClientTimeout, 6 * time.Second},
 		{"DrainPollInterval", cfg.DrainPollInterval, 2 * time.Second},
@@ -1653,6 +1662,9 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		{"DrainTimeout", cfg.DrainTimeout, 90 * time.Second},
 		{"ValuesDirPollInterval", cfg.ValuesDirPollInterval, 10 * time.Second},
 		{"MetricsReadHeaderTimeout", cfg.MetricsReadHeaderTimeout, 20 * time.Second},
+		{"MetricsReadTimeout", cfg.MetricsReadTimeout, 25 * time.Second},
+		{"MetricsWriteTimeout", cfg.MetricsWriteTimeout, 26 * time.Second},
+		{"MetricsIdleTimeout", cfg.MetricsIdleTimeout, 140 * time.Second},
 		{"VCLTemplateWatchInterval", cfg.VCLTemplateWatchInterval, 10 * time.Second},
 		{"VCLReloadRetryInterval", cfg.VCLReloadRetryInterval, 5 * time.Second},
 	}
@@ -1934,14 +1946,20 @@ func TestParseDefaultDurations(t *testing.T) {
 		{"Debounce", cfg.Debounce, 2 * time.Second},
 		{"ShutdownTimeout", cfg.ShutdownTimeout, 30 * time.Second},
 		{"StartupTimeout", cfg.StartupTimeout, 3 * time.Minute},
+		{"KubeAPITimeout", cfg.KubeAPITimeout, 30 * time.Second},
 		{"BroadcastDrainTimeout", cfg.BroadcastDrainTimeout, 30 * time.Second},
 		{"BroadcastShutdownTimeout", cfg.BroadcastShutdownTimeout, 5 * time.Second},
 		{"BroadcastServerIdleTimeout", cfg.BroadcastServerIdleTimeout, 120 * time.Second},
 		{"BroadcastReadHeaderTimeout", cfg.BroadcastReadHeaderTimeout, 10 * time.Second},
+		{"BroadcastReadTimeout", cfg.BroadcastReadTimeout, 15 * time.Second},
+		{"BroadcastWriteTimeout", cfg.BroadcastWriteTimeout, 30 * time.Second},
 		{"BroadcastClientIdleTimeout", cfg.BroadcastClientIdleTimeout, 4 * time.Second},
 		{"BroadcastClientTimeout", cfg.BroadcastClientTimeout, 3 * time.Second},
 		{"DrainPollInterval", cfg.DrainPollInterval, 1 * time.Second},
 		{"MetricsReadHeaderTimeout", cfg.MetricsReadHeaderTimeout, 10 * time.Second},
+		{"MetricsReadTimeout", cfg.MetricsReadTimeout, 15 * time.Second},
+		{"MetricsWriteTimeout", cfg.MetricsWriteTimeout, 15 * time.Second},
+		{"MetricsIdleTimeout", cfg.MetricsIdleTimeout, 120 * time.Second},
 		{"VCLTemplateWatchInterval", cfg.VCLTemplateWatchInterval, 5 * time.Second},
 		{"VCLReloadRetryInterval", cfg.VCLReloadRetryInterval, 2 * time.Second},
 	}
@@ -4259,6 +4277,38 @@ func TestParseStartupTimeoutNeg(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--startup-timeout must be >= 0") {
 		t.Errorf("error = %q, want substring '--startup-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseTimeoutFlagsNeg(t *testing.T) {
+	t.Parallel()
+	flags := []string{
+		"--kube-api-timeout",
+		"--broadcast-read-timeout",
+		"--broadcast-write-timeout",
+		"--metrics-read-timeout",
+		"--metrics-write-timeout",
+		"--metrics-idle-timeout",
+	}
+	for _, flag := range flags {
+		t.Run(flag, func(t *testing.T) {
+			t.Parallel()
+			vcl := makeTempVCL(t)
+			_, err := Parse("", []string{
+				"test",
+				"--service-name=my-svc",
+				"--namespace=default",
+				"--vcl-template=" + vcl,
+				flag + "=-1s",
+			})
+			if err == nil {
+				t.Fatalf("expected error for negative %s", flag)
+			}
+			want := flag + " must be >= 0"
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want substring %q", err, want)
+			}
+		})
 	}
 }
 

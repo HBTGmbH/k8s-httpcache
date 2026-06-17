@@ -551,7 +551,14 @@ func run() int {
 		mux.HandleFunc("/healthz", healthzHandler(status))
 		readyzAddr := net.JoinHostPort("localhost", strconv.FormatInt(int64(cfg.ListenAddrs[0].Port), 10))
 		mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
-		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout}
+		metricsSrv := &http.Server{
+			Addr:              cfg.MetricsAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout,
+			ReadTimeout:       cfg.MetricsReadTimeout,
+			WriteTimeout:      cfg.MetricsWriteTimeout,
+			IdleTimeout:       cfg.MetricsIdleTimeout,
+		}
 		go func() {
 			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
 
@@ -589,7 +596,9 @@ func run() int {
 			Name:       podName,
 			Namespace:  cfg.ServiceNamespace,
 		}
-		pod, getErr := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(context.Background(), podName, metav1.GetOptions{})
+		podCtx, podCancel := kubeContext(cfg.KubeAPITimeout)
+		pod, getErr := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(podCtx, podName, metav1.GetOptions{})
+		podCancel()
 		if getErr != nil {
 			slog.Warn("could not look up pod UID for event recording; events may not appear in kubectl describe pod", "error", getErr)
 		} else {
@@ -606,7 +615,9 @@ func run() int {
 		localZone = cfg.Zone
 		slog.Info("using explicit topology zone from --zone", "zone", localZone)
 	} else {
-		localZone = detectLocalZone(slog.Default(), clientset, os.Getenv("NODE_NAME"))
+		zoneCtx, zoneCancel := kubeContext(cfg.KubeAPITimeout)
+		localZone = detectLocalZone(zoneCtx, slog.Default(), clientset, os.Getenv("NODE_NAME"))
+		zoneCancel()
 	}
 
 	// Create cache manager and detect version before rendering VCL,
@@ -888,6 +899,8 @@ func run() int {
 			TargetPort:        cfg.BroadcastTargetPort,
 			ServerIdleTimeout: cfg.BroadcastServerIdleTimeout,
 			ReadHeaderTimeout: cfg.BroadcastReadHeaderTimeout,
+			ReadTimeout:       cfg.BroadcastReadTimeout,
+			WriteTimeout:      cfg.BroadcastWriteTimeout,
 			ClientTimeout:     cfg.BroadcastClientTimeout,
 			ClientIdleTimeout: cfg.BroadcastClientIdleTimeout,
 			ShutdownTimeout:   cfg.BroadcastShutdownTimeout,
@@ -1827,17 +1840,30 @@ func (s *warnOnceEventSink) checkErr(err error) {
 	}
 }
 
+// kubeContext returns a context bounded by timeout (with its cancel func) for a
+// one-shot Kubernetes API call, or a non-expiring background context when
+// timeout <= 0 (the limit is disabled). Passing a zero duration to
+// [context.WithTimeout] would yield an already-expired context, so the zero case
+// is handled explicitly.
+func kubeContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.Background(), func() {}
+	}
+
+	return context.WithTimeout(context.Background(), timeout)
+}
+
 // detectLocalZone looks up the node's topology.kubernetes.io/zone label and
 // returns the zone string. Returns "" if nodeName is empty, the node cannot
 // be fetched, or the label is absent.
-func detectLocalZone(logger *slog.Logger, clientset kubernetes.Interface, nodeName string) string {
+func detectLocalZone(ctx context.Context, logger *slog.Logger, clientset kubernetes.Interface, nodeName string) string {
 	if nodeName == "" {
 		logger.Info("NODE_NAME not set, topology zone detection disabled (.LocalZone will be empty, .LocalEndpoints/.RemoteEndpoints will be empty in templates)")
 
 		return ""
 	}
 
-	node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		logger.Warn("could not look up node for zone detection; .LocalZone will be empty, .LocalEndpoints/.RemoteEndpoints will be empty in templates",
 			"node", nodeName, "error", err)

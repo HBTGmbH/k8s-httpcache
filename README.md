@@ -270,6 +270,8 @@ These flags control which cache binaries k8s-httpcache uses. See [Varnish Cache 
 | `--broadcast-shutdown-timeout` | `5s` | Time to wait for in-flight broadcast requests to finish after draining (only effective when broadcast is enabled) |
 | `--broadcast-server-idle-timeout` | `120s` | Max idle time for client keep-alive connections to the broadcast server (only effective when broadcast is enabled) |
 | `--broadcast-read-header-timeout` | `10s` | Max time to read request headers on the broadcast server (only effective when broadcast is enabled) |
+| `--broadcast-read-timeout` | `15s` | Max time to read the entire request (headers + body) on the broadcast server; bounds slow-body clients (`0` disables; only effective when broadcast is enabled) |
+| `--broadcast-write-timeout` | `30s` | Max time from end of request headers to end of response write on the broadcast server; bounds slow-read clients. Must exceed `--broadcast-read-timeout` + `--broadcast-client-timeout` (`0` disables; only effective when broadcast is enabled) |
 | `--broadcast-client-idle-timeout` | `4s` | Max idle time for connections to Varnish pods in the broadcast client pool (only effective when broadcast is enabled) |
 | `--broadcast-client-timeout` | `3s` | Timeout for each fan-out request to a Varnish pod (only effective when broadcast is enabled) |
 
@@ -279,6 +281,9 @@ These flags control which cache binaries k8s-httpcache uses. See [Varnish Cache 
 |------|---------|-------------|
 | `--metrics-addr` | `:9101` | Listen address for Prometheus metrics (`none` to disable) |
 | `--metrics-read-header-timeout` | `10s` | Max time to read request headers on the metrics server |
+| `--metrics-read-timeout` | `15s` | Max time to read the entire request on the metrics server (`0` disables) |
+| `--metrics-write-timeout` | `15s` | Max time to write the response on the metrics server; bounds slow-read clients (`0` disables) |
+| `--metrics-idle-timeout` | `120s` | Max idle time for keep-alive connections to the metrics server (`0` disables) |
 | `--varnishstat-export` | `false` | Enable varnishstat Prometheus exporter on `/metrics` |
 | `--varnishstat-export-filter` | *(all)* | Counter groups to export (e.g. `MAIN,SMA,VBE`); empty exports all |
 
@@ -508,6 +513,7 @@ Events require RBAC permission to `create` and `patch` the `events` resource (se
 | `--tls-cert-debounce-max` | *(uses `--debounce-max`)* | Maximum debounce duration for `--tls-cert` changes; overrides `--debounce-max` for the TLS certificate group |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
 | `--startup-timeout` | `3m0s` | Max time to wait for the initial endpoint snapshot from all watchers before giving up and exiting; guards against a hung startup when the Kubernetes API is unreachable (`0` disables the limit) |
+| `--kube-api-timeout` | `30s` | Timeout for one-shot Kubernetes API calls made at startup (node zone lookup, pod UID lookup); does not affect informer watches (`0` disables the limit) |
 | `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes (only effective when `--file-watch` is enabled) |
 | `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
 | `--vcl-reload-retries` | `3` | Max retry attempts for `vcl.load` failures (`0` disables retries) |
