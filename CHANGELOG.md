@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.1.0](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.0.0...v1.1.0) (2026-06-17)
+
+
+### Features
+
+* add --startup-timeout flag ([a579a71](https://github.com/HBTGmbH/k8s-httpcache/commit/a579a7100ee9469d199d9d655573a4a0990b539c))
+* add DEBUG logging for all event-loop decisions/actions ([63f33eb](https://github.com/HBTGmbH/k8s-httpcache/commit/63f33ebbb9aa14f318a4155746a1c1494b4e8d86))
+* add HTTP-related server/client timeouts ([f64f9be](https://github.com/HBTGmbH/k8s-httpcache/commit/f64f9bee585754a2f69d953edd9fdc6ca5ac39ec))
+* report TLS info in /status metrics endpoint ([1d702d3](https://github.com/HBTGmbH/k8s-httpcache/commit/1d702d3e3faea9c40f06fb0b87ec3899d078b301))
+
+
+### Bug Fixes
+
+* backend removal event can cause hang during startup ([76400f4](https://github.com/HBTGmbH/k8s-httpcache/commit/76400f44c08f20730bef906687c04309e0f967d9))
+* **metrics:** buffer/slice aliasing of label keys ([194bf52](https://github.com/HBTGmbH/k8s-httpcache/commit/194bf520eb20e34145c75476742c866c0de59a1d))
+* **metrics:** don't panic the scrape on label-cardinality mismatch ([1eb0aac](https://github.com/HBTGmbH/k8s-httpcache/commit/1eb0aac3cfe2dddfcecd88ba57395cd4446c8062))
+* prevent two --backend-selector watchers from managing the same backend name ([e82f197](https://github.com/HBTGmbH/k8s-httpcache/commit/e82f197103b82be2a0bed8d74d6a98a62298a6d4))
+* rediscover same Service across different backend selectors ([c1056c6](https://github.com/HBTGmbH/k8s-httpcache/commit/c1056c619512d5cf0b342b449eb94a61ec89409d))
+* stale discovery removal could delete a re-added backend ([7bcb0e2](https://github.com/HBTGmbH/k8s-httpcache/commit/7bcb0e2d8c7c996adaa9c5bce06d1d6dcf864727))
+* stale forward update can resurrect a removed discovered backend ([dce2e06](https://github.com/HBTGmbH/k8s-httpcache/commit/dce2e06813ce2813aae4b2f9d9593a2563b7c043))
+
 ## 1.0.0 (2026-06-15)
 
 
