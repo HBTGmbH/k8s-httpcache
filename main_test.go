@@ -5847,6 +5847,169 @@ func TestRunLoop_ReaddedBackendWithHigherGenIsHonored(t *testing.T) {
 	}
 }
 
+// TestRunLoop_StaleRemovalDoesNotDeleteReaddedBackend reproduces a discovery
+// handoff race. When a backend name is handed from one --backend-selector
+// watcher (incarnation gen 1) to another (incarnation gen 2), the new
+// incarnation's ADD and the old incarnation's authoritative REMOVAL travel
+// through independent fan-in goroutines into the shared backend channel, so
+// their relative order is not guaranteed. The new owner's ADD (gen 2) can be
+// processed before the old owner's REMOVAL (gen 1). The stale lower-gen removal
+// must NOT delete the backend the higher-gen incarnation now owns.
+func TestRunLoop_StaleRemovalDoesNotDeleteReaddedBackend(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	wait := h.runAndWait(h.bcast)
+
+	// Incarnation 1 of "web" appears and is rendered.
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+
+	// Handoff: a new incarnation (gen 2) re-adds "web" with fresh endpoints and
+	// is rendered.
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.9.9", Port: 8080, Name: "pod-1"}},
+		gen:       2,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after re-add")
+
+	// Only afterwards does the OLD incarnation's removal (gen 1) arrive,
+	// reordered behind the new ADD. It is stale and must be ignored. Send an
+	// unrelated backend immediately after so a reload fires even when the stale
+	// removal is correctly dropped (a dropped update triggers no reload). Both
+	// are FIFO on the single channel, so the removal is processed first.
+	h.backendCh <- backendChange{name: "web", removed: true, gen: 1}
+	h.backendCh <- backendChange{
+		name:      "other",
+		endpoints: []watcher.Endpoint{{Host: "10.0.2.1", Port: 8080, Name: "other-0"}},
+		gen:       3,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "reload after trigger")
+
+	h.rend.mu.Lock()
+	bg, ok := h.rend.lastBackends["web"]
+	h.rend.mu.Unlock()
+
+	if !ok {
+		t.Fatal("backend 'web' (owned by newer incarnation gen 2) was deleted by a stale lower-gen removal")
+	}
+	if len(bg.Endpoints) != 1 || bg.Endpoints[0].Host != "10.0.9.9" {
+		t.Errorf("expected 'web' to keep gen-2 endpoint 10.0.9.9, got %+v", bg.Endpoints)
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+// TestRunLoop_StaleAddThenRemovalDoesNotDeleteReaddedBackend covers the harder
+// reordering of the same handoff: the newer incarnation's ADD (gen 2) is
+// processed first, then BOTH a stale late ADD (gen 1) from the old
+// incarnation's cancelled forwarder AND the old incarnation's REMOVAL (gen 1)
+// arrive afterwards. Neither stale gen-1 update may disturb the gen-2 backend.
+func TestRunLoop_StaleAddThenRemovalDoesNotDeleteReaddedBackend(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	wait := h.runAndWait(h.bcast)
+
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.9.9", Port: 8080, Name: "pod-1"}},
+		gen:       2,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after re-add")
+
+	// Stale late ADD from incarnation 1 (would overwrite gen-2 endpoints), then
+	// incarnation 1's removal (would delete the gen-2 backend), then a trigger.
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	h.backendCh <- backendChange{name: "web", removed: true, gen: 1}
+	h.backendCh <- backendChange{
+		name:      "other",
+		endpoints: []watcher.Endpoint{{Host: "10.0.2.1", Port: 8080, Name: "other-0"}},
+		gen:       3,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "reload after trigger")
+
+	h.rend.mu.Lock()
+	bg, ok := h.rend.lastBackends["web"]
+	h.rend.mu.Unlock()
+
+	if !ok {
+		t.Fatal("backend 'web' (gen 2) was disturbed by stale gen-1 add/removal")
+	}
+	if len(bg.Endpoints) != 1 || bg.Endpoints[0].Host != "10.0.9.9" {
+		t.Errorf("expected 'web' to keep gen-2 endpoint 10.0.9.9, got %+v", bg.Endpoints)
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+// TestRunLoop_RemovalOfCurrentIncarnationStillDeletes guards against the
+// generation guard over-correcting: a removal whose gen equals the live
+// incarnation's gen is authoritative and MUST delete the backend. (A regression
+// that changed the stale check from `<` to `<=` would silently swallow every
+// legitimate removal.)
+func TestRunLoop_RemovalOfCurrentIncarnationStillDeletes(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	wait := h.runAndWait(h.bcast)
+
+	// Handoff: gen 1 then gen 2 take ownership of "web".
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.9.9", Port: 8080, Name: "pod-1"}},
+		gen:       2,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after re-add")
+
+	// The current owner (gen 2) is legitimately removed. This is not stale and
+	// must delete "web".
+	h.backendCh <- backendChange{name: "web", removed: true, gen: 2}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "reload after removal")
+
+	h.rend.mu.Lock()
+	_, exists := h.rend.lastBackends["web"]
+	h.rend.mu.Unlock()
+
+	if exists {
+		t.Error("backend 'web' should be deleted by the authoritative removal of its current incarnation (gen 2)")
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
 func TestSweepExpiredTombstones(t *testing.T) {
 	t.Parallel()
 	now := time.Now()

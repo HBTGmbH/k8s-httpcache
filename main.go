@@ -1301,6 +1301,19 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 	// a removal is sub-second, far shorter than the TTL.
 	removedGen := make(map[string]backendTombstone)
 
+	// liveGen records the generation of the discovery incarnation that currently
+	// owns each live backend name. When a name is handed between two
+	// --backend-selector watchers, the new owner's ADD and the old owner's
+	// REMOVAL reach this loop through independent fan-in goroutines and can be
+	// reordered: the gen-2 ADD may be processed before the gen-1 REMOVAL. Without
+	// liveGen the stale lower-gen removal would delete the backend the newer
+	// incarnation owns (and a stale lower-gen ADD would overwrite its endpoints).
+	// Any update whose gen is below liveGen is from a superseded incarnation and
+	// dropped. Entries track only live backends (deleted on removal), so the map
+	// stays bounded the same way latestBackends does. Explicit --backend watchers
+	// carry gen 0 and never populate liveGen.
+	liveGen := make(map[string]uint64)
+
 	// tombstoneSweep periodically triggers eviction of expired removedGen
 	// entries. The channel stays nil (and is never selected) when the TTL is 0,
 	// preserving the keep-forever behaviour.
@@ -1598,11 +1611,22 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&frontend, lc.frontendDebounce, lc.frontendDebounceMax)
 
 		case bc := <-backendChan(lc.backendCh):
+			// Drop any update — ADD or REMOVAL — from a discovery incarnation
+			// older than the one that currently owns this backend name. After a
+			// name is handed between two --backend-selector watchers the new
+			// owner's gen-2 ADD can be processed before the old owner's gen-1
+			// REMOVAL (they arrive via independent fan-in goroutines), so a stale
+			// removal must not delete, nor a stale add overwrite, the live
+			// gen-2 backend. gen 0 is an explicit --backend watcher and is never
+			// stale.
+			if bc.gen != 0 && bc.gen < liveGen[bc.name] {
+				continue
+			}
 			// Drop a stale ADD emitted by a cancelled forwarding goroutine for a
 			// discovery incarnation that was already removed (its gen is <= the
-			// gen recorded at removal). Without this, a late ADD could resurrect
-			// a removed backend in the rendered VCL. gen 0 is an explicit
-			// --backend watcher and is never dropped.
+			// gen recorded at removal). Once the backend was deleted its liveGen
+			// entry is gone, so this tombstone — not the check above — catches the
+			// late ADD that would otherwise resurrect it.
 			if !bc.removed && bc.gen != 0 && bc.gen <= removedGen[bc.name].gen {
 				continue
 			}
@@ -1615,12 +1639,16 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				ts.at = time.Now()
 				removedGen[bc.name] = ts
 				delete(lc.latestBackends, bc.name)
+				delete(liveGen, bc.name)
 				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
 			} else {
 				lc.latestBackends[bc.name] = renderer.BackendGroup{
 					Endpoints:   bc.endpoints,
 					Labels:      bc.labels,
 					Annotations: bc.annotations,
+				}
+				if bc.gen != 0 {
+					liveGen[bc.name] = bc.gen
 				}
 				lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
 			}
