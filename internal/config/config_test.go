@@ -1610,6 +1610,7 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		"--backend-debounce=1s",
 		"--backend-debounce-max=8s",
 		"--shutdown-timeout=60s",
+		"--startup-timeout=120s",
 		"--broadcast-drain-timeout=45s",
 		"--broadcast-shutdown-timeout=10s",
 		"--broadcast-server-idle-timeout=180s",
@@ -1640,6 +1641,7 @@ func TestParseOverrideDurationFlags(t *testing.T) {
 		{"BackendDebounce", cfg.BackendDebounce, 1 * time.Second},
 		{"BackendDebounceMax", cfg.BackendDebounceMax, 8 * time.Second},
 		{"ShutdownTimeout", cfg.ShutdownTimeout, 60 * time.Second},
+		{"StartupTimeout", cfg.StartupTimeout, 120 * time.Second},
 		{"BroadcastDrainTimeout", cfg.BroadcastDrainTimeout, 45 * time.Second},
 		{"BroadcastShutdownTimeout", cfg.BroadcastShutdownTimeout, 10 * time.Second},
 		{"BroadcastServerIdleTimeout", cfg.BroadcastServerIdleTimeout, 180 * time.Second},
@@ -1931,6 +1933,7 @@ func TestParseDefaultDurations(t *testing.T) {
 		{"AdminTimeout", cfg.AdminTimeout, 30 * time.Second},
 		{"Debounce", cfg.Debounce, 2 * time.Second},
 		{"ShutdownTimeout", cfg.ShutdownTimeout, 30 * time.Second},
+		{"StartupTimeout", cfg.StartupTimeout, 3 * time.Minute},
 		{"BroadcastDrainTimeout", cfg.BroadcastDrainTimeout, 30 * time.Second},
 		{"BroadcastShutdownTimeout", cfg.BroadcastShutdownTimeout, 5 * time.Second},
 		{"BroadcastServerIdleTimeout", cfg.BroadcastServerIdleTimeout, 120 * time.Second},
@@ -4238,6 +4241,24 @@ func TestParseShutdownTimeoutNeg(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--shutdown-timeout must be >= 0") {
 		t.Errorf("error = %q, want substring '--shutdown-timeout must be >= 0'", err)
+	}
+}
+
+func TestParseStartupTimeoutNeg(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--startup-timeout=-1s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --startup-timeout")
+	}
+	if !strings.Contains(err.Error(), "--startup-timeout must be >= 0") {
+		t.Errorf("error = %q, want substring '--startup-timeout must be >= 0'", err)
 	}
 }
 

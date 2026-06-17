@@ -55,6 +55,39 @@ func TestBackendChanNil(t *testing.T) {
 	}
 }
 
+func TestAwaitInitial(t *testing.T) {
+	t.Parallel()
+
+	// Returns the collected value when collect finishes before ctx is cancelled.
+	got, err := awaitInitial(t.Context(), func() int { return 42 })
+	if err != nil || got != 42 {
+		t.Fatalf("awaitInitial = (%d, %v), want (42, nil)", got, err)
+	}
+
+	// Returns ctx.Err() promptly when collect never finishes and ctx is
+	// cancelled (the startup-hang guard for unreachable-API / never-syncing
+	// watchers).
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = awaitInitial(ctx, func() string {
+		<-make(chan struct{}) // block forever
+
+		return "never"
+	})
+	if err == nil {
+		t.Fatal("awaitInitial must return an error when ctx is cancelled before collect finishes")
+	}
+	// awaitInitial returns the moment ctx fires (~20ms), independent of the
+	// never-finishing collect. The bound is deliberately generous so it cannot
+	// flake on slow CI; its only job is to catch a regression where awaitInitial
+	// blocks on collect instead of honouring ctx (which would otherwise hang
+	// until the whole test binary times out).
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("awaitInitial took %v, expected to return promptly when ctx is cancelled", elapsed)
+	}
+}
+
 func TestBackendChanNonNil(t *testing.T) {
 	t.Parallel()
 	input := make(chan backendChange, 1)
@@ -5789,6 +5822,107 @@ func TestRunLoop_ReaddedBackendWithHigherGenIsHonored(t *testing.T) {
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
+func TestSweepExpiredTombstones(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	ttl := time.Minute
+
+	tombstones := map[string]backendTombstone{
+		"fresh":   {gen: 7, at: now.Add(-30 * time.Second)}, // within TTL — kept
+		"expired": {gen: 3, at: now.Add(-2 * time.Minute)},  // older than TTL — evicted
+		"exactly": {gen: 5, at: now.Add(-ttl)},              // age == TTL — evicted (>=)
+	}
+
+	sweepExpiredTombstones(tombstones, now, ttl)
+
+	if _, ok := tombstones["fresh"]; !ok {
+		t.Error("fresh tombstone (within TTL) must be retained")
+	}
+	if _, ok := tombstones["expired"]; ok {
+		t.Error("expired tombstone (older than TTL) must be evicted")
+	}
+	if _, ok := tombstones["exactly"]; ok {
+		t.Error("tombstone aged exactly TTL must be evicted")
+	}
+
+	// A zero (or negative) TTL disables eviction entirely.
+	keepAll := map[string]backendTombstone{"old": {gen: 1, at: now.Add(-time.Hour)}}
+	sweepExpiredTombstones(keepAll, now, 0)
+	if _, ok := keepAll["old"]; !ok {
+		t.Error("ttl=0 must disable eviction")
+	}
+}
+
+// TestRunLoop_TombstoneSweepBoundsRemovedGen verifies the periodic sweep evicts
+// stale backend tombstones so removedGen cannot grow without bound. Once a
+// tombstone is swept, a later update for that name that the tombstone would have
+// dropped is accepted again — proving the entry was actually removed.
+func TestRunLoop_TombstoneSweepBoundsRemovedGen(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.backendTombstoneTTL = 20 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Add then remove a discovered backend at gen 5: the removal records
+	// removedGen["svc"] = {gen: 5}.
+	h.backendCh <- backendChange{
+		name:      "svc",
+		endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 80, Name: "svc-0"}},
+		gen:       5,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+	h.backendCh <- backendChange{name: "svc", removed: true, gen: 5}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after removal")
+
+	// A lower-gen update (gen 1) is dropped by the gen-5 tombstone until the
+	// periodic sweep evicts it. Resend on a generous deadline rather than
+	// sleeping a fixed amount, so the test does not depend on the sweep ticker
+	// firing within a fixed window on slow/overloaded CI. Each pre-sweep send is
+	// silently dropped (no reload); the first post-sweep send is accepted.
+	reloadedAfterSweep := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		h.backendCh <- backendChange{
+			name:      "svc",
+			endpoints: []watcher.Endpoint{{Host: "10.0.9.9", Port: 80, Name: "svc-1"}},
+			gen:       1,
+		}
+		time.Sleep(15 * time.Millisecond)
+		if h.mgr.getReloadCount() >= 3 {
+			reloadedAfterSweep = true
+
+			break
+		}
+	}
+	if !reloadedAfterSweep {
+		t.Fatal("low-gen re-add was never accepted; the tombstone sweep did not evict the entry")
+	}
+
+	h.rend.mu.Lock()
+	_, ok := h.rend.lastBackends["svc"]
+	h.rend.mu.Unlock()
+	if !ok {
+		t.Fatal("backend 'svc' should be present after its tombstone was swept")
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
 	}
 }
 

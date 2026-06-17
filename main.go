@@ -481,6 +481,12 @@ type loopConfig struct {
 	reloadRecoveryInitial time.Duration
 	reloadRecoveryMax     time.Duration
 
+	// backendTombstoneTTL bounds how long a removed discovered backend's
+	// generation tombstone (removedGen) is retained. A periodic sweep evicts
+	// entries older than this so the map cannot grow unbounded under churn.
+	// Zero disables the sweep (tombstones are kept for the process lifetime).
+	backendTombstoneTTL time.Duration
+
 	recorder record.EventRecorder
 	podRef   *v1.ObjectReference
 
@@ -795,47 +801,73 @@ func run() int {
 	// Collect the initial endpoint snapshot from every watcher before
 	// starting varnishd, so it launches with a complete configuration.
 	// The watcher guarantees at least one send after cache sync (even if
-	// the endpoint list is empty), so this will not deadlock.
-	slog.Info("waiting for initial endpoint data")
-	latestFrontends := <-w.Changes()
+	// the endpoint list is empty). The collection is bounded by
+	// --startup-timeout so a watcher that never syncs (e.g. the Kubernetes API
+	// is unreachable, or AddEventHandler failed before the guaranteed initial
+	// send) cannot hang startup indefinitely.
+	slog.Info("waiting for initial endpoint data", "timeout", cfg.StartupTimeout)
+	startupCtx := ctx
+	if cfg.StartupTimeout > 0 {
+		var startupCancel context.CancelFunc
+		startupCtx, startupCancel = context.WithTimeout(ctx, cfg.StartupTimeout)
+		defer startupCancel()
+	}
+	initial, err := awaitInitial(startupCtx, func() initialEndpoints {
+		data := initialEndpoints{
+			backends: make(map[string]renderer.BackendGroup),
+			values:   make(map[string]map[string]any),
+			secrets:  make(map[string]map[string]any),
+			tls:      make(map[string]watcher.TLSCertData, len(twWatchers)),
+		}
+		data.frontends = <-w.Changes()
+		for i, bw := range bwWatchers {
+			data.backends[bwNames[i]] = renderer.BackendGroup{
+				Endpoints:   <-bw.Changes(),
+				Labels:      bw.Labels(),
+				Annotations: bw.Annotations(),
+			}
+		}
+		for _, dw := range discoveryWatchers {
+			<-dw.Initial()
+			for name, eps := range dw.InitialState() {
+				data.backends[name] = renderer.BackendGroup{
+					Endpoints:   eps,
+					Labels:      dw.InitialLabels()[name],
+					Annotations: dw.InitialAnnotations()[name],
+				}
+			}
+		}
+		for i, vw := range vwWatchers {
+			data.values[vwNames[i]] = <-vw.Changes()
+		}
+		for i, fvw := range fvwWatchers {
+			data.values[fvwNames[i]] = <-fvw.Changes()
+		}
+		for i, sw := range swWatchers {
+			data.secrets[swNames[i]] = <-sw.Changes()
+		}
+		for i, tw := range twWatchers {
+			data.tls[twNames[i]] = <-tw.Changes()
+		}
+
+		return data
+	})
+	if err != nil {
+		slog.Error("timed out waiting for initial endpoint data; is the Kubernetes API reachable?",
+			"timeout", cfg.StartupTimeout, "error", err)
+
+		return 1
+	}
+	latestFrontends := initial.frontends
+	latestBackends := initial.backends
+	latestValues := initial.values
+	latestSecrets := initial.secrets
+	initialTLS := initial.tls
 	if len(latestFrontends) == 0 {
 		slog.Warn("frontend Service has no ready endpoints at startup",
 			"namespace", cfg.ServiceNamespace, "service", cfg.ServiceName)
 	}
-	latestBackends := make(map[string]renderer.BackendGroup)
-	for i, bw := range bwWatchers {
-		latestBackends[bwNames[i]] = renderer.BackendGroup{
-			Endpoints:   <-bw.Changes(),
-			Labels:      bw.Labels(),
-			Annotations: bw.Annotations(),
-		}
-	}
-	for _, dw := range discoveryWatchers {
-		<-dw.Initial()
-		for name, eps := range dw.InitialState() {
-			latestBackends[name] = renderer.BackendGroup{
-				Endpoints:   eps,
-				Labels:      dw.InitialLabels()[name],
-				Annotations: dw.InitialAnnotations()[name],
-			}
-		}
-	}
-	latestValues := make(map[string]map[string]any)
-	for i, vw := range vwWatchers {
-		latestValues[vwNames[i]] = <-vw.Changes()
-	}
-	for i, fvw := range fvwWatchers {
-		latestValues[fvwNames[i]] = <-fvw.Changes()
-	}
-	latestSecrets := make(map[string]map[string]any)
-	for i, sw := range swWatchers {
-		latestSecrets[swNames[i]] = <-sw.Changes()
-	}
 	secretRedactor.Update(latestSecrets)
-	initialTLS := make(map[string]watcher.TLSCertData, len(twWatchers))
-	for i, tw := range twWatchers {
-		initialTLS[twNames[i]] = <-tw.Changes()
-	}
 	slog.Info("received initial endpoints", "frontends", len(latestFrontends), "backend_groups", len(latestBackends), "values", len(latestValues), "secrets", len(latestSecrets))
 
 	// Set initial status counts.
@@ -1066,6 +1098,8 @@ func run() int {
 		reloadRecoveryInitial: 10 * time.Second,
 		reloadRecoveryMax:     time.Minute,
 
+		backendTombstoneTTL: 10 * time.Minute,
+
 		recorder: eventRecorder,
 		podRef:   podRef,
 
@@ -1247,7 +1281,22 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 	// a cancelled forwarding goroutine carries that incarnation's gen, so an ADD
 	// whose gen is <= the tombstone is dropped instead of resurrecting a removed
 	// backend. Explicit --backend watchers carry gen 0 and are never tombstoned.
-	removedGen := make(map[string]uint64)
+	//
+	// Each tombstone also records when it was last set; a periodic sweep (see
+	// backendTombstoneTTL) evicts entries older than the TTL so the map stays
+	// bounded under churn. Eviction is safe because the stale-update window after
+	// a removal is sub-second, far shorter than the TTL.
+	removedGen := make(map[string]backendTombstone)
+
+	// tombstoneSweep periodically triggers eviction of expired removedGen
+	// entries. The channel stays nil (and is never selected) when the TTL is 0,
+	// preserving the keep-forever behaviour.
+	var tombstoneSweep <-chan time.Time
+	if lc.backendTombstoneTTL > 0 {
+		ticker := time.NewTicker(lc.backendTombstoneTTL)
+		defer ticker.Stop()
+		tombstoneSweep = ticker.C
+	}
 
 	// nextRecoveryDelay returns the delay for the next recovery retry:
 	// reloadRecoveryInitial the first time, then double (capped at max).
@@ -1541,14 +1590,17 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// gen recorded at removal). Without this, a late ADD could resurrect
 			// a removed backend in the rendered VCL. gen 0 is an explicit
 			// --backend watcher and is never dropped.
-			if !bc.removed && bc.gen != 0 && bc.gen <= removedGen[bc.name] {
+			if !bc.removed && bc.gen != 0 && bc.gen <= removedGen[bc.name].gen {
 				continue
 			}
 			epsChanged := !watcher.EndpointsEqual(lc.latestBackends[bc.name].Endpoints, bc.endpoints)
 			if bc.removed {
-				if bc.gen > removedGen[bc.name] {
-					removedGen[bc.name] = bc.gen
+				ts := removedGen[bc.name]
+				if bc.gen > ts.gen {
+					ts.gen = bc.gen
 				}
+				ts.at = time.Now()
+				removedGen[bc.name] = ts
 				delete(lc.latestBackends, bc.name)
 				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
 			} else {
@@ -1625,6 +1677,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				lc.metrics.DebounceLatencySeconds.WithLabelValues("frontend").Observe(time.Since(frontend.firstEvent).Seconds())
 			}
 			handleReload()
+
+		case <-tombstoneSweep:
+			sweepExpiredTombstones(removedGen, time.Now(), lc.backendTombstoneTTL)
 
 		case <-timerChan(recoveryTimer):
 			// Clear the timer reference before retrying. On failure
@@ -1835,6 +1890,31 @@ type backendChange struct {
 	gen         uint64 // discovery incarnation generation (0 for explicit --backend watchers)
 }
 
+// backendTombstone records the highest removed generation for a discovered
+// backend name together with the wall-clock time the tombstone was last set, so
+// a periodic sweep can evict it once it is older than the TTL.
+type backendTombstone struct {
+	gen uint64
+	at  time.Time
+}
+
+// sweepExpiredTombstones deletes backend tombstones older than ttl, keeping the
+// removedGen map bounded under backend churn. A tombstone only needs to outlive
+// the brief window (sub-second) in which a cancelled forwarding goroutine may
+// emit one stale late update for the removed incarnation, so any reasonable TTL
+// is safe: by the time an entry is evicted, no further update for that
+// incarnation can arrive. A ttl of 0 is treated as "never expire".
+func sweepExpiredTombstones(tombstones map[string]backendTombstone, now time.Time, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	for name, ts := range tombstones {
+		if now.Sub(ts.at) >= ttl {
+			delete(tombstones, name)
+		}
+	}
+}
+
 type valuesChange struct {
 	name string
 	data map[string]any
@@ -1931,6 +2011,34 @@ func buildNCSAArgs(cfg *config.Config) []string {
 	}
 
 	return args
+}
+
+// initialEndpoints is the first snapshot collected from every watcher before
+// varnishd starts, so it launches with a complete configuration.
+type initialEndpoints struct {
+	frontends []watcher.Frontend
+	backends  map[string]renderer.BackendGroup
+	values    map[string]map[string]any
+	secrets   map[string]map[string]any
+	tls       map[string]watcher.TLSCertData
+}
+
+// awaitInitial runs collect in a goroutine and returns its result, or ctx.Err()
+// if ctx is cancelled first (e.g. the startup timeout elapses because the
+// Kubernetes API is unreachable and the informers never sync, or a watcher's
+// Run returned before its guaranteed initial send). On cancellation the collect
+// goroutine is abandoned; the caller is expected to exit the process.
+func awaitInitial[T any](ctx context.Context, collect func() T) (T, error) { //nolint:ireturn // returns the caller's generic type T, not an abstract interface
+	done := make(chan T, 1)
+	go func() { done <- collect() }()
+	select {
+	case v := <-done:
+		return v, nil
+	case <-ctx.Done():
+		var zero T
+
+		return zero, ctx.Err() //nolint:wrapcheck // context cancellation surfaced as-is
+	}
 }
 
 // writeInitialVCLFile writes the rendered VCL to a new temp file and returns

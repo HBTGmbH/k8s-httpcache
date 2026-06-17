@@ -507,6 +507,7 @@ Events require RBAC permission to `create` and `patch` the `events` resource (se
 | `--tls-cert-debounce` | *(uses `--debounce`)* | Debounce duration for `--tls-cert` Secret changes; overrides `--debounce` for the TLS certificate group |
 | `--tls-cert-debounce-max` | *(uses `--debounce-max`)* | Maximum debounce duration for `--tls-cert` changes; overrides `--debounce-max` for the TLS certificate group |
 | `--shutdown-timeout` | `30s` | Time to wait for varnishd to exit before sending SIGKILL |
+| `--startup-timeout` | `3m0s` | Max time to wait for the initial endpoint snapshot from all watchers before giving up and exiting; guards against a hung startup when the Kubernetes API is unreachable (`0` disables the limit) |
 | `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes (only effective when `--file-watch` is enabled) |
 | `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
 | `--vcl-reload-retries` | `3` | Max retry attempts for `vcl.load` failures (`0` disables retries) |

@@ -281,7 +281,11 @@ func EndpointsEqual(a, b []Endpoint) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
+	// The combined bound (i < len(a) && i < len(b)) is redundant given the
+	// length check above, but it makes the b[i] index provably in-range for
+	// static analysis (gosec G602). endpointEqual takes pointers to avoid
+	// copying the (large) Endpoint struct on every comparison.
+	for i := 0; i < len(a) && i < len(b); i++ {
 		if !endpointEqual(&a[i], &b[i]) {
 			return false
 		}

@@ -345,6 +345,7 @@ type Config struct {
 	BackendDebounce            time.Duration
 	BackendDebounceMax         time.Duration
 	ShutdownTimeout            time.Duration
+	StartupTimeout             time.Duration
 	Backends                   []BackendSpec
 	BackendSelectors           []BackendSelectorSpec
 	Values                     []ValuesSpec
@@ -912,6 +913,13 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &c.ShutdownTimeout,
 			},
 			&cli.DurationFlag{
+				Name:        "startup-timeout",
+				Category:    catTiming,
+				Usage:       "Max time to wait for the initial endpoint snapshot from all watchers before giving up (0 disables the limit). Guards against hanging startup when the Kubernetes API is unreachable",
+				Value:       3 * time.Minute,
+				Destination: &c.StartupTimeout,
+			},
+			&cli.DurationFlag{
 				Name:        "vcl-template-watch-interval",
 				Category:    catTiming,
 				Usage:       "Poll interval for VCL template file changes (only effective when --file-watch is enabled)",
@@ -1158,6 +1166,11 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 			if c.ShutdownTimeout < 0 {
 				actionErr = validationError(cmd, "--shutdown-timeout must be >= 0, got %v", c.ShutdownTimeout)
+
+				return nil
+			}
+			if c.StartupTimeout < 0 {
+				actionErr = validationError(cmd, "--startup-timeout must be >= 0, got %v", c.StartupTimeout)
 
 				return nil
 			}
