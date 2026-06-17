@@ -2347,3 +2347,81 @@ func TestDiscoveryWatcher_ExcludeAnnotationsPrefixMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestDiscoveryWatcher_ChurnRace stresses the discovery watcher's goroutine
+// lifecycle — child watcher creation, forwarding-goroutine cancellation, and
+// registry claim/release — under rapid create/delete churn of the same Service
+// while a consumer concurrently drains updates. Run under -race it asserts that
+// the producer side of the removal/re-add path has no data races, panics, or
+// goroutine deadlocks, and that gens stay strictly monotonic across
+// re-discoveries (each incarnation must outrank every previous one).
+func TestDiscoveryWatcher_ChurnRace(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	sel := labels.SelectorFromSet(labels.Set{"app": "web"})
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+	dw.SetNameRegistry(NewNameRegistry())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	select {
+	case <-dw.Initial():
+	case <-time.After(60 * time.Second):
+		t.Fatal("timeout waiting for initial sync")
+	}
+
+	// Consumer: drain updates and verify gen monotonicity per name. A genuine
+	// re-add always carries a strictly higher gen than any earlier incarnation;
+	// a regression that reused or lowered gens would surface here.
+	var (
+		mu      sync.Mutex
+		maxGen  = map[string]uint64{}
+		genFail string
+	)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case u, ok := <-dw.Changes():
+				if !ok {
+					return
+				}
+				mu.Lock()
+				if u.Gen != 0 && u.Gen < maxGen[u.Name] && genFail == "" {
+					genFail = fmt.Sprintf("gen regressed for %q: saw %d after %d", u.Name, u.Gen, maxGen[u.Name])
+				}
+				if u.Gen > maxGen[u.Name] {
+					maxGen[u.Name] = u.Gen
+				}
+				mu.Unlock()
+			}
+		}
+	}()
+
+	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
+	slice := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
+	for range 50 {
+		_, _ = clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
+		_, _ = clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
+		_ = clientset.CoreV1().Services("default").Delete(ctx, "web", metav1.DeleteOptions{})
+		_ = clientset.DiscoveryV1().EndpointSlices("default").Delete(ctx, "web-abc", metav1.DeleteOptions{})
+	}
+
+	cancel()
+	select {
+	case <-drained:
+	case <-time.After(60 * time.Second):
+		t.Fatal("consumer did not drain after cancel")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if genFail != "" {
+		t.Error(genFail)
+	}
+}

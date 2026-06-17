@@ -1663,3 +1663,94 @@ func TestBackendWatcherResendDoesNotDeliverStaleEndpoints(t *testing.T) {
 		}
 	}
 }
+
+// TestBackendWatcher_TransitionChurnRace rapidly flips a Service between
+// ExternalName and ClusterIP while a consumer drains updates. This stresses the
+// child EndpointSlice-watcher lifecycle (start/stop on every transition), the
+// forwarding-goroutine cancellation, and the sendFromChild staleness guard.
+// Under -race it asserts the transition machinery has no data races, panics, or
+// goroutine deadlocks, and that the watcher converges to the final state.
+func TestBackendWatcher_TransitionChurnRace(t *testing.T) {
+	t.Parallel()
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{{
+			Addresses:  []string{"10.0.0.1"},
+			Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+			TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+		}},
+		[]discoveryv1.EndpointPort{{Name: new("http"), Port: new(int32(8080))}},
+	)
+	clientset := fake.NewClientset(svc, slice)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = bw.Run(ctx) }()
+
+	// Consumer: continuously drain, recording the latest endpoints.
+	var (
+		mu   sync.Mutex
+		last []Endpoint
+	)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case eps, ok := <-bw.Changes():
+				if !ok {
+					return
+				}
+				mu.Lock()
+				last = eps
+				mu.Unlock()
+			}
+		}
+	}()
+
+	// Churn: rapidly flip ExternalName <-> ClusterIP.
+	for i := range 30 {
+		cur := getService(t, ctx, clientset)
+		if i%2 == 0 {
+			cur.Spec.Type = corev1.ServiceTypeExternalName
+			cur.Spec.ExternalName = "api.example.com"
+		} else {
+			cur.Spec.Type = corev1.ServiceTypeClusterIP
+			cur.Spec.ExternalName = ""
+		}
+		_, err := clientset.CoreV1().Services("default").Update(ctx, cur, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("update %d: %v", i, err)
+		}
+	}
+
+	// Final state: ExternalName with a distinct host; wait for convergence.
+	cur := getService(t, ctx, clientset)
+	cur.Spec.Type = corev1.ServiceTypeExternalName
+	cur.Spec.ExternalName = "final.example.com"
+	_, err := clientset.CoreV1().Services("default").Update(ctx, cur, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("final update: %v", err)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		mu.Lock()
+		l := last
+		mu.Unlock()
+		if len(l) == 1 && l[0].Host == "final.example.com" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher did not converge to final ExternalName endpoint; last = %v", l)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	<-drained
+}

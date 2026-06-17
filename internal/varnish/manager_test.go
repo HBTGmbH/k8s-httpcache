@@ -4624,3 +4624,74 @@ func TestStartNCSAStableRunsResetCrashCounter(t *testing.T) {
 		}
 	}
 }
+
+// TestManager_ConcurrentAccess stresses the Manager's concurrent surface: the
+// event-loop paths (Reload, LoadCert, MarkBackendSick) run alongside the
+// collector/drain paths (ActiveSessions, VarnishstatFunc) and concurrent
+// redactor updates. Under -race it asserts the locking discipline (tlsMu for
+// cert state, the atomic reload counter, the redactor's own mutex, and the
+// set-once-before-goroutines fields majorVersion/run/redactor/workDir) has no
+// data races, deadlocks, or panics.
+func TestManager_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	certPEM, keyPEM := genTestCert(t)
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if len(args) == 0 {
+				return "", nil
+			}
+			if slices.Contains(args, "-j") { // varnishstat -1 -j
+				return `{"version":1,"counters":{"MEMPOOL.sess0.live":{"value":3,"flag":"g"}}}`, nil
+			}
+			switch args[0] {
+			case "vcl.list":
+				return "available  cold  0  kv_reload_1\navailable  cold  0  kv_reload_2", nil
+			case "tls.cert.list":
+				return "cert0", nil
+			default:
+				return "200", nil
+			}
+		},
+	}
+
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+	m.majorVersion = 9 // native TLS supported; selects the v7+ stat parser
+	m.VCLKept = 1
+	red := redact.NewRedactor()
+	m.SetRedactor(red)
+	defer m.CleanupTLS()
+
+	vsFn := m.VarnishstatFunc()
+
+	const (
+		workers = 8
+		iters   = 60
+	)
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Go(func() {
+			for i := range iters {
+				switch (w + i) % 6 {
+				case 0:
+					_ = m.Reload("/tmp/test.vcl")
+				case 1:
+					_, _ = m.ActiveSessions()
+				case 2:
+					_, _, _ = vsFn()
+				case 3:
+					_ = m.MarkBackendSick("be")
+				case 4:
+					_ = m.LoadCert("c", certPEM, keyPEM, nil)
+				case 5:
+					red.Update(map[string]map[string]any{"s": {"k": "supersecretvalue"}})
+					_ = m.TLSSupported()
+					_ = m.MajorVersion()
+				}
+			}
+		})
+	}
+	wg.Wait()
+}
