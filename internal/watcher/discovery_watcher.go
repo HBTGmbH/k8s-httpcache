@@ -51,6 +51,17 @@ type managedBackend struct {
 // same namespace/serviceName.
 var discoveryWatcherSeq atomic.Uint64
 
+// genSeq is a process-wide monotonic generation counter shared by every
+// BackendDiscoveryWatcher. Generations MUST be globally unique and increasing
+// across watchers, not just within one: the event-loop consumer keys its
+// removedGen tombstone by bare backend name (shared across all watchers), so a
+// name handed off between two watchers with overlapping selectors needs the new
+// owner's gen to exceed the gen the previous owner removed it with. A per-watcher
+// counter would restart at 1 for the new owner and be dropped as stale.
+// Generations start at 1, leaving 0 as the "never removed" sentinel on the
+// consumer side (explicit --backend watchers carry gen 0).
+var genSeq atomic.Uint64
+
 // NameRegistry coordinates bare backend-name ownership across all discovery
 // watchers. The event-loop consumer keys backends by bare name, so a given name
 // must be forwarded by exactly one Service. The first watcher to discover a name
@@ -110,7 +121,6 @@ type BackendDiscoveryWatcher struct {
 	mu          sync.Mutex
 	backends    map[string]*managedBackend // keyed by "namespace/serviceName"
 	initialized bool                       // true after initial sync; enables forwarding in syncServices
-	genCounter  uint64                     // monotonic; assigns each managedBackend its gen
 
 	updateCh           chan BackendUpdate
 	initialState       map[string][]Endpoint
@@ -426,7 +436,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 			cancel:    childCancel,
 			namespace: svc.Namespace,
 			name:      svc.Name,
-			gen:       dw.nextGenLocked(),
+			gen:       nextGen(),
 		}
 
 		go func() {
@@ -509,16 +519,15 @@ func (dw *BackendDiscoveryWatcher) nameClaimedLocked(name, namespace string) boo
 	return false
 }
 
-// nextGenLocked returns the next monotonically increasing generation tag.
-// Each (re)discovery of a Service gets a strictly higher gen than the previous
-// incarnation, so the consumer can distinguish a genuine re-add from a stale
-// update emitted by a cancelled forwarding goroutine. Must be called with
-// dw.mu held. Generations start at 1, leaving 0 as a "never removed" sentinel
-// on the consumer side.
-func (dw *BackendDiscoveryWatcher) nextGenLocked() uint64 {
-	dw.genCounter++
-
-	return dw.genCounter
+// nextGen returns the next process-wide monotonically increasing generation tag
+// from the shared genSeq counter. Each (re)discovery of a Service — by any
+// watcher — gets a strictly higher gen than every previous incarnation, so the
+// consumer can distinguish a genuine re-add from a stale update emitted by a
+// cancelled forwarding goroutine, including when a name is handed off between
+// watchers with overlapping selectors. Generations start at 1, leaving 0 as a
+// "never removed" sentinel on the consumer side.
+func nextGen() uint64 {
+	return genSeq.Add(1)
 }
 
 // ownerToken returns this watcher's registry owner token for a backend keyed by

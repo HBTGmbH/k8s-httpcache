@@ -79,6 +79,47 @@ func assertNoBackendChanges(t *testing.T, bw *BackendWatcher, timeout time.Durat
 	}
 }
 
+// TestBackendWatcher_ForwardingDropsStaleChildSend verifies the guard that
+// prevents a superseded child EndpointSlice watcher from overwriting fresh
+// endpoints. When a Service transitions away from a backing EndpointSlice (e.g.
+// to ExternalName), the cancelled child's forwarding goroutine can still hold one
+// in-flight update; sendFromChild must drop it because the child is no longer the
+// active one, while a send from the active child is still delivered.
+func TestBackendWatcher_ForwardingDropsStaleChildSend(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	bw := NewBackendWatcher(clientset, "ns", "svc", "")
+	active := New(clientset, "ns", "svc", "")
+	superseded := New(clientset, "ns", "svc", "")
+
+	bw.mu.Lock()
+	bw.childWatcher = active
+	bw.mu.Unlock()
+
+	staleEps := []Endpoint{{Host: "10.9.9.9", Port: 80}}
+	freshEps := []Endpoint{{Host: "10.0.0.1", Port: 80}}
+
+	// A send from a superseded child must be dropped: nothing is delivered.
+	bw.sendFromChild(superseded, staleEps)
+	select {
+	case got := <-bw.Changes():
+		t.Fatalf("stale send from a superseded child was delivered: %+v", got)
+	default:
+	}
+
+	// A send from the active child must be delivered.
+	bw.sendFromChild(active, freshEps)
+	select {
+	case got := <-bw.Changes():
+		if !EndpointsEqual(got, freshEps) {
+			t.Fatalf("delivered endpoints = %+v, want %+v", got, freshEps)
+		}
+	default:
+		t.Fatal("active child send was not delivered")
+	}
+}
+
 func makeService(serviceType corev1.ServiceType, externalName string) *corev1.Service {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{

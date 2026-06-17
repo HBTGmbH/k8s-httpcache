@@ -1711,6 +1711,74 @@ func TestDiscoveryWatcher_NameRegistrySkipsCrossWatcherCollision(t *testing.T) {
 	}
 }
 
+// TestDiscoveryWatcher_CrossWatcherGenStrictlyIncreasing pins the cross-watcher
+// generation contract the event-loop consumer relies on. The consumer keys its
+// removedGen tombstone by bare backend name (shared across all discovery
+// watchers) and drops any add whose gen is <= the tombstone. So when one watcher
+// removes a name and another watcher (sharing the registry) later re-claims it,
+// the re-claim MUST get a gen strictly greater than the gen the first watcher
+// removed it with — otherwise the consumer silently drops the new owner's
+// backend for the entire lifetime of its ownership.
+//
+// Per-watcher generation counters violate this: each watcher's sequence starts
+// at 1, so the second watcher's first gen collides with (and is <=) the first
+// watcher's removal gen.
+func TestDiscoveryWatcher_CrossWatcherGenStrictlyIncreasing(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	dwA := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dwA.SetNameRegistry(reg)
+	dwB := NewBackendDiscoveryWatcher(clientset, "ns2", false, sel, "", nil)
+	dwB.SetNameRegistry(reg)
+
+	lbls := map[string]string{"app": "web"}
+	filler1 := makeDiscoverableService("ns1", "a", lbls)
+	filler2 := makeDiscoverableService("ns1", "b", lbls)
+	webA := makeDiscoverableService("ns1", "web", lbls)
+
+	// Push watcher A's generation counter up by discovering unrelated Services
+	// first (one new Service per sync so the assigned gens are deterministic),
+	// so the incarnation A eventually creates for "web" carries a high gen.
+	dwA.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{filler1}})
+	dwA.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{filler1, filler2}})
+	dwA.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{filler1, filler2, webA}})
+
+	dwA.mu.Lock()
+	genARemoved := dwA.backends["ns1/web"].gen
+	dwA.mu.Unlock()
+
+	// A's "web" disappears: the registry claim is released and the removal
+	// carries genARemoved (the consumer records removedGen["web"] = genARemoved).
+	dwA.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{filler1, filler2}})
+	if registryClaimed(reg, "web") {
+		t.Fatal("removal must release the registry claim so B can take over")
+	}
+
+	// Watcher B now claims "web" (different namespace) and assigns its own gen.
+	webB := makeDiscoverableService("ns2", "web", lbls)
+	dwB.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{webB}})
+
+	dwB.mu.Lock()
+	mb, ok := dwB.backends["ns2/web"]
+	dwB.mu.Unlock()
+	if !ok {
+		t.Fatal("watcher B should manage 'web' after A released it")
+	}
+
+	if mb.gen <= genARemoved {
+		t.Fatalf("cross-watcher gen collision: B re-claim gen = %d, want strictly greater "+
+			"than A removal gen = %d (else the consumer's removedGen tombstone drops it)",
+			mb.gen, genARemoved)
+	}
+}
+
 // TestDiscoveryWatcher_NameRegistrySameServiceTwoWatchers covers the case two
 // watchers match the exact same namespace/serviceName (overlapping selectors).
 // The per-watcher id in the owner token must keep them distinct so only one

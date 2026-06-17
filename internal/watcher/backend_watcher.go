@@ -269,7 +269,7 @@ func (bw *BackendWatcher) startEndpointSliceWatcherLocked(ctx context.Context) {
 				if !ok {
 					return
 				}
-				bw.send(eps)
+				bw.sendFromChild(child, eps)
 			}
 		}
 	}()
@@ -302,10 +302,36 @@ func (bw *BackendWatcher) resend() {
 	bw.ch <- bw.previous
 }
 
+// sendFromChild forwards an endpoint update originating from the given child
+// EndpointSlice watcher, but only if that child is still the active one. When a
+// Service transitions away from a backing EndpointSlice (e.g. to ExternalName,
+// or it is deleted), stopEndpointSliceWatcherLocked cancels the child and the
+// parent emits the new endpoints itself — but the cancelled child's forwarding
+// goroutine can still hold one in-flight update. Without this guard that stale
+// update could race the parent's send() and overwrite the fresh endpoints,
+// leaving the backend pointed at gone pod IPs until the next Service event. The
+// child check and the send happen together under bw.mu, so they are atomic with
+// respect to stopEndpointSliceWatcherLocked.
+func (bw *BackendWatcher) sendFromChild(child *Watcher, endpoints []Endpoint) {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+
+	if bw.childWatcher != child {
+		return // this child has been superseded; drop its stale update
+	}
+	bw.sendLocked(endpoints)
+}
+
 func (bw *BackendWatcher) send(endpoints []Endpoint) {
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
 
+	bw.sendLocked(endpoints)
+}
+
+// sendLocked performs the endpoint dedup, logging and drain-then-send. Callers
+// must hold bw.mu.
+func (bw *BackendWatcher) sendLocked(endpoints []Endpoint) {
 	if bw.synced && EndpointsEqual(endpoints, bw.previous) {
 		return
 	}
