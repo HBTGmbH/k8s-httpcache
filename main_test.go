@@ -5908,6 +5908,76 @@ func TestRunLoop_StaleRemovalDoesNotDeleteReaddedBackend(t *testing.T) {
 	}
 }
 
+// TestRunLoop_DebugLogsStaleDrop verifies the event loop emits a DEBUG "decision"
+// log when it drops a stale lower-gen backend removal — the exact silent branch
+// that hid the stale-removal bug. A capturing logger is injected into the
+// loopConfig (no global [slog.SetDefault], so the test stays parallel-safe). The
+// buffer is read only after the loop goroutine exits, so the single-writer
+// logger is never read concurrently.
+func TestRunLoop_DebugLogsStaleDrop(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.log = logger
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// gen-1 add, then gen-2 re-add (handoff), then the stale gen-1 removal that
+	// must be dropped. An unrelated backend follows so a reload fires after the
+	// removal is processed (FIFO on the single channel).
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.9.9", Port: 8080, Name: "pod-1"}},
+		gen:       2,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after re-add")
+	h.backendCh <- backendChange{name: "web", removed: true, gen: 1}
+	h.backendCh <- backendChange{
+		name:      "other",
+		endpoints: []watcher.Endpoint{{Host: "10.0.2.1", Port: 8080, Name: "other-0"}},
+		gen:       3,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "reload after trigger")
+
+	// Shut the loop down so its goroutine stops writing before we read the buffer.
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=DEBUG") {
+		t.Fatalf("expected DEBUG output, got:\n%s", out)
+	}
+	// The stale gen-1 removal (gen 1 < liveGen 2) must be logged as a dropped
+	// decision with its discriminating fields.
+	for _, want := range []string{"action=drop", "reason=stale-incarnation", "name=web", "gen=1", "liveGen=2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 // TestRunLoop_StaleAddThenRemovalDoesNotDeleteReaddedBackend covers the harder
 // reordering of the same handoff: the newer incarnation's ADD (gen 2) is
 // processed first, then BOTH a stale late ADD (gen 1) from the old
@@ -6021,7 +6091,10 @@ func TestSweepExpiredTombstones(t *testing.T) {
 		"exactly": {gen: 5, at: now.Add(-ttl)},              // age == TTL — evicted (>=)
 	}
 
-	sweepExpiredTombstones(tombstones, now, ttl)
+	evicted := sweepExpiredTombstones(tombstones, now, ttl)
+	if evicted != 2 {
+		t.Errorf("evicted = %d, want 2 (expired + exactly)", evicted)
+	}
 
 	if _, ok := tombstones["fresh"]; !ok {
 		t.Error("fresh tombstone (within TTL) must be retained")
@@ -6035,7 +6108,9 @@ func TestSweepExpiredTombstones(t *testing.T) {
 
 	// A zero (or negative) TTL disables eviction entirely.
 	keepAll := map[string]backendTombstone{"old": {gen: 1, at: now.Add(-time.Hour)}}
-	sweepExpiredTombstones(keepAll, now, 0)
+	if n := sweepExpiredTombstones(keepAll, now, 0); n != 0 {
+		t.Errorf("ttl=0 evicted = %d, want 0", n)
+	}
 	if _, ok := keepAll["old"]; !ok {
 		t.Error("ttl=0 must disable eviction")
 	}

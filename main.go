@@ -451,6 +451,7 @@ type loopConfig struct {
 	status   *statusStore // nil when status endpoint is disabled
 	metrics  *telemetry.Metrics
 	redactor *redact.Redactor // nil when no secrets are configured
+	log      *slog.Logger     // nil falls back to slog.Default(); injectable for tests
 
 	frontendCh  <-chan []watcher.Frontend
 	backendCh   chan backendChange
@@ -501,6 +502,19 @@ type loopConfig struct {
 	latestSecrets   map[string]map[string]any
 
 	lastVCLHash [sha256.Size]byte
+}
+
+// debug emits a DEBUG-level diagnostic for an event-loop event or decision. It
+// uses lc.log when set (tests inject a capturing logger) and otherwise the
+// process default logger. Callers must pass raw structured attributes (names,
+// generations, counts) and never secret values or certificate material.
+func (lc *loopConfig) debug(msg string, args ...any) {
+	l := lc.log
+	if l == nil {
+		l = slog.Default()
+	}
+	//nolint:sloglint // msg is forwarded from call sites that all pass string literals ("event"/"decision")
+	l.Debug(msg, args...)
 }
 
 // main is a thin wrapper around run. It exists so that run's deferred cleanups
@@ -1086,6 +1100,7 @@ func run() int {
 		status:   status,
 		metrics:  metrics,
 		redactor: secretRedactor,
+		log:      slog.Default(),
 
 		frontendCh:  w.Changes(),
 		backendCh:   backendCh,
@@ -1381,10 +1396,13 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		backend.capped = false
 
 		if !pendingReload {
+			lc.debug("decision", "action", "reload-skipped", "reason", "no-pending")
+
 			return
 		}
 		pendingReload = false
 		reasons := strings.Join(pendingReasons, ", ")
+		lc.debug("decision", "action", "reload-triggered", "reasons", reasons, "templateChanged", templateChanged)
 
 		// markRetry keeps pendingReload/pendingReasons set and arms the
 		// recovery timer so the reload is retried even if no new event
@@ -1496,6 +1514,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 
 		lc.lastVCLHash = vclHash
 		lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
+		lc.debug("decision", "action", "reload-applied", "reasons", reasons,
+			"frontends", len(lc.latestFrontends), "backends", len(lc.latestBackends))
 		emitEvent(lc, v1.EventTypeNormal, "VCLReloaded", fmt.Sprintf("VCL reloaded successfully (%s)", reasons))
 		if lc.status != nil {
 			lc.status.recordReload()
@@ -1553,6 +1573,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		if len(pendingCertNames) == 0 {
 			return
 		}
+		lc.debug("decision", "action", "cert-reload-triggered", "pending", len(pendingCertNames))
 
 		failed := false
 		for name := range pendingCertNames {
@@ -1589,6 +1610,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 	for {
 		select {
 		case <-lc.templateCh:
+			lc.debug("event", "kind", "template")
 			lc.metrics.VCLTemplateChangesTotal.Inc()
 			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			slog.Info("VCL template changed on disk, scheduling reload")
@@ -1599,6 +1621,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case frontends := <-lc.frontendCh:
+			lc.debug("event", "kind", "frontend", "count", len(frontends))
 			lc.latestFrontends = frontends
 			lc.metrics.EndpointUpdatesTotal.WithLabelValues("frontend", lc.serviceName).Inc()
 			lc.metrics.Endpoints.WithLabelValues("frontend", lc.serviceName).Set(float64(len(lc.latestFrontends)))
@@ -1611,6 +1634,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&frontend, lc.frontendDebounce, lc.frontendDebounceMax)
 
 		case bc := <-backendChan(lc.backendCh):
+			lc.debug("event", "kind", "backend", "name", bc.name, "gen", bc.gen,
+				"removed", bc.removed, "endpoints", len(bc.endpoints))
 			// Drop any update — ADD or REMOVAL — from a discovery incarnation
 			// older than the one that currently owns this backend name. After a
 			// name is handed between two --backend-selector watchers the new
@@ -1620,6 +1645,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// gen-2 backend. gen 0 is an explicit --backend watcher and is never
 			// stale.
 			if bc.gen != 0 && bc.gen < liveGen[bc.name] {
+				lc.debug("decision", "action", "drop", "kind", "backend", "reason", "stale-incarnation",
+					"name", bc.name, "gen", bc.gen, "liveGen", liveGen[bc.name])
+
 				continue
 			}
 			// Drop a stale ADD emitted by a cancelled forwarding goroutine for a
@@ -1628,6 +1656,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// entry is gone, so this tombstone — not the check above — catches the
 			// late ADD that would otherwise resurrect it.
 			if !bc.removed && bc.gen != 0 && bc.gen <= removedGen[bc.name].gen {
+				lc.debug("decision", "action", "drop", "kind", "backend", "reason", "stale-removed-tombstone",
+					"name", bc.name, "gen", bc.gen, "tombstoneGen", removedGen[bc.name].gen)
+
 				continue
 			}
 			epsChanged := !watcher.EndpointsEqual(lc.latestBackends[bc.name].Endpoints, bc.endpoints)
@@ -1641,6 +1672,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				delete(lc.latestBackends, bc.name)
 				delete(liveGen, bc.name)
 				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
+				lc.debug("decision", "action", "remove", "kind", "backend",
+					"name", bc.name, "gen", bc.gen, "tombstoneGen", ts.gen)
 			} else {
 				lc.latestBackends[bc.name] = renderer.BackendGroup{
 					Endpoints:   bc.endpoints,
@@ -1651,6 +1684,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 					liveGen[bc.name] = bc.gen
 				}
 				lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
+				lc.debug("decision", "action", "apply", "kind", "backend", "name", bc.name,
+					"gen", bc.gen, "endpoints", len(bc.endpoints), "epsChanged", epsChanged)
 			}
 			lc.metrics.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
 			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
@@ -1663,6 +1698,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case vc := <-valuesChan(lc.valuesCh):
+			lc.debug("event", "kind", "values", "name", vc.name, "keys", len(vc.data))
 			lc.latestValues[vc.name] = vc.data
 			lc.metrics.ValuesUpdatesTotal.WithLabelValues(vc.name).Inc()
 			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
@@ -1672,6 +1708,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case sc := <-secretsChan(lc.secretsCh):
+			lc.debug("event", "kind", "secrets", "name", sc.name, "keys", len(sc.data))
 			lc.latestSecrets[sc.name] = sc.data
 			if lc.redactor != nil {
 				lc.redactor.Update(lc.latestSecrets)
@@ -1684,6 +1721,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&backend, lc.backendDebounce, lc.backendDebounceMax)
 
 		case tc := <-tlsCertChan(lc.tlsCertCh):
+			lc.debug("event", "kind", "tls-cert", "name", tc.name)
 			// TLS certificate rotations are applied on their own debounce
 			// group and never trigger a VCL reload.
 			latestTLS[tc.name] = tc.data
@@ -1694,6 +1732,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			resetDebounce(&tlsCert, lc.tlsCertDebounce, lc.tlsCertDebounceMax)
 
 		case <-timerChan(frontend.timer):
+			lc.debug("event", "kind", "debounce-fire", "group", "frontend", "capped", frontend.capped)
 			lc.metrics.DebounceFiresTotal.WithLabelValues("frontend").Inc()
 			if frontend.capped {
 				lc.metrics.DebounceMaxEnforcementsTotal.WithLabelValues("frontend").Inc()
@@ -1707,6 +1746,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			handleReload()
 
 		case <-timerChan(backend.timer):
+			lc.debug("event", "kind", "debounce-fire", "group", "backend", "capped", backend.capped)
 			lc.metrics.DebounceFiresTotal.WithLabelValues("backend").Inc()
 			if backend.capped {
 				lc.metrics.DebounceMaxEnforcementsTotal.WithLabelValues("backend").Inc()
@@ -1720,7 +1760,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			handleReload()
 
 		case <-tombstoneSweep:
-			sweepExpiredTombstones(removedGen, time.Now(), lc.backendTombstoneTTL)
+			evicted := sweepExpiredTombstones(removedGen, time.Now(), lc.backendTombstoneTTL)
+			lc.debug("event", "kind", "tombstone-sweep", "evicted", evicted, "remaining", len(removedGen))
 
 		case <-timerChan(recoveryTimer):
 			// Clear the timer reference before retrying. On failure
@@ -1738,6 +1779,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			}
 
 		case <-timerChan(tlsCert.timer):
+			lc.debug("event", "kind", "debounce-fire", "group", "tls", "capped", tlsCert.capped)
 			lc.metrics.DebounceFiresTotal.WithLabelValues("tls").Inc()
 			if tlsCert.capped {
 				lc.metrics.DebounceMaxEnforcementsTotal.WithLabelValues("tls").Inc()
@@ -1756,6 +1798,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			}
 
 		case ev := <-lc.ncsaEvents:
+			lc.debug("event", "kind", "ncsa", "reason", ev.Reason)
 			emitEvent(lc, ev.Type, ev.Reason, ev.Message)
 
 		case <-lc.ncsaCrashed:
@@ -1957,16 +2000,21 @@ type backendTombstone struct {
 // the brief window (sub-second) in which a cancelled forwarding goroutine may
 // emit one stale late update for the removed incarnation, so any reasonable TTL
 // is safe: by the time an entry is evicted, no further update for that
-// incarnation can arrive. A ttl of 0 is treated as "never expire".
-func sweepExpiredTombstones(tombstones map[string]backendTombstone, now time.Time, ttl time.Duration) {
+// incarnation can arrive. A ttl of 0 is treated as "never expire". It returns
+// the number of tombstones evicted (for trace logging).
+func sweepExpiredTombstones(tombstones map[string]backendTombstone, now time.Time, ttl time.Duration) int {
 	if ttl <= 0 {
-		return
+		return 0
 	}
+	evicted := 0
 	for name, ts := range tombstones {
 		if now.Sub(ts.at) >= ttl {
 			delete(tombstones, name)
+			evicted++
 		}
 	}
+
+	return evicted
 }
 
 type valuesChange struct {
