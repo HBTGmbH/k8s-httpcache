@@ -2873,6 +2873,70 @@ func TestParseVCLReloadRetriesNegative(t *testing.T) {
 	}
 }
 
+func TestParseBroadcastWriteTimeoutTooSmall(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-read-timeout=15s",
+		"--broadcast-client-timeout=10s",
+		"--broadcast-write-timeout=5s", // 5s does not exceed 15s + 10s
+	})
+	if err == nil {
+		t.Fatal("expected error: --broadcast-write-timeout must exceed read + client")
+	}
+	if !strings.Contains(err.Error(), "--broadcast-write-timeout") {
+		t.Errorf("error = %q, want substring '--broadcast-write-timeout'", err)
+	}
+}
+
+// TestParseBroadcastWriteTimeoutEqualToSum verifies the constraint is "exceed"
+// (strictly greater): write == read + client is rejected.
+func TestParseBroadcastWriteTimeoutEqualToSum(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-read-timeout=15s",
+		"--broadcast-client-timeout=10s",
+		"--broadcast-write-timeout=25s", // exactly read + client — must still be rejected
+	})
+	if err == nil {
+		t.Fatal("expected error: --broadcast-write-timeout equal to read + client must be rejected")
+	}
+	if !strings.Contains(err.Error(), "--broadcast-write-timeout") {
+		t.Errorf("error = %q, want substring '--broadcast-write-timeout'", err)
+	}
+}
+
+// TestParseBroadcastWriteTimeoutDisabledExempt verifies that a disabled write
+// timeout (0) is exempt from the read+client constraint.
+func TestParseBroadcastWriteTimeoutDisabledExempt(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-read-timeout=15s",
+		"--broadcast-client-timeout=10s",
+		"--broadcast-write-timeout=0", // disabled — no deadline, so no constraint
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for disabled write timeout: %v", err)
+	}
+	if cfg.BroadcastWriteTimeout != 0 {
+		t.Errorf("BroadcastWriteTimeout = %v, want 0", cfg.BroadcastWriteTimeout)
+	}
+}
+
 func TestParseVCLReloadRetryIntervalNegative(t *testing.T) {
 	t.Parallel()
 	vcl := makeTempVCL(t)

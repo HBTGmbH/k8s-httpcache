@@ -1355,6 +1355,21 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 					return nil
 				}
 				c.BroadcastTargetPort = port
+
+				// The broadcast server's WriteTimeout bounds the whole handler
+				// after the request headers are read — reading the request body
+				// (up to --broadcast-read-timeout) and the parallel fan-out to
+				// pods (up to --broadcast-client-timeout) — before the response
+				// is written. If it does not exceed read + client, a slow
+				// request can trip the write deadline and truncate the fan-out
+				// response, so enforce the constraint documented on the flag.
+				// A write timeout of 0 disables the deadline and is exempt.
+				if c.BroadcastWriteTimeout > 0 && c.BroadcastWriteTimeout <= c.BroadcastReadTimeout+c.BroadcastClientTimeout {
+					actionErr = validationError(cmd, "--broadcast-write-timeout (%v) must exceed --broadcast-read-timeout (%v) + --broadcast-client-timeout (%v)",
+						c.BroadcastWriteTimeout, c.BroadcastReadTimeout, c.BroadcastClientTimeout)
+
+					return nil
+				}
 			}
 
 			// Resolve frontend service namespace.
