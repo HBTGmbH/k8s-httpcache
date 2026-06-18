@@ -11,4 +11,4 @@ metadata:
   {{- end }}
 data:
   vcl.tmpl: |
-    {{- .Values.vclTemplateContent | nindent 4 }}
+    {{- tpl .Values.vclTemplateContent . | nindent 4 }}
