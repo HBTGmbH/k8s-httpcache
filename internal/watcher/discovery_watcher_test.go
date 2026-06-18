@@ -848,6 +848,68 @@ func TestDiscoveryWatcher_DuplicateNameAcrossNamespaces(t *testing.T) {
 	}
 }
 
+// TestDiscoveryWatcher_SurvivingSameNameAdoptedAfterWinnerDeleted verifies that
+// when two same-named Services in different namespaces both match the selector,
+// and the one that won the bare name is deleted, the surviving Service takes
+// over that backend. Because there is no informer resync (period 0), the
+// deletion is the only event that fires; the survivor produces none. The add
+// pass runs before the remove pass, so within that single reconcile the winner
+// is still present and suppresses the survivor — the reconcile must therefore
+// re-evaluate adds after the removal frees the name, or the backend is orphaned
+// forever.
+func TestDiscoveryWatcher_SurvivingSameNameAdoptedAfterWinnerDeleted(t *testing.T) {
+	t.Parallel()
+	svc1 := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	slice1 := makeDiscoverableEndpointSlice("ns1", "web", "web-abc", "10.0.0.1", 8080)
+	svc2 := makeDiscoverableService("ns2", "web", map[string]string{"app": "web"})
+	slice2 := makeDiscoverableEndpointSlice("ns2", "web", "web-def", "10.0.0.2", 8080)
+	clientset := fake.NewClientset(svc1, slice1, svc2, slice2)
+
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "", true, sel, "", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = dw.Run(ctx) }()
+
+	waitForInitial(t, dw)
+
+	// Exactly one of the two same-named Services won the bare name "web".
+	eps, ok := dw.InitialState()["web"]
+	if !ok || len(eps) != 1 {
+		t.Fatalf("expected one initial 'web' backend, got %v", dw.InitialState())
+	}
+	var winnerNS, survivorIP string
+	switch eps[0].Host {
+	case "10.0.0.1":
+		winnerNS, survivorIP = "ns1", "10.0.0.2"
+	case "10.0.0.2":
+		winnerNS, survivorIP = "ns2", "10.0.0.1"
+	default:
+		t.Fatalf("unexpected winner IP %q", eps[0].Host)
+	}
+
+	// Delete the winning Service; the survivor in the other namespace must take
+	// over the "web" backend.
+	err := clientset.CoreV1().Services(winnerNS).Delete(ctx, "web", metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("deleting winner Service: %v", err)
+	}
+
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case u := <-dw.Changes():
+			if u.Name == "web" && len(u.Endpoints) == 1 && u.Endpoints[0].Host == survivorIP {
+				return // survivor adopted — correct behavior
+			}
+		case <-deadline:
+			t.Fatalf("surviving Service (IP %s) was never adopted after the winner in %s was deleted; "+
+				"the 'web' backend is orphaned", survivorIP, winnerNS)
+		}
+	}
+}
+
 // --- Race between shutdown and informer callbacks (nil-map regression) ---
 
 func TestDiscoveryWatcher_ShutdownRaceNoNilMapPanic(t *testing.T) {
@@ -2098,15 +2160,16 @@ func TestDiscoveryWatcher_DuplicateNameInOtherNamespaceSkipped(t *testing.T) {
 	}
 }
 
-// TestDiscoveryWatcher_SurvivorLazilyPromotedAfterWinnerRemoved locks in the
-// intentional handling of the ambiguous "same bare name in two namespaces"
-// config. The first match wins (first-come-first-served) and the same-name
-// Service in the other namespace is skipped. When the winner is removed, the
-// survivor is NOT promoted in that same reconcile (the add pass still sees the
-// about-to-be-removed winner), but IS adopted on the next reconcile that
-// observes the conflict cleared. The watcher never manages two same-named
-// Services at once and never re-points a backend mid-reconcile.
-func TestDiscoveryWatcher_SurvivorLazilyPromotedAfterWinnerRemoved(t *testing.T) {
+// TestDiscoveryWatcher_SurvivorPromotedInWinnerRemovalReconcile locks in the
+// handling of the ambiguous "same bare name in two namespaces" config. The
+// first match wins (first-come-first-served) and the same-name Service in the
+// other namespace is skipped while the winner holds the name. When the winner
+// is removed, the survivor is promoted in that same reconcile: the add pass is
+// re-run once the removal frees the bare name, so the backend is never orphaned
+// (there is no informer resync to drive a later reconcile). The watcher still
+// never manages two same-named Services at once — the winner is removed before
+// the survivor is adopted.
+func TestDiscoveryWatcher_SurvivorPromotedInWinnerRemovalReconcile(t *testing.T) {
 	t.Parallel()
 	clientset := fake.NewClientset()
 	sel, _ := labels.Parse("app=web")
@@ -2130,19 +2193,14 @@ func TestDiscoveryWatcher_SurvivorLazilyPromotedAfterWinnerRemoved(t *testing.T)
 	}
 
 	// Reconcile that removes the winner: the winner is cleanly removed and the
-	// survivor is NOT promoted in the same pass.
+	// survivor is promoted in the same pass (the add pass re-runs once the
+	// removal frees the bare name). No lazy "next reconcile" is required.
 	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{survivor}})
 	if backendExists(dw, winnerKey) {
 		t.Errorf("removed winner %q should no longer be managed", winnerKey)
 	}
-	if backendExists(dw, survivorKey) {
-		t.Errorf("survivor %q must not be promoted in the winner's removal reconcile", survivorKey)
-	}
-
-	// Next reconcile (conflict cleared): the survivor is adopted.
-	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{survivor}})
 	if !backendExists(dw, survivorKey) {
-		t.Errorf("survivor %q should be adopted on the next reconcile after the winner is gone", survivorKey)
+		t.Errorf("survivor %q should be promoted in the winner's removal reconcile", survivorKey)
 	}
 }
 

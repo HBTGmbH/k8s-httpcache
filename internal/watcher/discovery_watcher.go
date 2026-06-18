@@ -399,64 +399,74 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		return
 	}
 
-	// Add new backends.
-	for key, svc := range current {
-		if _, exists := dw.backends[key]; exists {
-			continue
-		}
-		if dw.explicitNames[svc.Name] {
-			dw.log.Debug("skipping discovered Service (matches explicit --backend name)",
-				"namespace", svc.Namespace, "service", svc.Name)
-
-			continue
-		}
-		if dw.nameClaimedLocked(svc.Name, svc.Namespace) {
-			dw.log.Warn("skipping discovered Service: name already claimed by a same-named Service in another namespace",
-				"namespace", svc.Namespace, "service", svc.Name)
-
-			continue
-		}
-		// Cross-watcher claim: another --backend-selector may already manage a
-		// Service with this bare name. The consumer keys backends by bare name,
-		// so only the first claimant forwards updates for it.
-		if dw.registry != nil && !dw.registry.claim(svc.Name, dw.ownerToken(key)) {
-			dw.log.Warn("skipping discovered Service: backend name already claimed by another --backend-selector",
-				"namespace", svc.Namespace, "service", svc.Name)
-
-			continue
-		}
-
-		bw := NewBackendWatcher(dw.clientset, svc.Namespace, svc.Name, dw.portOverride)
-		bw.SetExcludeAnnotations(dw.excludeAnnotation)
-		childCtx, childCancel := context.WithCancel(ctx)
-
-		mb := &managedBackend{
-			watcher:   bw,
-			ctx:       childCtx,
-			cancel:    childCancel,
-			namespace: svc.Namespace,
-			name:      svc.Name,
-			gen:       nextGen(),
-		}
-
-		go func() {
-			runErr := bw.Run(childCtx)
-			if runErr != nil {
-				dw.log.Error("discovered backend watcher error",
-					"namespace", svc.Namespace, "service", svc.Name, "error", runErr)
+	// addPass adopts every currently-listed Service that is not already managed
+	// and whose bare name is free. It is run again after the remove pass below:
+	// a removal can free a bare name (or registry claim) that a still-listed
+	// same-named Service in another namespace was suppressed on during this
+	// pass (which runs before the removal, while the departing winner still
+	// holds the name). With no informer resync (period 0) the deletion is the
+	// only event that fires, so the survivor must be adopted within this same
+	// reconcile or the backend is orphaned until some unrelated future event.
+	addPass := func() {
+		for key, svc := range current {
+			if _, exists := dw.backends[key]; exists {
+				continue
 			}
-		}()
+			if dw.explicitNames[svc.Name] {
+				dw.log.Debug("skipping discovered Service (matches explicit --backend name)",
+					"namespace", svc.Namespace, "service", svc.Name)
 
-		// Only start forwarding after the initial sync phase. During
-		// initial sync, Run() reads the first value directly.
-		if dw.initialized {
-			dw.startForwardingLocked(ctx, mb)
+				continue
+			}
+			if dw.nameClaimedLocked(svc.Name, svc.Namespace) {
+				dw.log.Warn("skipping discovered Service: name already claimed by a same-named Service in another namespace",
+					"namespace", svc.Namespace, "service", svc.Name)
+
+				continue
+			}
+			// Cross-watcher claim: another --backend-selector may already manage a
+			// Service with this bare name. The consumer keys backends by bare name,
+			// so only the first claimant forwards updates for it.
+			if dw.registry != nil && !dw.registry.claim(svc.Name, dw.ownerToken(key)) {
+				dw.log.Warn("skipping discovered Service: backend name already claimed by another --backend-selector",
+					"namespace", svc.Namespace, "service", svc.Name)
+
+				continue
+			}
+
+			bw := NewBackendWatcher(dw.clientset, svc.Namespace, svc.Name, dw.portOverride)
+			bw.SetExcludeAnnotations(dw.excludeAnnotation)
+			childCtx, childCancel := context.WithCancel(ctx)
+
+			mb := &managedBackend{
+				watcher:   bw,
+				ctx:       childCtx,
+				cancel:    childCancel,
+				namespace: svc.Namespace,
+				name:      svc.Name,
+				gen:       nextGen(),
+			}
+
+			go func() {
+				runErr := bw.Run(childCtx)
+				if runErr != nil {
+					dw.log.Error("discovered backend watcher error",
+						"namespace", svc.Namespace, "service", svc.Name, "error", runErr)
+				}
+			}()
+
+			// Only start forwarding after the initial sync phase. During
+			// initial sync, Run() reads the first value directly.
+			if dw.initialized {
+				dw.startForwardingLocked(ctx, mb)
+			}
+
+			dw.backends[key] = mb
+			dw.log.Info("discovered backend Service",
+				"namespace", svc.Namespace, "service", svc.Name)
 		}
-
-		dw.backends[key] = mb
-		dw.log.Info("discovered backend Service",
-			"namespace", svc.Namespace, "service", svc.Name)
 	}
+	addPass()
 
 	// Remove backends that no longer match. Record each removed incarnation's
 	// gen alongside its name: the removal is stamped with that gen so the
@@ -482,6 +492,14 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		dw.log.Info("removed discovered backend Service",
 			"namespace", mb.namespace, "service", mb.name)
 		removed = append(removed, removal{name: mb.name, gen: mb.gen})
+	}
+
+	// A removal may have freed a bare name (or registry claim) that a
+	// still-listed same-named Service was suppressed on during the add pass
+	// above. Re-run the add pass now that the departing owner is gone so the
+	// survivor is adopted in this same reconcile rather than orphaned.
+	if len(removed) > 0 {
+		addPass()
 	}
 	dw.mu.Unlock()
 

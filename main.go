@@ -1265,6 +1265,10 @@ func handleDrain(lc *loopConfig, sig os.Signal) {
 	interrupted := false
 	select {
 	case <-time.After(lc.drainDelay):
+	case <-lc.mgr.Done():
+		slog.Info("varnishd exited during drain, abandoning drain wait")
+
+		return
 	case <-lc.sigCh:
 		slog.Info("second signal received, skipping drain wait")
 		interrupted = true
@@ -1296,6 +1300,10 @@ func handleDrain(lc *loopConfig, sig os.Signal) {
 
 				return
 			}
+		case <-lc.mgr.Done():
+			slog.Info("varnishd exited during drain, abandoning drain poll")
+
+			return
 		case <-deadline:
 			slog.Warn("drain timeout reached, proceeding with shutdown")
 			emitEvent(lc, v1.EventTypeWarning, "DrainTimeout", "Drain timeout reached, proceeding with forced shutdown")

@@ -547,6 +547,47 @@ func TestReloadUseError(t *testing.T) {
 	}
 }
 
+// TestReloadUseErrorDiscardsLoadedVCL verifies that when vcl.use fails, the VCL
+// loaded in that same attempt is discarded best-effort. Otherwise a failed
+// activation leaves a compiled-but-unused VCL in varnishd; repeated vcl.use
+// failures (e.g. across reload retries) would accumulate orphaned VCLs and grow
+// varnishd memory until some later reload's vcl.use happens to succeed.
+func TestReloadUseErrorDiscardsLoadedVCL(t *testing.T) {
+	t.Parallel()
+	var discarded []string
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return &mockProc{pid: 1}, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			for i, a := range args {
+				switch a {
+				case "vcl.use":
+					return "VCL in use", errors.New("exit status 1")
+				case "vcl.discard":
+					if i+1 < len(args) {
+						discarded = append(discarded, args[i+1])
+					}
+
+					return "", nil
+				}
+			}
+
+			return "200", nil
+		},
+	}
+
+	m := newTestManager(r)
+
+	err := m.Reload("/tmp/test.vcl")
+	if err == nil {
+		t.Fatal("expected error from Reload, got nil")
+	}
+	// The VCL loaded in this attempt (kv_reload_1, the first reload on a fresh
+	// Manager) must be discarded so the failed activation leaks nothing.
+	if !slices.Contains(discarded, "kv_reload_1") {
+		t.Fatalf("vcl.use failure should discard the just-loaded VCL kv_reload_1; discarded=%v", discarded)
+	}
+}
+
 func TestDiscardOldVCLs(t *testing.T) {
 	t.Parallel()
 	vclListOutput := strings.Join([]string{
@@ -4622,6 +4663,62 @@ func TestStartNCSAStableRunsResetCrashCounter(t *testing.T) {
 			t.Fatalf("timed out: startCount=%d, want >= 5", startCount.Load())
 		case <-time.After(time.Millisecond):
 		}
+	}
+}
+
+// TestStartNCSAStableRunThenRapidCrashesNeedsFullBudget pins the mixed
+// stable-then-rapid path of the crash-loop breaker. A run that stayed up
+// longer than NCSAStableUptime is not itself a rapid crash, so it must NOT
+// count toward the breaker: after such a stable run, the full NCSAMaxCrashes
+// budget of *rapid* crashes must be required to trip. With NCSAMaxCrashes=3
+// the breaker must therefore trip only on the 4th start (1 stable + 3 rapid),
+// not the 3rd (1 stable + 2 rapid).
+func TestStartNCSAStableRunThenRapidCrashesNeedsFullBudget(t *testing.T) {
+	t.Parallel()
+
+	var startCount atomic.Int32
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			if startCount.Add(1) == 1 {
+				// First run is stable: stays up well past NCSAStableUptime.
+				// The gap between the stable sleep (300ms) and the threshold
+				// (100ms), and between the threshold and the rapid crashes
+				// (effectively instant), is wide so neither can be
+				// misclassified on a slow/loaded CI runner.
+				p := &mockProc{pid: 1, waitErr: errors.New("exited"), waitCh: make(chan struct{})}
+				go func() {
+					time.Sleep(300 * time.Millisecond)
+					close(p.waitCh)
+				}()
+
+				return p, nil
+			}
+
+			// Subsequent runs crash immediately (rapid).
+			return &mockProc{pid: 1, waitErr: errors.New("crashed")}, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.NCSAMaxCrashes = 3
+	m.NCSAStableUptime = 100 * time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+	defer m.StopNCSA()
+
+	select {
+	case <-m.NCSACrashed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for crash-loop breaker")
+	}
+
+	// No further starts happen after the breaker trips, so startCount is stable.
+	if got := startCount.Load(); got != 4 {
+		t.Fatalf("breaker tripped after %d starts; want 4 (1 stable run + 3 rapid crashes). "+
+			"A stable run must not be counted as a rapid crash.", got)
 	}
 }
 

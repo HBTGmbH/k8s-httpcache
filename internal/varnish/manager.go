@@ -546,13 +546,16 @@ func (m *Manager) monitorNCSA() {
 			m.sendNCSAEvent("Warning", "VarnishncsaExited",
 				fmt.Sprintf("varnishncsa exited unexpectedly: %v", waitErr))
 			// A run that stayed up long enough is not part of a crash
-			// loop — reset the counter so only consecutive rapid
-			// failures trip the breaker, not unrelated exits spread
-			// over the process lifetime.
+			// loop — reset the counter and do not count this exit, so only
+			// consecutive rapid failures trip the breaker, not unrelated
+			// exits spread over the process lifetime. Counting the stable
+			// exit itself (crashes = 0 then crashes++) would leave crashes
+			// at 1 and trip the breaker one rapid crash too early.
 			if m.NCSAStableUptime > 0 && time.Since(started) >= m.NCSAStableUptime {
 				crashes = 0
+			} else {
+				crashes++
 			}
-			crashes++
 			if m.NCSAMaxCrashes > 0 && crashes >= m.NCSAMaxCrashes {
 				m.log.Error("varnishncsa crash loop detected, giving up", "crashes", crashes)
 				m.sendNCSAEvent("Warning", "VarnishncsaCrashLoop",
@@ -614,6 +617,15 @@ func (m *Manager) reload(vclPath string) error {
 		// Activate it.
 		resp, err = m.adm("vcl.use", name)
 		if err != nil {
+			// vcl.load succeeded but activation failed, leaving this VCL
+			// loaded but unused. Discard it best-effort so a failed
+			// activation doesn't leak a compiled VCL (which would otherwise
+			// linger until a later reload's vcl.use happens to succeed).
+			_, discardErr := m.adm("vcl.discard", name)
+			if discardErr != nil {
+				m.log.Warn("failed to discard VCL after vcl.use error", "name", name, "error", discardErr)
+			}
+
 			return fmt.Errorf("vcl.use: %w: %s", err, resp)
 		}
 

@@ -672,6 +672,23 @@ func (h *testHarness) runAndWait(bcast broadcaster) func() int {
 	}
 }
 
+// waitForForwardedSignal blocks until runLoop has forwarded a signal to the
+// manager — i.e. it has finished draining and is waiting on mgr.Done(). Tests
+// that simulate varnishd exiting after a normal drain use this instead of a
+// fixed sleep so they cannot race the drain on a slow CI runner (closing
+// mgr.done mid-drain would otherwise correctly abort the drain early and break
+// the assertions that the drain ran to completion).
+func waitForForwardedSignal(t *testing.T, mgr *mockManager) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(mgr.getForwardedSigs()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for signal to be forwarded to the manager")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // --- runLoop tests ---
 
 func TestRunLoop_ReloadZeroFrontends(t *testing.T) {
@@ -1773,6 +1790,7 @@ func TestRunLoop_DrainOnShutdown(t *testing.T) {
 	lc := h.loopConfig(h.bcast)
 	lc.drainBackend = drainBackendName
 	lc.drainDelay = 10 * time.Millisecond
+	lc.drainPollInterval = 10 * time.Millisecond // poll fast to keep the test quick
 	lc.drainTimeout = 5 * time.Second
 
 	go func() {
@@ -1781,9 +1799,10 @@ func TestRunLoop_DrainOnShutdown(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	// Wait for the drain to complete and varnishd to be signalled.
-	time.Sleep(100 * time.Millisecond)
-	close(h.mgr.done) // varnishd exits cleanly
+	// Wait (deterministically) until the drain has run to completion and
+	// varnishd has been signalled, then simulate varnishd exiting cleanly.
+	waitForForwardedSignal(t, h.mgr)
+	close(h.mgr.done)
 	<-done
 
 	result := int(code.Load())
@@ -1953,6 +1972,7 @@ func TestRunLoop_DrainMarkSickErrorContinuesDrain(t *testing.T) {
 	lc := h.loopConfig(h.bcast)
 	lc.drainBackend = drainBackendName
 	lc.drainDelay = 10 * time.Millisecond
+	lc.drainPollInterval = 10 * time.Millisecond // poll fast to keep the test quick
 	lc.drainTimeout = 5 * time.Second
 
 	go func() {
@@ -1961,7 +1981,9 @@ func TestRunLoop_DrainMarkSickErrorContinuesDrain(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(100 * time.Millisecond)
+	// Deterministically wait for the drain to finish (signal forwarded) before
+	// simulating varnishd's exit, so a slow runner can't abort the drain early.
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
@@ -2017,6 +2039,59 @@ func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
 	sigs := h.mgr.getForwardedSigs()
 	if len(sigs) == 0 || sigs[0] != syscall.SIGTERM {
 		t.Fatalf("expected SIGTERM forwarded, got %v", sigs)
+	}
+}
+
+// TestRunLoop_DrainAbortsWhenVarnishdExits verifies that when varnishd exits
+// while handleDrain is polling active sessions, the drain is abandoned
+// immediately. There is nothing left to drain once varnishd is gone, so the
+// controller must not keep polling the dead process until drainTimeout.
+func TestRunLoop_DrainAbortsWhenVarnishdExits(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	// Sessions never clear, so the only way out of the poll loop (short of
+	// the deadline) is reacting to varnishd's exit.
+	h.mgr.activeSessionsFn = func() (uint64, error) { return 7, nil }
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainPollInterval = 20 * time.Millisecond
+	// Long timeout: the test must return well before this, proving the drain
+	// reacted to the exit rather than waiting out the timeout.
+	lc.drainTimeout = 30 * time.Second
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+
+	// Wait until the drain has begun (backend marked sick).
+	deadline := time.Now().Add(2 * time.Second)
+	for len(h.mgr.getMarkSickCalls()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("drain did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// varnishd exits during the drain.
+	close(h.mgr.done)
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runLoop did not return promptly after varnishd exited during drain; " +
+			"handleDrain kept polling the dead process until drainTimeout")
+	}
+
+	if got := int(code.Load()); got != 0 {
+		t.Fatalf("expected exit 0, got %d", got)
 	}
 }
 
@@ -2083,6 +2158,7 @@ func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
 	lc := h.loopConfig(h.bcast)
 	lc.drainBackend = drainBackendName
 	lc.drainDelay = 10 * time.Millisecond
+	lc.drainPollInterval = 10 * time.Millisecond // poll fast to keep the test quick
 	lc.drainTimeout = 5 * time.Second
 
 	go func() {
@@ -2091,7 +2167,9 @@ func TestRunLoop_DrainActiveSessionsError(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(200 * time.Millisecond)
+	// Deterministically wait for the error-tolerant polling to finish (signal
+	// forwarded) before simulating varnishd's exit.
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
@@ -4242,6 +4320,7 @@ func TestRunLoop_EventDrainStartedAndCompleted(t *testing.T) {
 	lc := h.loopConfig(h.bcast)
 	lc.drainBackend = drainBackendName
 	lc.drainDelay = 10 * time.Millisecond
+	lc.drainPollInterval = 10 * time.Millisecond // poll fast to keep the test quick
 	lc.drainTimeout = 5 * time.Second
 
 	go func() {
@@ -4250,7 +4329,9 @@ func TestRunLoop_EventDrainStartedAndCompleted(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(100 * time.Millisecond)
+	// Deterministically wait for the drain to complete (DrainCompleted emitted,
+	// signal forwarded) before simulating varnishd's exit.
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
