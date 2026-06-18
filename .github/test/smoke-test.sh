@@ -3,14 +3,17 @@
 # Extra arguments are forwarded to hurl (e.g. --report-junit report.xml).
 set -eu
 
-for _ in $(seq 1 30); do
-  curl -sf http://localhost:8080/backend/ > /dev/null 2>&1 && break
-  sleep 2
-done
+wait_for() {
+  for _ in $(seq 1 30); do
+    curl -sf "http://localhost:8080$1" > /dev/null 2>&1 && return 0
+    sleep 2
+  done
+}
 
-for _ in $(seq 1 30); do
-  curl -sf http://localhost:8080/backend-xns/ > /dev/null 2>&1 && break
-  sleep 2
-done
+wait_for /backend/
+wait_for /backend-port/
+wait_for /backend-named/
+wait_for /backend-xns/
+wait_for /backend-ext/
 
 hurl --test "$@" .github/test/smoke.hurl
