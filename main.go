@@ -1726,7 +1726,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				removedGen[bc.name] = ts
 				delete(lc.latestBackends, bc.name)
 				delete(liveGen, bc.name)
+				// Delete both per-name series (gauge and counter) on removal so
+				// a churning set of discovered backend names (via
+				// --backend-selector) cannot grow Prometheus cardinality without
+				// bound over the process lifetime.
 				lc.metrics.Endpoints.DeleteLabelValues("backend", bc.name)
+				lc.metrics.EndpointUpdatesTotal.DeleteLabelValues("backend", bc.name)
 				lc.debug("decision", "action", "remove", "kind", "backend",
 					"name", bc.name, "gen", bc.gen, "tombstoneGen", ts.gen)
 			} else {
@@ -1739,10 +1744,10 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 					liveGen[bc.name] = bc.gen
 				}
 				lc.metrics.Endpoints.WithLabelValues("backend", bc.name).Set(float64(len(bc.endpoints)))
+				lc.metrics.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
 				lc.debug("decision", "action", "apply", "kind", "backend", "name", bc.name,
 					"gen", bc.gen, "endpoints", len(bc.endpoints), "epsChanged", epsChanged)
 			}
-			lc.metrics.EndpointUpdatesTotal.WithLabelValues("backend", bc.name).Inc()
 			lc.metrics.DebounceEventsTotal.WithLabelValues("backend").Inc()
 			pendingReload = true
 			if epsChanged {

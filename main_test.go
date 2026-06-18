@@ -759,6 +759,53 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 	}
 }
 
+// collectorSeriesCount returns the number of metric series a collector currently
+// exports — used to assert per-label series are deleted (cardinality cleanup).
+func collectorSeriesCount(c prometheus.Collector) int {
+	ch := make(chan prometheus.Metric)
+	go func() {
+		c.Collect(ch)
+		close(ch)
+	}()
+	n := 0
+	for range ch {
+		n++
+	}
+
+	return n
+}
+
+// TestRunLoop_BackendRemovalDeletesUpdateCounterSeries verifies that removing a
+// discovered backend deletes its per-name endpoint_updates_total series, not
+// just the endpoints gauge. Discovered backend names (via --backend-selector)
+// are ephemeral, so a counter series left behind for every removed name grows
+// Prometheus cardinality unbounded over a long-running pod's lifetime.
+func TestRunLoop_BackendRemovalDeletesUpdateCounterSeries(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	wait := h.runAndWait(h.bcast)
+
+	// Discover an ephemeral backend (gen > 0 marks a discovery incarnation).
+	h.backendCh <- backendChange{
+		name:      "ephemeral",
+		endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 8080}},
+		gen:       1,
+	}
+	waitFor(t, func() bool {
+		return collectorSeriesCount(h.metrics.EndpointUpdatesTotal) == 1
+	}, "endpoint_updates_total series created for the discovered backend")
+
+	// Remove the same incarnation.
+	h.backendCh <- backendChange{name: "ephemeral", removed: true, gen: 1}
+	waitFor(t, func() bool {
+		return collectorSeriesCount(h.metrics.EndpointUpdatesTotal) == 0
+	}, "endpoint_updates_total series deleted on backend removal (no per-name cardinality leak)")
+
+	if code := wait(); code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
 func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
