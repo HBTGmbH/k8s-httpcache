@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"k8s-httpcache/internal/telemetry"
 	"k8s-httpcache/internal/watcher"
@@ -36,6 +37,40 @@ func newTestServer() *Server {
 		ShutdownTimeout:   5 * time.Second,
 		Metrics:           telemetry.NewMetrics(prometheus.NewRegistry(), nil),
 	})
+}
+
+// collectSeriesCount returns the number of metric series a collector exports.
+func collectSeriesCount(c prometheus.Collector) int {
+	ch := make(chan prometheus.Metric)
+	go func() {
+		c.Collect(ch)
+		close(ch)
+	}()
+	n := 0
+	for range ch {
+		n++
+	}
+
+	return n
+}
+
+// TestBroadcastRequestsTotalMethodCardinalityBounded verifies that the
+// broadcast request counter's "method" label is bounded regardless of client
+// input. r.Method is client-controllable (net/http accepts any RFC 7230 token),
+// so using it verbatim as a label lets any client grow Prometheus cardinality —
+// and the registry's memory — without bound.
+func TestBroadcastRequestsTotalMethodCardinalityBounded(t *testing.T) {
+	t.Parallel()
+	s := newTestServer()
+	// No SetFrontends → every request hits the no-frontends 503 branch.
+	for i := range 1000 {
+		req := httptest.NewRequest(fmt.Sprintf("M%04d", i), "/purge", http.NoBody)
+		s.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if n := collectSeriesCount(s.metrics.BroadcastRequestsTotal); n > 16 {
+		t.Fatalf("BroadcastRequestsTotal has %d series after 1000 distinct methods; "+
+			"the method label is unbounded (client-controllable cardinality)", n)
+	}
 }
 
 // frontendFromServer returns a watcher.Frontend pointing at ts.

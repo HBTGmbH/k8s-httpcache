@@ -22,6 +22,27 @@ import (
 // maxBodySize is the maximum response body size read from each pod.
 const maxBodySize = 1 << 20 // 1 MiB
 
+// knownMethods is the set of HTTP methods recorded verbatim in the request
+// metric's "method" label. Any other method is collapsed to "other": net/http
+// accepts arbitrary RFC 7230 method tokens from clients, so using r.Method
+// verbatim as a label would let any client grow the metric's cardinality (and
+// the registry's memory) without bound.
+var knownMethods = map[string]struct{}{
+	http.MethodGet: {}, http.MethodHead: {}, http.MethodPost: {}, http.MethodPut: {},
+	http.MethodPatch: {}, http.MethodDelete: {}, http.MethodConnect: {},
+	http.MethodOptions: {}, http.MethodTrace: {}, "PURGE": {}, "BAN": {},
+}
+
+// normalizeMethod bounds the request metric's "method" label to a fixed set,
+// mapping any unrecognised (client-controllable) method to "other".
+func normalizeMethod(method string) string {
+	if _, ok := knownMethods[method]; ok {
+		return method
+	}
+
+	return "other"
+}
+
 // PodResult holds the response from a single pod.
 type PodResult struct {
 	Status int    `json:"status"`
@@ -103,12 +124,16 @@ func (s *Server) SetFrontends(frontends []watcher.Frontend) {
 
 // ServeHTTP fans out the incoming request to all frontends in parallel.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Bound the metric's method label; r.Method is client-controllable. The
+	// real method is still forwarded to pods verbatim (see forward).
+	method := normalizeMethod(r.Method)
+
 	s.mu.RLock()
 	frontends := s.frontends
 	s.mu.RUnlock()
 
 	if len(frontends) == 0 {
-		s.metrics.BroadcastRequestsTotal.WithLabelValues(r.Method, "503").Inc()
+		s.metrics.BroadcastRequestsTotal.WithLabelValues(method, "503").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		if s.draining.Load() {
 			w.Header().Set("Connection", "close")
@@ -122,7 +147,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		s.metrics.BroadcastRequestsTotal.WithLabelValues(r.Method, "400").Inc()
+		s.metrics.BroadcastRequestsTotal.WithLabelValues(method, "400").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		if s.draining.Load() {
 			w.Header().Set("Connection", "close")
@@ -164,7 +189,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.BroadcastDurationSeconds.Observe(time.Since(fanoutStart).Seconds())
 
-	s.metrics.BroadcastRequestsTotal.WithLabelValues(r.Method, "200").Inc()
+	s.metrics.BroadcastRequestsTotal.WithLabelValues(method, "200").Inc()
 	w.Header().Set("Content-Type", "application/json")
 	if s.draining.Load() {
 		w.Header().Set("Connection", "close")
