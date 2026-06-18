@@ -18,7 +18,6 @@ import (
 	"k8s-httpcache/internal/telemetry"
 	"k8s-httpcache/internal/varnish"
 	"k8s-httpcache/internal/watcher"
-	"log"
 	"log/slog"
 	"maps"
 	"net"
@@ -463,6 +462,7 @@ type loopConfig struct {
 	ncsaEvents  <-chan varnish.NCSAEvent // nil when disabled
 	ncsaCrashed <-chan struct{}          // closed when ncsa crash-loops (nil when disabled)
 	stopNCSA    func()                   // called during shutdown (nil when disabled)
+	serverErrCh <-chan error             // fatal metrics/broadcast HTTP serve error; nil (e.g. in tests) is never selected
 
 	serviceName           string
 	frontendDebounce      time.Duration
@@ -557,6 +557,14 @@ func run() int {
 		startedAt: time.Now(),
 	}
 
+	// serverErrCh carries a fatal serve error from the metrics or broadcast HTTP
+	// server goroutine into the event loop, so a serving failure triggers the
+	// normal orderly shutdown (cancel watchers, signal varnishd, run deferred
+	// cleanup) instead of os.Exit, which would skip the defers and orphan the
+	// varnishd child. Buffered for both servers so the send never blocks, even
+	// if a server dies before the event loop starts selecting on it.
+	serverErrCh := make(chan error, 2)
+
 	// Start Prometheus metrics server if configured.
 	if cfg.MetricsAddr != "" {
 		mux := http.NewServeMux()
@@ -573,12 +581,23 @@ func run() int {
 			WriteTimeout:      cfg.MetricsWriteTimeout,
 			IdleTimeout:       cfg.MetricsIdleTimeout,
 		}
+		// Pre-bind so a port conflict fails startup cleanly (deferred cleanup
+		// runs) rather than from inside the goroutine via [os.Exit].
+		ln, listenErr := (&net.ListenConfig{}).Listen(context.Background(), "tcp", cfg.MetricsAddr)
+		if listenErr != nil {
+			slog.Error("metrics server listen", "addr", cfg.MetricsAddr, "error", listenErr)
+
+			return 1
+		}
 		go func() {
 			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
 
-			serveErr := metricsSrv.ListenAndServe()
+			serveErr := metricsSrv.Serve(ln)
 			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				log.Fatalf("metrics server: %v", serveErr)
+				select {
+				case serverErrCh <- fmt.Errorf("metrics server: %w", serveErr):
+				default:
+				}
 			}
 		}()
 	}
@@ -921,10 +940,23 @@ func run() int {
 			Metrics:           metrics,
 		})
 		bcast.SetFrontends(latestFrontends)
+		// Pre-bind so a port conflict fails startup cleanly (before varnishd
+		// starts) rather than from inside the goroutine via [os.Exit].
+		ln, listenErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.BroadcastAddr)
+		if listenErr != nil {
+			slog.Error("broadcast server listen", "addr", cfg.BroadcastAddr, "error", listenErr)
+
+			return 1
+		}
 		go func() {
-			serveErr := bcast.ListenAndServe()
+			slog.Info("starting broadcast server", "addr", cfg.BroadcastAddr)
+
+			serveErr := bcast.Serve(ln)
 			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				log.Fatalf("broadcast server: %v", serveErr)
+				select {
+				case serverErrCh <- serveErr:
+				default:
+				}
 			}
 		}()
 	}
@@ -1112,6 +1144,7 @@ func run() int {
 		ncsaEvents:  mgr.NCSAEvents(),
 		ncsaCrashed: mgr.NCSACrashed(),
 		stopNCSA:    func() { mgr.StopNCSA() },
+		serverErrCh: serverErrCh,
 
 		serviceName:           cfg.ServiceName,
 		frontendDebounce:      cfg.FrontendDebounce,
@@ -1803,6 +1836,19 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 
 		case <-lc.ncsaCrashed:
 			slog.Error("varnishncsa crash loop detected, shutting down")
+			cancel()
+			lc.mgr.ForwardSignal(syscall.SIGTERM)
+			select {
+			case <-lc.mgr.Done():
+			case <-time.After(lc.shutdownTimeout):
+				slog.Warn("varnishd did not exit in time, forcing")
+				lc.mgr.ForwardSignal(syscall.SIGKILL)
+			}
+
+			return 1
+
+		case serveErr := <-lc.serverErrCh:
+			slog.Error("HTTP server failed, shutting down", "error", serveErr)
 			cancel()
 			lc.mgr.ForwardSignal(syscall.SIGTERM)
 			select {

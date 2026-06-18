@@ -184,6 +184,18 @@ func (s *Server) ListenAndServe() error {
 	return nil
 }
 
+// Serve serves on an already-bound listener. The caller pre-binds with
+// [net.Listen] so a port conflict fails fast (before varnishd starts) rather
+// than from inside the serving goroutine.
+func (s *Server) Serve(ln net.Listener) error {
+	err := s.srv.Serve(ln)
+	if err != nil {
+		return fmt.Errorf("broadcast serve: %w", err)
+	}
+
+	return nil
+}
+
 // Drain initiates a graceful drain of the broadcast server. It sets the
 // draining flag (causing responses to include Connection: close), then waits
 // up to timeout for all client connections to close before shutting down.

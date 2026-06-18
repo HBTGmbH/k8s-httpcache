@@ -5594,6 +5594,50 @@ func TestRunLoop_NCSACrashLoopExitsWithError(t *testing.T) {
 	}
 }
 
+// TestRunLoop_ServerErrorExitsWithError verifies that a fatal metrics/broadcast
+// HTTP server error routed through serverErrCh triggers an orderly shutdown
+// (SIGTERM forwarded to varnishd, exit code 1) instead of [os.Exit], which would
+// skip deferred cleanup and orphan the varnishd child.
+func TestRunLoop_ServerErrorExitsWithError(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	serverErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.serverErrCh = serverErrCh
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Simulate a fatal HTTP server failure after startup.
+	serverErrCh <- errors.New("broadcast serve: accept failed")
+
+	// Wait for SIGTERM to be forwarded to varnishd.
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+
+	// Let varnishd exit.
+	close(h.mgr.done)
+	<-done
+
+	if got := int(code.Load()); got != 1 {
+		t.Fatalf("expected exit code 1, got %d", got)
+	}
+
+	sigs := h.mgr.getForwardedSigs()
+	if len(sigs) == 0 {
+		t.Fatal("expected at least one forwarded signal")
+	}
+	if sigs[0] != syscall.SIGTERM {
+		t.Errorf("first forwarded signal = %v, want SIGTERM", sigs[0])
+	}
+}
+
 func TestRunLoop_StopNCSACalledOnShutdown(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
