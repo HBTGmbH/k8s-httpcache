@@ -1,7 +1,9 @@
 package renderer
 
 import (
+	"bytes"
 	"k8s-httpcache/internal/watcher"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -2312,6 +2314,119 @@ sub vcl_deliver {
 	}
 	if drainPos >= userDeliverPos {
 		t.Error("drain vcl_deliver should appear before user vcl_deliver")
+	}
+}
+
+// TestRender_DrainVCLDeliverBetweenBackends verifies that when the user declares
+// sub vcl_deliver between two backends — so the historical end-of-backends
+// placement would land the drain sub AFTER the user's, silently breaking
+// draining — the drain sub is prepended before the user's vcl_deliver while the
+// drain backend stays after the first user backend (never the default) and
+// before the drain sub (Varnish 6 forward-reference safety).
+func TestRender_DrainVCLDeliverBetweenBackends(t *testing.T) {
+	t.Parallel()
+	tmpl := `vcl 4.1;
+
+backend first {
+  # USER_BACKEND
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+sub vcl_deliver {
+  # USER_DELIVER
+  return (deliver);
+}
+
+backend second {
+  .host = "127.0.0.2";
+  .port = "8081";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	drainPos := strings.Index(out, `resp.http.Connection = "close"`)
+	userDeliverPos := strings.Index(out, "# USER_DELIVER")
+	if drainPos < 0 || userDeliverPos < 0 {
+		t.Fatalf("could not find drain or user deliver markers\noutput:\n%s", out)
+	}
+	if drainPos >= userDeliverPos {
+		t.Errorf("drain vcl_deliver must be prepended before user vcl_deliver; drain=%d user=%d\noutput:\n%s", drainPos, userDeliverPos, out)
+	}
+
+	// Drain backend must be after the first user backend (so it is never the
+	// Varnish default backend).
+	userBackendPos := strings.Index(out, "# USER_BACKEND")
+	drainBackendPos := strings.Index(out, "backend drain_flag {")
+	if drainBackendPos <= userBackendPos {
+		t.Errorf("drain backend must be declared after the first user backend; drain=%d user=%d\noutput:\n%s", drainBackendPos, userBackendPos, out)
+	}
+	// And before the drain sub that references it (Varnish 6 forward-ref safety).
+	if drainBackendPos >= drainPos {
+		t.Errorf("drain backend must be declared before the drain sub; backend=%d sub=%d\noutput:\n%s", drainBackendPos, drainPos, out)
+	}
+}
+
+// TestRender_DrainVCLDeliverBeforeAllBackends documents the fallback: when the
+// user's vcl_deliver precedes every backend, the drain sub cannot be prepended
+// (there is no backend to anchor the drain backend before it while keeping it
+// before the sub), so the historical placement is kept and a warning is logged
+// once per template.
+func TestRender_DrainVCLDeliverBeforeAllBackends(t *testing.T) {
+	t.Parallel()
+	tmpl := `vcl 4.1;
+
+sub vcl_deliver {
+  # USER_DELIVER
+  return (deliver);
+}
+
+backend origin {
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var buf bytes.Buffer
+	r.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	// The drain VCL is still injected (historical end-of-backends placement).
+	if !strings.Contains(out, "backend drain_flag {") || !strings.Contains(out, "std.healthy(drain_flag)") {
+		t.Fatalf("drain VCL missing\noutput:\n%s", out)
+	}
+	// A warning about the un-prependable layout must be logged.
+	if !strings.Contains(buf.String(), "vcl_deliver") {
+		t.Errorf("expected a drain-placement warning; log:\n%s", buf.String())
+	}
+
+	// The warning is logged only once per template, even across renders.
+	buf.Reset()
+	_, err = r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if strings.Contains(buf.String(), "vcl_deliver") {
+		t.Errorf("drain-placement warning should be logged once per template; second log:\n%s", buf.String())
 	}
 }
 

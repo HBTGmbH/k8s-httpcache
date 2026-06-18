@@ -32,6 +32,6 @@ func FuzzInjectDrainVCL(f *testing.F) {
 	}
 	f.Fuzz(func(_ *testing.T, vcl string) {
 		// Must never panic on any input.
-		_ = injectDrainVCL(vcl, "k8s_httpcache_drain")
+		_, _ = injectDrainVCL(vcl, "k8s_httpcache_drain")
 	})
 }

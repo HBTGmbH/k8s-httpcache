@@ -1378,8 +1378,8 @@ This adds a step between 2 and 3: poll `varnishstat` for active sessions every s
 
 The drain VCL is injected transparently around your template output:
 
-- A `sub vcl_deliver` is **prepended** (before your `vcl_deliver`) to ensure the `Connection: close` header is always set during draining, even if your `vcl_deliver` returns early.
-- A drain backend declaration is **appended** (after all your backends) so it never becomes Varnish's default backend.
+- A `sub vcl_deliver` is injected **before your `sub vcl_deliver`** so the `Connection: close` header is always set during draining, even if your `vcl_deliver` returns early. This requires at least one backend to be declared before your `vcl_deliver`. If your `vcl_deliver` precedes all of your backends, the injected sub is instead placed after your backends and a warning is logged — in that layout draining may not set `Connection: close` when your `vcl_deliver` returns early, so declare a backend before your `vcl_deliver` to guarantee it.
+- The drain backend declaration is injected after one of your backends (never first) so it does not become Varnish's default backend, and before the injected `vcl_deliver` that references it (avoiding forward-reference errors on Varnish 6).
 - `import std;` is added automatically if not already present in your template.
 
 ### Pod spec requirements

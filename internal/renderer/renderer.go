@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"k8s-httpcache/internal/watcher"
+	"log/slog"
 	"os"
 	"regexp"
 	"slices"
@@ -81,6 +82,12 @@ type Renderer struct {
 	delimLeft    string
 	delimRight   string
 	localZone    string
+	log          *slog.Logger // nil falls back to slog.Default(); injectable for tests
+
+	// drainPlacementWarned records that the once-per-template warning about an
+	// un-prependable drain sub vcl_deliver has been logged, so a frequently
+	// re-rendering loop does not repeat it. Reset on Reload.
+	drainPlacementWarned bool
 }
 
 // SetDrainBackend configures the renderer to auto-inject drain VCL using the
@@ -141,6 +148,9 @@ func (r *Renderer) Reload() error {
 
 	r.prev = r.tmpl
 	r.tmpl = tmpl
+	// A freshly loaded template may have a different drain-placement layout;
+	// allow the once-per-template warning to fire again for it.
+	r.drainPlacementWarned = false
 
 	return nil
 }
@@ -202,7 +212,14 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 	}
 	vcl := buf.String()
 	if r.drainBackend != "" {
-		vcl = injectDrainVCL(vcl, r.drainBackend)
+		var couldNotPrepend bool
+		vcl, couldNotPrepend = injectDrainVCL(vcl, r.drainBackend)
+		if couldNotPrepend && !r.drainPlacementWarned {
+			r.drainPlacementWarned = true
+			r.logger().Warn("drain sub vcl_deliver cannot be placed before your vcl_deliver because no backend is declared before it; "+
+				"graceful draining may not set \"Connection: close\" if your vcl_deliver returns early — declare at least one backend before your vcl_deliver",
+				"drain_backend", r.drainBackend)
+		}
 	}
 
 	return vcl, nil
@@ -236,6 +253,15 @@ func (r *Renderer) RenderToFile(frontends []watcher.Frontend, backends map[strin
 	}
 
 	return f.Name(), nil
+}
+
+// logger returns r.log, or the process default logger when unset.
+func (r *Renderer) logger() *slog.Logger {
+	if r.log != nil {
+		return r.log
+	}
+
+	return slog.Default()
 }
 
 // vclVersionRe matches a VCL version line like "vcl 4.1;" (with optional
@@ -304,17 +330,15 @@ func commentOutImportStdFrom(vcl string, from int) string {
 // underscores, and hyphens.
 var backendBlockRe = regexp.MustCompile(`(?m)^[\t ]*backend\s+[\w-]+\s*\{`)
 
-// backendBlocksEnd returns the byte offset just past the closing "}" (and any
-// trailing newline) of the last backend block in vcl. It correctly handles
-// nested brace blocks such as ".probe = { ... }". Returns 0 if no backend
-// blocks are found.
-func backendBlocksEnd(vcl string) int {
+// backendBlockEnds returns, in source order, the byte offset just past the
+// closing "}" (and any trailing newline) of every top-level backend block in
+// vcl. It correctly handles nested brace blocks such as ".probe = { ... }" and
+// skips matches inside /* */ block comments. For a malformed (unclosed) block
+// the offset just past its opening brace is recorded, matching the historical
+// behaviour of backendBlocksEnd.
+func backendBlockEnds(vcl string) []int {
 	locs := backendBlockRe.FindAllStringIndex(vcl, -1)
-	if len(locs) == 0 {
-		return 0
-	}
-
-	lastEnd := 0
+	var ends []int
 	for _, loc := range locs {
 		// Skip matches inside /* */ block comments.
 		before := vcl[:loc[0]]
@@ -363,33 +387,74 @@ func backendBlocksEnd(vcl string) int {
 				break
 			}
 		}
-		if end > lastEnd {
-			lastEnd = end
+		ends = append(ends, end)
+	}
+
+	return ends
+}
+
+// backendBlocksEnd returns the byte offset just past the last backend block in
+// vcl, or 0 if there are none.
+func backendBlocksEnd(vcl string) int {
+	ends := backendBlockEnds(vcl)
+	last := 0
+	for _, end := range ends {
+		if end > last {
+			last = end
 		}
 	}
 
-	return lastEnd
+	return last
+}
+
+// firstBackendBlockEnd returns the byte offset just past the first backend
+// block in vcl, or 0 if there are none.
+func firstBackendBlockEnd(vcl string) int {
+	ends := backendBlockEnds(vcl)
+	if len(ends) == 0 {
+		return 0
+	}
+
+	return ends[0]
+}
+
+// subVCLDeliverRe matches the start of a top-level "sub vcl_deliver {"
+// declaration (with optional leading whitespace).
+var subVCLDeliverRe = regexp.MustCompile(`(?m)^[\t ]*sub\s+vcl_deliver\s*\{`)
+
+// firstSubVCLDeliverStart returns the start byte offset of the first top-level
+// "sub vcl_deliver" declaration in vcl (skipping those inside /* */ block
+// comments), or -1 if there is none.
+func firstSubVCLDeliverStart(vcl string) int {
+	for _, loc := range subVCLDeliverRe.FindAllStringIndex(vcl, -1) {
+		before := vcl[:loc[0]]
+		if strings.Count(before, "/*")-strings.Count(before, "*/") > 0 {
+			continue // inside a block comment
+		}
+
+		return loc[0]
+	}
+
+	return -1
 }
 
 // injectDrainVCL injects drain VCL into the user template output.
 //
-// The drain backend declaration and drain sub vcl_deliver are injected right
-// after the last user-declared backend block, so the drain backend is never
-// the first (default) backend and is declared before the sub that references
-// it (avoiding forward-reference errors on Varnish 6). If no user backends
-// are found, the drain VCL is inserted right after the user's "import std;"
-// line (if present) or after the version line.
-//
-// "import std;" is only injected (at the top) when the user VCL does not
-// already provide one before the drain insertion point. User "import std;"
-// lines that would end up after the injected vcl_deliver are commented out.
-func injectDrainVCL(vcl, backendName string) string {
-	versionEnd := vclVersionEnd(vcl)
-	backendsEnd := backendBlocksEnd(vcl)
-	imports := importStdPositions(vcl)
+// drainImportStd is the injected "import std;" block (std.healthy backs the
+// drain check). It is added only when the user VCL has no import std before the
+// drain sub's insertion point.
+const drainImportStd = "\n// Begin k8s-httpcache connection draining.\nimport std;\n// End k8s-httpcache connection draining.\n"
 
-	drainVCL := fmt.Sprintf("\n// Begin k8s-httpcache connection draining.\nbackend %s {\n  .host = \"127.0.0.1\";\n  .port = \"9\";\n}\n// End k8s-httpcache connection draining.\n", backendName)
-	drainVCL += fmt.Sprintf(`
+// drainBackendBlock renders the drain backend declaration (a black-hole backend
+// that is marked sick during draining).
+func drainBackendBlock(backendName string) string {
+	return fmt.Sprintf("\n// Begin k8s-httpcache connection draining.\nbackend %s {\n  .host = \"127.0.0.1\";\n  .port = \"9\";\n}\n// End k8s-httpcache connection draining.\n", backendName)
+}
+
+// drainDeliverSub renders the drain sub vcl_deliver that sets Connection: close
+// while the drain backend is sick.
+func drainDeliverSub(backendName string) string {
+	return fmt.Sprintf(`
 // Begin k8s-httpcache connection draining.
 sub vcl_deliver {
   if (!std.healthy(%s)) {
@@ -398,6 +463,81 @@ sub vcl_deliver {
 }
 // End k8s-httpcache connection draining.
 `, backendName)
+}
+
+// injectDrainVCL injects the drain backend and drain sub vcl_deliver into the
+// rendered VCL. It returns the augmented VCL and a bool that is true only when
+// the drain sub could not be placed before a user vcl_deliver that precedes
+// every backend — in that case the historical placement is kept and the caller
+// should warn that draining may not set Connection: close if the user's
+// vcl_deliver returns early.
+//
+// Varnish concatenates same-named subs in source order and a return(...) exits
+// the whole subroutine, so the drain sub must run before the user's vcl_deliver
+// to guarantee Connection: close is set during draining. The common layout
+// (vcl_deliver after the backends) already satisfies this with the historical
+// end-of-backends placement; only a vcl_deliver declared among/before the
+// backends needs the prepend path.
+func injectDrainVCL(vcl, backendName string) (string, bool) {
+	backendsEnd := backendBlocksEnd(vcl)
+	deliverStart := firstSubVCLDeliverStart(vcl)
+
+	// User declares sub vcl_deliver before the last backend: the historical
+	// placement would land the drain sub after it. Prepend the drain sub before
+	// the user's vcl_deliver, anchoring the drain backend after the first user
+	// backend (so it stays non-default and is declared before the sub).
+	if deliverStart >= 0 && deliverStart < backendsEnd {
+		firstBackendEnd := firstBackendBlockEnd(vcl)
+		if firstBackendEnd > 0 && firstBackendEnd <= deliverStart {
+			return injectDrainPrepended(vcl, backendName, firstBackendEnd, deliverStart), false
+		}
+
+		// The user's vcl_deliver precedes every backend, so there is no backend
+		// to declare the drain backend after while keeping it before the sub.
+		// Keep the historical placement and signal the caller to warn.
+		return injectDrainVCLLegacy(vcl, backendName), true
+	}
+
+	return injectDrainVCLLegacy(vcl, backendName), false
+}
+
+// injectDrainPrepended inserts the drain sub vcl_deliver immediately before the
+// user's first vcl_deliver and the drain backend immediately after the first
+// user backend. firstBackendEnd must be <= deliverStart so the backend is
+// declared before the sub.
+func injectDrainPrepended(vcl, backendName string, firstBackendEnd, deliverStart int) string {
+	// Insert from the highest offset downward so lower offsets stay valid.
+	out := vcl[:deliverStart] + drainDeliverSub(backendName) + vcl[deliverStart:]
+	out = out[:firstBackendEnd] + drainBackendBlock(backendName) + out[firstBackendEnd:]
+
+	// import std must precede the drain sub. Reuse a user import that already
+	// appears before the drain sub; otherwise inject one after the version line.
+	for _, pos := range importStdPositions(vcl) {
+		if pos[0] < deliverStart {
+			return out
+		}
+	}
+	versionEnd := vclVersionEnd(vcl)
+
+	return out[:versionEnd] + drainImportStd + out[versionEnd:]
+}
+
+// injectDrainVCLLegacy injects the drain backend declaration and drain sub
+// vcl_deliver right after the last user-declared backend block, so the drain
+// backend is never the first (default) backend and is declared before the sub
+// that references it (avoiding forward-reference errors on Varnish 6). If no
+// user backends are found, the drain VCL is inserted right after the user's
+// "import std;" line (if present) or after the version line.
+//
+// "import std;" is only injected (at the top) when the user VCL does not
+// already provide one before the drain insertion point. User "import std;"
+// lines that would end up after the injected vcl_deliver are commented out.
+func injectDrainVCLLegacy(vcl, backendName string) string {
+	versionEnd := vclVersionEnd(vcl)
+	backendsEnd := backendBlocksEnd(vcl)
+	imports := importStdPositions(vcl)
+
+	drainVCL := drainBackendBlock(backendName) + drainDeliverSub(backendName)
 
 	if backendsEnd > 0 {
 		// Has user backends — drain VCL goes after the last backend.
@@ -420,7 +560,7 @@ sub vcl_deliver {
 		}
 
 		// No early import — inject ours right after the version line.
-		importStd := "\n// Begin k8s-httpcache connection draining.\nimport std;\n// End k8s-httpcache connection draining.\n"
+		importStd := drainImportStd
 		result := vcl[:versionEnd] + importStd + vcl[versionEnd:]
 		// backendsEnd shifted by the inserted text.
 		return result[:backendsEnd+len(importStd)] + drainVCL + result[backendsEnd+len(importStd):]

@@ -1126,6 +1126,41 @@ func TestRunLoop_RenderErrorTriggersRollback(t *testing.T) {
 	}
 }
 
+// TestRunLoop_RenderErrorReappliesRolledBackTemplate verifies that when a new
+// template parses but Render fails, the controller does not just roll the
+// template back and give up: it re-renders the current inputs with the restored
+// good template and reloads varnishd, mirroring the varnish-reload-error path.
+// Otherwise any frontend/backend change coalesced into the same reload is
+// silently dropped and the live VCL stays stale until the next event.
+func TestRunLoop_RenderErrorReappliesRolledBackTemplate(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	var renderCalls atomic.Int32
+	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string]renderer.BackendGroup, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
+		if renderCalls.Add(1) == 1 {
+			return "", errors.New("render error with new template")
+		}
+		// Re-render with the rolled-back (known-good) template succeeds.
+		return "vcl 4.1; /* rolled back */", nil
+	}
+
+	wait := h.runAndWait(h.bcast)
+
+	// Template change → Reload OK → Render fails → Rollback → the restored
+	// template must be re-rendered and reloaded into varnishd.
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "re-render and reload after render-error rollback")
+
+	if _, _, rollbackCount := h.rend.counts(); rollbackCount < 1 {
+		t.Fatal("expected Rollback after render error with new template")
+	}
+
+	code := wait()
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+}
+
 func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()

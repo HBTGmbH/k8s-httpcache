@@ -1487,9 +1487,23 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			slog.Error("render error", "error", err)
 			emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error: %v", err))
 			if reloadedTemplate {
+				// A new template parsed but failed to render. Roll back to the
+				// known-good template and re-render the current inputs with it,
+				// so frontend/backend changes coalesced into this reload still
+				// take effect (mirroring the reload-failure path below). A
+				// render error with the already-active template is not retried:
+				// re-rendering the same inputs would fail the same way and
+				// recovers when new inputs arrive.
 				lc.metrics.VCLRollbacksTotal.Inc()
 				lc.rend.Rollback()
 				emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
+				if rollbackReload(lc, reasons) {
+					clearPending()
+				} else {
+					markRetry()
+				}
+
+				return
 			}
 			clearPending()
 
