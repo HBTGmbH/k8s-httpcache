@@ -4361,6 +4361,26 @@ func TestPrefixWriterReturnValue(t *testing.T) {
 	}
 }
 
+// TestPrefixWriterBufBoundedWithoutNewline verifies the buffered partial line
+// stays bounded even when the stream never contains a newline (e.g. a
+// misconfigured varnishncsa -F format). Without a cap, buf would accumulate
+// every byte ever written for the process lifetime and eventually OOM the pod.
+func TestPrefixWriterBufBoundedWithoutNewline(t *testing.T) {
+	t.Parallel()
+	pw := newPrefixWriter(io.Discard, "[x] ")
+	chunk := bytes.Repeat([]byte{'a'}, 32*1024) // 32 KiB, no newline
+	for range 1000 {                            // 32 MiB total, never a newline
+		_, err := pw.Write(chunk)
+		if err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	// buf must be capped, not grow with total bytes written.
+	if got := cap(pw.buf); got > 4<<20 {
+		t.Fatalf("prefixWriter.buf grew unbounded with newline-free input: cap=%d bytes", got)
+	}
+}
+
 type errWriter struct{ err error }
 
 func (w errWriter) Write([]byte) (int, error) { return 0, w.err }

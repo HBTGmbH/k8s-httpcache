@@ -51,6 +51,14 @@ type NCSAEvent struct {
 	Message string
 }
 
+// maxBufferedLine caps the bytes prefixWriter holds for a single not-yet-
+// terminated line. A stream that never emits a newline (e.g. a misconfigured
+// varnishncsa -F format) would otherwise grow buf without bound for the whole
+// process lifetime; once a partial line exceeds this, it is flushed (with the
+// prefix) and the buffer released. Normal line-oriented output never reaches
+// this size, so steady-state behaviour is unchanged.
+const maxBufferedLine = 1 << 20 // 1 MiB
+
 // prefixWriter wraps an [io.Writer] and prepends a fixed prefix to every line.
 // It buffers partial lines so the prefix appears exactly once at the start of
 // each newline-terminated line, even when Write is called with fragments.
@@ -78,6 +86,12 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	nl := bytes.IndexByte(p, '\n')
 	if nl < 0 {
 		w.buf = append(w.buf, p...)
+		// Bound memory for a pathological newline-free stream: flush the
+		// over-long partial line (prefixed) and release the buffer instead of
+		// accumulating forever.
+		if len(w.buf) >= maxBufferedLine {
+			return total, w.flushOverlongLine()
+		}
 
 		return total, nil
 	}
@@ -124,6 +138,23 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	}
 
 	return total, nil
+}
+
+// flushOverlongLine emits the buffered partial line (prefixed) and releases the
+// buffer. It bounds memory when the upstream stream never delivers a newline;
+// an absurdly long line is split across flushes (each re-prefixed), which is
+// acceptable since such input is not genuinely line-oriented.
+func (w *prefixWriter) flushOverlongLine() error {
+	w.scratch = w.scratch[:0]
+	w.scratch = append(w.scratch, w.prefix...)
+	w.scratch = append(w.scratch, w.buf...)
+	_, err := w.out.Write(w.scratch)
+	w.buf = nil // release the backing array so capacity is not pinned high
+	if err != nil {
+		return err //nolint:wrapcheck // pass through underlying writer error
+	}
+
+	return nil
 }
 
 // execRunner is the real implementation that uses os/exec.
