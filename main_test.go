@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"go.uber.org/goleak"
 	"k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -7099,4 +7101,80 @@ func TestRunLoop_FrontendChangeWithBroadcastDisabled(t *testing.T) {
 	if code := wait(); code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
+}
+
+// --- Watcher-wiring goleak tests (the run() helpers: startTemplateWatch /
+// startValuesDirWatchers / wireValuesFanIn) ---
+//
+// These verify that the wiring helpers create no goroutines/channels for a feature
+// whose auto-reload is disabled, and that the goroutines they DO create when enabled
+// are cleaned up on context cancel (no leak). goleak.IgnoreCurrent() snapshots
+// pre-existing goroutines at the start of each test so unrelated goroutines don't
+// cause false positives. These tests must NOT run in parallel: a sibling test's
+// goroutines would otherwise be seen as leaks, hence the //nolint:paralleltest.
+
+func TestStartTemplateWatch_DisabledCreatesNothing(t *testing.T) { //nolint:paralleltest // goleak must run in isolation
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	ch := startTemplateWatch(t.Context(), &config.Config{FileWatch: false})
+	if ch != nil {
+		t.Error("expected nil template channel when --file-watch is disabled")
+	}
+}
+
+func TestStartValuesDirWatchers_NotWatchingNoPollGoroutine(t *testing.T) { //nolint:paralleltest // goleak must run in isolation
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "k.yaml"), []byte("v"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		ValuesDirs:            []config.ValuesDirSpec{{Name: "d", Path: dir}},
+		ValuesDirPollInterval: time.Second,
+		ValuesDirWatch:        false,
+	}
+	watchers, names := startValuesDirWatchers(t.Context(), cfg)
+	if len(watchers) != 1 || len(names) != 1 {
+		t.Fatalf("expected 1 watcher + 1 name, got %d/%d", len(watchers), len(names))
+	}
+	// ScanOnce delivered the initial values synchronously; drain it. goleak then
+	// confirms no polling goroutine was started.
+	<-watchers[0].Changes()
+}
+
+func TestWireValuesFanIn_DisabledNilNoGoroutine(t *testing.T) { //nolint:paralleltest // goleak must run in isolation
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	dir := t.TempDir()
+	fvw := watcher.NewFileValuesWatcher(dir, time.Second)
+	ch := wireValuesFanIn(
+		&config.Config{ValuesDirWatch: false},
+		nil, nil,
+		[]*watcher.FileValuesWatcher{fvw}, []string{"d"},
+	)
+	if ch != nil {
+		t.Error("expected nil values channel: values-dir watch disabled and no --values watchers")
+	}
+}
+
+func TestStartTemplateWatch_EnabledChannelAndCleanup(t *testing.T) { //nolint:paralleltest // goleak must run in isolation
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	tmpl := filepath.Join(t.TempDir(), "vcl.tmpl")
+	err := os.WriteFile(tmpl, []byte("vcl 4.1;"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	ch := startTemplateWatch(ctx, &config.Config{
+		FileWatch:                true,
+		VCLTemplate:              tmpl,
+		VCLTemplateWatchInterval: 10 * time.Millisecond,
+	})
+	if ch == nil {
+		t.Fatal("expected a non-nil template channel when --file-watch is enabled")
+	}
+	cancel() // the watchFile goroutine exits on ctx cancel; goleak verifies it.
 }

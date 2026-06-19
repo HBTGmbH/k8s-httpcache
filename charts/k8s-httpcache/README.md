@@ -221,9 +221,9 @@ VCL reload).
 | serviceMonitor.scrapeTimeout | string | `""` | Scrape timeout |
 | serviceName | string | `""` |  |
 | startupProbe | object | `{"failureThreshold":30,"httpGet":{"path":"/ready","port":"http"},"periodSeconds":1}` | Startup probe configuration |
-| staticFiles | object | `{"enabled":false,"existingConfigMap":"","files":{},"mountPath":"/etc/k8s-httpcache-static"}` | Serve small static files (robots.txt, health JSON, HTML, CSS, SVG) directly from Varnish via std.fileread. When enabled, `staticFiles.files` are rendered into a ConfigMap and mounted read-only at `staticFiles.mountPath`; add a small vcl_recv/vcl_synth snippet to vclTemplateContent to serve them (see README). Text content only — binary files (favicon.ico, images) are not supported because std.fileread truncates at the first NUL byte. |
+| staticFiles | object | `{"enabled":false,"existingConfigMap":"","files":{},"mountPath":"/etc/k8s-httpcache-static"}` | Serve small static files (robots.txt, health JSON, HTML, CSS, SVG) directly from Varnish via std.fileread. When enabled, `staticFiles.files` are rendered into a ConfigMap and mounted read-only at `staticFiles.mountPath`; add a small vcl_recv/vcl_synth snippet to vclTemplateContent to serve them (see README). Text content only — binary files (favicon.ico, images) are not supported because std.fileread truncates at the first NUL byte. A content change rolls the pods (`checksum/static`), because std.fileread caches file content for the varnishd process lifetime and is NOT refreshed by a VCL reload. |
 | staticFiles.enabled | bool | `false` | Render the static-files ConfigMap, volume and mount. When false nothing is added and the chart renders exactly as before. |
-| staticFiles.existingConfigMap | string | `""` | Mount this pre-existing ConfigMap instead of generating one from `files`. Its keys are the filenames available under `mountPath`. When set, `files` is ignored and no ConfigMap is created. Updating it requires a pod restart. |
+| staticFiles.existingConfigMap | string | `""` | Mount this pre-existing ConfigMap instead of generating one from `files`. Its keys are the filenames available under `mountPath`. When set, `files` is ignored and no ConfigMap is created. Changes are not auto-detected — restart the pods to pick them up (std.fileread caches content until the varnishd process restarts). |
 | staticFiles.files | object | `{}` | Static text files as a map of filename -> content (becomes the ConfigMap `data`). Works with `--set-file`, e.g. `--set-file 'staticFiles.files.robots\.txt=./robots.txt'`. |
 | staticFiles.mountPath | string | `"/etc/k8s-httpcache-static"` | Mount path for the static files (read-only). MUST be a sibling of /etc/k8s-httpcache, never nested under it (that path is the read-only VCL template mount). Reference these paths from std.fileread in your VCL. |
 | strategy | object | `{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0},"type":"RollingUpdate"}` | Deployment strategy (ignored when argoRollouts.enabled is true) |
@@ -235,7 +235,8 @@ VCL reload).
 | tolerations | list | `[]` | Tolerations |
 | topologySpreadConstraints | list | `[]` | Topology spread constraints |
 | values | list | `[]` | ConfigMaps to watch for template values (repeatable). Each entry: { name, configmap } Generates --values=name:configmap |
-| valuesDirPollInterval | string | `""` |  |
+| valuesDirPollInterval | string | `""` | Poll interval for the values-dir directories (empty = app default 5s). Only effective when valuesDirWatch is enabled. |
+| valuesDirWatch | bool | `false` | Watch the values-dir directories for changes and reload VCL on change, INDEPENDENT of vcl.fileWatch (which governs the VCL template). Off by default. Set true to auto-reload on values-dir changes; empty inherits vcl.fileWatch. When off, values-dir changes are not auto-applied — restart pods to pick them up (the values-dir ConfigMap is externally referenced, so there is no checksum annotation to roll pods automatically, unlike VCL/static files). |
 | valuesDirs | list | `[]` | Directories to poll for YAML template values (repeatable). Each entry: { name, path, configMap (optional — creates a volume from this ConfigMap) } Generates --values-dir=name:path |
 | varnish.adminTimeout | string | `""` | Max time to wait for the cache admin CLI to become ready (empty = app default 30s) |
 | varnish.varnishadmPath | string | `""` | Path to varnishadm binary (empty = auto-detect) |
@@ -249,7 +250,7 @@ VCL reload).
 | varnishncsa.path | string | `""` | Path to varnishncsa binary (empty = app default "varnishncsa") |
 | varnishncsa.prefix | string | `""` | Prefix for each access log line on stdout (empty = app default "[access] ") |
 | varnishncsa.query | string | `""` | VSL query expression (empty = none) |
-| vcl.fileWatch | string | `""` | Watch VCL template and values-dir paths for changes. Empty string = omit flag (app default true). Set to true or false explicitly to emit the flag. |
+| vcl.fileWatch | bool | `false` | Watch the VCL **template** file for changes and reload VCL on change (off by default). Independent of values-dir (see `valuesDirWatch`); it is also the default for `valuesDirWatch`. Empty omits the flag (app default); set true/false explicitly. |
 | vcl.kept | string | `""` | Number of old VCL objects to retain after reload (empty = app default 0) |
 | vcl.reloadRetries | string | `""` | Max retry attempts for vcl.load failures (empty = app default 3) |
 | vcl.reloadRetryInterval | string | `""` | Wait between vcl.load retry attempts (empty = app default 2s) |

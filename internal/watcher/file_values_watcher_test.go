@@ -265,6 +265,28 @@ func TestFileValuesWatcherStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestFileValuesWatcherScanOnceDoesNotPoll(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeYAML(t, dir, "k.yaml", "v1")
+
+	w := NewFileValuesWatcher(dir, 20*time.Millisecond)
+	// ScanOnce delivers the initial state WITHOUT starting a polling goroutine —
+	// this is the path used when --values-dir-watch is disabled.
+	w.ScanOnce()
+
+	data := readFileValuesChanges(t, w)
+	if data["k"] != "v1" {
+		t.Fatalf("expected initial k=v1, got %v", data["k"])
+	}
+
+	// Change the file. With no poll loop running (only ScanOnce was called, not
+	// Run), no update must be delivered even after many poll intervals — proving
+	// no ongoing watcher goroutine exists.
+	writeYAML(t, dir, "k.yaml", "v2")
+	assertNoFileValuesChanges(t, w, 200*time.Millisecond)
+}
+
 func TestFileValuesWatcherReadDirError(t *testing.T) {
 	t.Parallel()
 	// Point at a nonexistent directory to trigger the ReadDir error path.

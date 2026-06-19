@@ -373,6 +373,7 @@ type Config struct {
 	DrainTimeout               time.Duration
 	VCLTemplateWatchInterval   time.Duration
 	FileWatch                  bool
+	ValuesDirWatch             bool
 	VarnishstatPath            string
 	TemplateDelimLeft          string
 	TemplateDelimRight         string
@@ -600,7 +601,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			&cli.DurationFlag{
 				Name:        "values-dir-poll-interval",
 				Category:    catListen,
-				Usage:       "Poll interval for --values-dir directories (only effective when --file-watch is enabled)",
+				Usage:       "Poll interval for --values-dir directories (only effective when --values-dir-watch is enabled)",
 				Value:       5 * time.Second,
 				Destination: &c.ValuesDirPollInterval,
 			},
@@ -977,9 +978,16 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			&cli.BoolFlag{
 				Name:        "file-watch",
 				Category:    catTiming,
-				Usage:       "Watch VCL template and --values-dir paths for changes (disable with --file-watch=false)",
+				Usage:       "Watch the VCL template file for changes (and the default for --values-dir-watch). Disable with --file-watch=false.",
 				Value:       true,
 				Destination: &c.FileWatch,
+			},
+			&cli.BoolFlag{
+				Name:        "values-dir-watch",
+				Category:    catTiming,
+				Usage:       "Watch --values-dir directories for changes (default: follows --file-watch). Set independently to decouple values-dir reloads from VCL template reloads.",
+				Value:       true,
+				Destination: &c.ValuesDirWatch,
 			},
 			&cli.IntFlag{
 				Name:        "vcl-reload-retries",
@@ -1555,6 +1563,13 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			// Resolve cache binary paths.
 			// Priority per binary: explicit vinyl flag > explicit varnish flag > auto-detect.
 			// Auto-detect: if vinyld is found on PATH, use vinyl defaults; otherwise keep varnish defaults.
+			// --values-dir-watch defaults to --file-watch when not explicitly set,
+			// so --file-watch=false still disables values-dir polling (as before)
+			// while the two can be controlled independently when desired.
+			if !cmd.IsSet("values-dir-watch") {
+				c.ValuesDirWatch = c.FileWatch
+			}
+
 			varnishExplicit := cmd.IsSet("varnishd-path") || cmd.IsSet("varnishadm-path") || cmd.IsSet("varnishstat-path") || cmd.IsSet("varnishncsa-path")
 			resolveBinaryPaths(c, rawVinyldPath, rawVinyladmPath, rawVinylstatPath, rawVinylncsaPath, varnishExplicit, exec.LookPath)
 

@@ -107,8 +107,17 @@ valuesDirs: []
 #   path: /etc/values-dir
 #   configMap: my-dir-configmap
 
-# -- Poll interval for --values-dir directories (empty = app default 5s)
+# -- Poll interval for the values-dir directories (empty = app default 5s).
+# Only effective when valuesDirWatch is enabled.
 valuesDirPollInterval: ""
+
+# -- Watch the values-dir directories for changes and reload VCL on change,
+# INDEPENDENT of vcl.fileWatch (which governs the VCL template). Off by default.
+# Set true to auto-reload on values-dir changes; empty inherits vcl.fileWatch.
+# When off, values-dir changes are not auto-applied — restart pods to pick them up
+# (the values-dir ConfigMap is externally referenced, so there is no checksum
+# annotation to roll pods automatically, unlike VCL/static files).
+valuesDirWatch: false
 
 # -- Annotation keys or prefixes to exclude from backend `.Annotations` (repeatable).
 # A trailing `*` matches a prefix (e.g. "kubectl.kubernetes.io/*").
@@ -263,9 +272,11 @@ vcl:
   shutdownTimeout: ""
   # -- Poll interval for VCL template file changes (empty = app default 5s)
   templateWatchInterval: ""
-  # -- Watch VCL template and values-dir paths for changes.
-  # Empty string = omit flag (app default true). Set to true or false explicitly to emit the flag.
-  fileWatch: ""
+  # -- Watch the VCL **template** file for changes and reload VCL on change (off
+  # by default). Independent of values-dir (see `valuesDirWatch`); it is also the
+  # default for `valuesDirWatch`.
+  # Empty omits the flag (app default); set true/false explicitly.
+  fileWatch: false
   # -- Max retry attempts for vcl.load failures (empty = app default 3)
   reloadRetries: ""
   # -- Wait between vcl.load retry attempts (empty = app default 2s)
@@ -382,7 +393,9 @@ vclTemplateContent: |
 # into a ConfigMap and mounted read-only at `staticFiles.mountPath`; add a small
 # vcl_recv/vcl_synth snippet to vclTemplateContent to serve them (see README).
 # Text content only — binary files (favicon.ico, images) are not supported
-# because std.fileread truncates at the first NUL byte.
+# because std.fileread truncates at the first NUL byte. A content change rolls
+# the pods (`checksum/static`), because std.fileread caches file content for the
+# varnishd process lifetime and is NOT refreshed by a VCL reload.
 staticFiles:
   # -- Render the static-files ConfigMap, volume and mount. When false nothing
   # is added and the chart renders exactly as before.
@@ -402,7 +415,9 @@ staticFiles:
   #    {"status":"ok"}
   # -- Mount this pre-existing ConfigMap instead of generating one from `files`.
   # Its keys are the filenames available under `mountPath`. When set, `files` is
-  # ignored and no ConfigMap is created. Updating it requires a pod restart.
+  # ignored and no ConfigMap is created. Changes are not auto-detected — restart
+  # the pods to pick them up (std.fileread caches content until the varnishd
+  # process restarts).
   existingConfigMap: ""
 
 # ===========================================================================

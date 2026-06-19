@@ -243,7 +243,7 @@ k8s-httpcache [flags] [-- varnishd-args...]
 | `--secrets` | | Secret to watch for template values (repeatable). See [Secrets specification](#secrets-specification). |
 | `--tls-cert` | | `kubernetes.io/tls` Secret to install as a frontend TLS certificate (Varnish 9+, repeatable). See [TLS / HTTPS](#tls--https). |
 | `--values-dir` | | Directory to poll for YAML template values (repeatable). See [Values from directories](#values-from-directories). |
-| `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories (only effective when `--file-watch` is enabled) |
+| `--values-dir-poll-interval` | `5s` | Poll interval for `--values-dir` directories (only effective when `--values-dir-watch` is enabled) |
 | `--exclude-annotations` | | Annotation keys or prefixes to exclude from backend annotations (repeatable; trailing `*` for prefix match, e.g. `kubectl.kubernetes.io/*`). `kubectl.kubernetes.io/last-applied-configuration` is always excluded by default. |
 
 ### Cache binary paths
@@ -519,7 +519,8 @@ Events require RBAC permission to `create` and `patch` the `events` resource (se
 | `--startup-timeout` | `3m0s` | Max time to wait for the initial endpoint snapshot from all watchers before giving up and exiting; guards against a hung startup when the Kubernetes API is unreachable (`0` disables the limit) |
 | `--kube-api-timeout` | `30s` | Timeout for one-shot Kubernetes API calls made at startup (node zone lookup, pod UID lookup); does not affect informer watches (`0` disables the limit) |
 | `--vcl-template-watch-interval` | `5s` | Poll interval for VCL template file changes (only effective when `--file-watch` is enabled) |
-| `--file-watch` | `true` | Watch VCL template and `--values-dir` paths for changes (disable with `--file-watch=false`) |
+| `--file-watch` | `true` | Watch the **VCL template** file for changes (disable with `--file-watch=false`). Also the default for `--values-dir-watch`. |
+| `--values-dir-watch` | follows `--file-watch` | Watch `--values-dir` directories for changes, **independently** of the VCL template. Set explicitly to decouple values-dir reloads from VCL-template reloads. |
 | `--vcl-reload-retries` | `3` | Max retry attempts for `vcl.load` failures (`0` disables retries) |
 | `--vcl-reload-retry-interval` | `2s` | Wait between `vcl.load` retry attempts |
 | `--vcl-kept` | `0` | Number of old VCL objects to retain after reload (`0` discards all) |
@@ -939,12 +940,15 @@ sub vcl_synth {
 
 ### Caveats
 
-- **Updates require a VCL reload.** `std.fileread` reads each file once, at VCL
-  load time, and caches it. For inline `staticFiles.files`, the chart sets a
-  `checksum/static` pod annotation so `helm upgrade` rolls the pods (and reloads
-  VCL) whenever the content changes. For `existingConfigMap`, editing the
-  ConfigMap alone will **not** change what is served — restart the pods
-  (`kubectl rollout restart`) to pick up new content.
+- **Updates require a pod restart.** `std.fileread` reads each file once and caches
+  its content for the **varnishd process lifetime** — the cache is keyed by path and
+  is **not refreshed by a VCL reload** ([upstream docs](https://varnish-cache.org/docs/trunk/reference/vmod_std.html#std-fileread)),
+  so only restarting the varnishd process re-reads the file. The chart therefore rolls
+  the pods on a content change: a `checksum/static` pod annotation means a `helm
+  upgrade` with changed `staticFiles.files` (or a change to an `existingConfigMap`)
+  triggers a rolling restart that picks up the new content. True no-restart hot-reload
+  is not possible with `std.fileread`; it would require embedding the content directly
+  in the VCL or a custom Varnish image with a re-reading VMOD (e.g. `libvmod-file`).
 - **Text only.** VCL strings are NUL-terminated, so `std.fileread` truncates a
   file at its first `0x00` byte. Binary assets (`favicon.ico`, images) are not
   supported this way — serve them from a real backend instead.

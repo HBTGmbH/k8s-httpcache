@@ -635,6 +635,7 @@ jobs:
       with:
         version: v0.35.0
         driver-opts: image=moby/buildkit:v0.31.0@sha256:a095b3d11ce1a9a05b6064ef515dfca0291ec5bcf2ea8178da8f6461924294e1
+        cache-binary: false
     - name: Docker Login
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
       if: github.event_name != 'pull_request'

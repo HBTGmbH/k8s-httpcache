@@ -15,6 +15,9 @@
 {{- fail "tlsCerts is set but no listenAddrs entry uses the 'https' protocol; add an https listener, e.g. listenAddrs: [\"http=:8080,http\", \"https=:8443,https\"]" }}
 {{- end }}
 {{- end }}
+{{- if and .Values.staticFiles.enabled (not (or .Values.staticFiles.files .Values.staticFiles.existingConfigMap)) }}
+{{- fail "staticFiles.enabled is true but neither staticFiles.files nor staticFiles.existingConfigMap is set; provide files to serve (staticFiles.files) or an existing ConfigMap (staticFiles.existingConfigMap), or set staticFiles.enabled: false" }}
+{{- end }}
 {{- if .Values.argoRollouts.enabled }}
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
@@ -60,7 +63,8 @@ spec:
   template:
     metadata:
       annotations:
-        {{- if not .Values.vcl.fileWatch }}
+        {{- $fw := lower (toString .Values.vcl.fileWatch) }}
+        {{- if or (eq $fw "false") (eq $fw "0") (eq $fw "f") }}
         checksum/vcl: {{ get (include (print .Template.BasePath "/configmap-vcl.yaml") . | fromYaml) "data" | toYaml | sha256sum }}
         {{- end }}
         {{- if and .Values.staticFiles.enabled .Values.staticFiles.files (not .Values.staticFiles.existingConfigMap) }}
@@ -206,6 +210,9 @@ spec:
             {{- end }}
             {{- with .Values.valuesDirPollInterval }}
             - --values-dir-poll-interval={{ . }}
+            {{- end }}
+            {{- if ne (toString .Values.valuesDirWatch) "" }}
+            - --values-dir-watch={{ .Values.valuesDirWatch }}
             {{- end }}
             {{- /* --- Exclude annotations (repeatable) --- */}}
             {{- range .Values.excludeAnnotations }}
@@ -422,7 +429,7 @@ spec:
               mountPath: /tmp
             - name: varnish-workdir
               mountPath: /var/lib/varnish
-            {{- if .Values.staticFiles.enabled }}
+            {{- if and .Values.staticFiles.enabled (or .Values.staticFiles.files .Values.staticFiles.existingConfigMap) }}
             - name: static-files
               mountPath: {{ .Values.staticFiles.mountPath }}
               readOnly: true
@@ -452,7 +459,7 @@ spec:
         - name: varnish-workdir
           emptyDir:
             medium: Memory
-        {{- if .Values.staticFiles.enabled }}
+        {{- if and .Values.staticFiles.enabled (or .Values.staticFiles.files .Values.staticFiles.existingConfigMap) }}
         - name: static-files
           configMap:
             name: {{ .Values.staticFiles.existingConfigMap | default (printf "%s-static" (include "k8s-httpcache.fullname" .)) }}

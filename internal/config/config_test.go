@@ -2661,6 +2661,42 @@ func TestParseValuesDirValid(t *testing.T) {
 	}
 }
 
+// --- --values-dir-watch flag tests ---
+
+func TestParseValuesDirWatchInheritsFileWatch(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	base := []string{"test", "--service-name=s", "--namespace=default", "--vcl-template=" + vcl}
+
+	cases := []struct {
+		name      string
+		extra     []string
+		fileWatch bool
+		valuesDir bool
+	}{
+		{"defaults: both on", nil, true, true},
+		{"file-watch=false inherits to values-dir", []string{"--file-watch=false"}, false, false},
+		{"explicit values-dir-watch overrides inheritance", []string{"--file-watch=false", "--values-dir-watch=true"}, false, true},
+		{"vcl on, values-dir off", []string{"--file-watch=true", "--values-dir-watch=false"}, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := append(append([]string{}, base...), tc.extra...)
+			cfg, err := Parse("", args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.FileWatch != tc.fileWatch {
+				t.Errorf("FileWatch = %v, want %v", cfg.FileWatch, tc.fileWatch)
+			}
+			if cfg.ValuesDirWatch != tc.valuesDir {
+				t.Errorf("ValuesDirWatch = %v, want %v", cfg.ValuesDirWatch, tc.valuesDir)
+			}
+		})
+	}
+}
+
 // --- --template-delims flag tests ---
 
 func TestParseTemplateDelimsDefault(t *testing.T) {

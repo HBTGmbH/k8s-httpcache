@@ -828,23 +828,8 @@ func run() int {
 		twWatchers = append(twWatchers, tw)
 	}
 
-	// Start directory watchers for --values-dir.
-	var (
-		fvwNames    = make([]string, 0, len(cfg.ValuesDirs))
-		fvwWatchers = make([]*watcher.FileValuesWatcher, 0, len(cfg.ValuesDirs))
-	)
-	for _, vd := range cfg.ValuesDirs {
-		fvw := watcher.NewFileValuesWatcher(vd.Path, cfg.ValuesDirPollInterval)
-		name := vd.Name
-		go func() {
-			runErr := fvw.Run(ctx)
-			if runErr != nil {
-				slog.Error("values-dir watcher error", "values_dir", name, "error", runErr)
-			}
-		}()
-		fvwNames = append(fvwNames, name)
-		fvwWatchers = append(fvwWatchers, fvw)
-	}
+	// Start directory watchers for --values-dir (polling only when enabled).
+	fvwWatchers, fvwNames := startValuesDirWatchers(ctx, cfg)
 
 	// Populate remaining static status fields now that config is known.
 	status.setServiceInfo(cfg.ServiceName, cfg.ServiceNamespace, cfg.Drain, cfg.BroadcastAddr != "")
@@ -1033,13 +1018,8 @@ func run() int {
 		slog.Info("access logging enabled", "path", cfg.VarnishncsaPath)
 	}
 
-	// Watch VCL template file for changes.
-	var templateCh <-chan struct{}
-	if cfg.FileWatch {
-		templateCh = watchFile(ctx, cfg.VCLTemplate, cfg.VCLTemplateWatchInterval)
-	} else {
-		slog.Info("file watching disabled, skipping VCL template and --values-dir watchers")
-	}
+	// Watch VCL template file for changes (only when --file-watch is enabled).
+	templateCh := startTemplateWatch(ctx, cfg)
 
 	// Fan-in backend watcher updates to a single channel.
 	var backendCh chan backendChange
@@ -1069,36 +1049,9 @@ func run() int {
 		}
 	}
 
-	// Fan-in ConfigMapWatcher and FileValuesWatcher updates to a single channel.
-	// When file watching is disabled, FileValuesWatcher goroutines are not
-	// wired into valuesCh so disk changes won't trigger reloads. (The
-	// watchers were still started above to provide initial directory state.)
-	var valuesCh chan valuesChange
-	fvwCount := len(fvwWatchers)
-	if !cfg.FileWatch {
-		fvwCount = 0
-	}
-	if len(vwWatchers) > 0 || fvwCount > 0 {
-		valuesCh = make(chan valuesChange, len(vwWatchers)+fvwCount)
-		for i, vw := range vwWatchers {
-			name := vwNames[i]
-			go func() {
-				for data := range vw.Changes() {
-					valuesCh <- valuesChange{name: name, data: data}
-				}
-			}()
-		}
-		if cfg.FileWatch {
-			for i, fvw := range fvwWatchers {
-				name := fvwNames[i]
-				go func() {
-					for data := range fvw.Changes() {
-						valuesCh <- valuesChange{name: name, data: data}
-					}
-				}()
-			}
-		}
-	}
+	// Fan-in --values (ConfigMap) and --values-dir updates to a single channel
+	// (the latter only when --values-dir-watch is enabled).
+	valuesCh := wireValuesFanIn(cfg, vwWatchers, vwNames, fvwWatchers, fvwNames)
 
 	// Fan-in SecretWatcher updates to a single channel.
 	var secretsCh chan secretsChange
@@ -2130,6 +2083,80 @@ func valuesChan(ch chan valuesChange) <-chan valuesChange {
 	return ch
 }
 
+// startTemplateWatch returns a channel signalling VCL template file changes, or
+// nil (and starts no goroutine) when --file-watch is disabled.
+func startTemplateWatch(ctx context.Context, cfg *config.Config) <-chan struct{} {
+	if !cfg.FileWatch {
+		slog.Info("VCL template file watching disabled (--file-watch=false); --values-dir is controlled independently")
+
+		return nil
+	}
+
+	return watchFile(ctx, cfg.VCLTemplate, cfg.VCLTemplateWatchInterval)
+}
+
+// startValuesDirWatchers creates a FileValuesWatcher per --values-dir. The polling
+// goroutine is started only when --values-dir-watch is enabled; otherwise a single
+// ScanOnce delivers the initial values with no ongoing poller.
+func startValuesDirWatchers(ctx context.Context, cfg *config.Config) ([]*watcher.FileValuesWatcher, []string) {
+	names := make([]string, 0, len(cfg.ValuesDirs))
+	watchers := make([]*watcher.FileValuesWatcher, 0, len(cfg.ValuesDirs))
+	for _, vd := range cfg.ValuesDirs {
+		fvw := watcher.NewFileValuesWatcher(vd.Path, cfg.ValuesDirPollInterval)
+		name := vd.Name
+		if cfg.ValuesDirWatch {
+			go func() {
+				runErr := fvw.Run(ctx)
+				if runErr != nil {
+					slog.Error("values-dir watcher error", "values_dir", name, "error", runErr)
+				}
+			}()
+		} else {
+			fvw.ScanOnce()
+		}
+		names = append(names, name)
+		watchers = append(watchers, fvw)
+	}
+
+	return watchers, names
+}
+
+// wireValuesFanIn fans ConfigMap (--values) and FileValuesWatcher (--values-dir)
+// updates into one channel. The --values-dir goroutines are wired only when
+// --values-dir-watch is enabled. Returns nil (and starts no goroutine) when there
+// is nothing to fan in.
+func wireValuesFanIn(cfg *config.Config, vwWatchers []*watcher.ConfigMapWatcher, vwNames []string, fvwWatchers []*watcher.FileValuesWatcher, fvwNames []string) chan valuesChange {
+	fvwCount := len(fvwWatchers)
+	if !cfg.ValuesDirWatch {
+		fvwCount = 0
+	}
+	if len(vwWatchers) == 0 && fvwCount == 0 {
+		return nil
+	}
+
+	valuesCh := make(chan valuesChange, len(vwWatchers)+fvwCount)
+	for i, vw := range vwWatchers {
+		name := vwNames[i]
+		go func() {
+			for data := range vw.Changes() {
+				valuesCh <- valuesChange{name: name, data: data}
+			}
+		}()
+	}
+	if cfg.ValuesDirWatch {
+		for i, fvw := range fvwWatchers {
+			name := fvwNames[i]
+			go func() {
+				for data := range fvw.Changes() {
+					valuesCh <- valuesChange{name: name, data: data}
+				}
+			}()
+		}
+	}
+
+	return valuesCh
+}
+
 // secretsChan returns ch, or nil if ch is nil (so select skips it).
 func secretsChan(ch chan secretsChange) <-chan secretsChange {
 	if ch == nil {
@@ -2260,7 +2287,9 @@ func watchFile(ctx context.Context, path string, interval time.Duration) <-chan 
 	ch := make(chan struct{}, 1)
 
 	go func() {
-		last, _ := os.ReadFile(path)
+		// path is the operator-configured --vcl-template, validated at startup, not
+		// request-derived input.
+		last, _ := os.ReadFile(path) //nolint:gosec // trusted operator-configured path
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -2269,7 +2298,7 @@ func watchFile(ctx context.Context, path string, interval time.Duration) <-chan 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				current, err := os.ReadFile(path)
+				current, err := os.ReadFile(path) //nolint:gosec // trusted operator-configured path
 				if err != nil {
 					continue
 				}

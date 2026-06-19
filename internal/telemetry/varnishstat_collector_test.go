@@ -2265,7 +2265,8 @@ func TestVarnishstatCollectorConcurrentCollect(t *testing.T) {
 				ch := make(chan prometheus.Metric, 64)
 				c.Collect(ch)
 				close(ch)
-				for range ch { //nolint:revive // drain only
+				for m := range ch {
+					_ = m
 				}
 			}
 		})

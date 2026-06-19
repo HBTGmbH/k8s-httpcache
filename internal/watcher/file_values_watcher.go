@@ -41,8 +41,19 @@ func (w *FileValuesWatcher) Changes() <-chan map[string]any {
 	return w.ch
 }
 
-// Run starts polling the directory and blocks until ctx is cancelled.
+// ScanOnce performs a single scan and delivers the result on Changes(), without
+// starting the polling loop. Use it to obtain initial directory values when
+// watching is disabled, so no polling goroutine is created.
+func (w *FileValuesWatcher) ScanOnce() {
+	w.scan()
+}
+
+// Run starts polling the directory and blocks until ctx is cancelled. On exit it
+// closes the Changes() channel so consumers ranging over it terminate cleanly
+// (no leaked fan-in goroutine on shutdown).
 func (w *FileValuesWatcher) Run(ctx context.Context) error {
+	defer close(w.ch)
+
 	// Deliver initial state immediately.
 	w.scan()
 
