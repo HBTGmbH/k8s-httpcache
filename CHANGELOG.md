@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.2.0](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.1.0...v1.2.0) (2026-06-19)
+
+
+### Features
+
+* **chart:** add support for serving static files ([2db9f76](https://github.com/HBTGmbH/k8s-httpcache/commit/2db9f7650bc29d9ba6a81c927640c315edbe64ba))
+* **metrics:** add per-pod broadcast and TLS cert-expiry metrics ([3469aed](https://github.com/HBTGmbH/k8s-httpcache/commit/3469aed4e643d97cb4d9b54592cae1b1461c5bcc))
+* separate VCL watch from values dir watch ([915d323](https://github.com/HBTGmbH/k8s-httpcache/commit/915d323d22efd6bfb02e493bf0bc214e49a49bfb))
+
+
+### Bug Fixes
+
+* bound broadcast request metric's method label to prevent cardinality leak ([67c9dd9](https://github.com/HBTGmbH/k8s-httpcache/commit/67c9dd9b8c98c1223853f739bad491d829b1325b))
+* cap prefixWriter buffer to prevent unbounded growth on newline-free output ([2d4a309](https://github.com/HBTGmbH/k8s-httpcache/commit/2d4a3090a7a4fad8bc5ff76604eb1f0ccf743958))
+* correctness bugs in varnishd lifecycle and backend discovery ([2a105d0](https://github.com/HBTGmbH/k8s-httpcache/commit/2a105d0c614bc9dfd2eb3c41b40b598223fa9c0e))
+* delete endpoint_updates_total series on discovered backend removal ([7d8260f](https://github.com/HBTGmbH/k8s-httpcache/commit/7d8260f329cb7bdd76d9c9de4c6e454334edb4ad))
+* drain vcl_deliver placement and render-error template recovery ([4a4a187](https://github.com/HBTGmbH/k8s-httpcache/commit/4a4a187dad436443a531abe73161cf477bf865af))
+* enforce documented --broadcast-write-timeout &gt; read + client constraint ([4a1c5a0](https://github.com/HBTGmbH/k8s-httpcache/commit/4a1c5a0afd369f8b75a96b5dd7194d15212f2e61))
+* shut down gracefully instead of os.Exit on HTTP server failure ([267a370](https://github.com/HBTGmbH/k8s-httpcache/commit/267a3706c586d1ed2c07964298160133de28367b))
+
 ## [1.1.0](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.0.0...v1.1.0) (2026-06-17)
 
 
