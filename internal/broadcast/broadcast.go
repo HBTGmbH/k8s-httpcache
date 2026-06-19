@@ -49,12 +49,15 @@ func normalizeMethod(method string) string {
 const (
 	outcomeOK             = "ok"              // pod returned an HTTP status < 400
 	outcomeHTTPError      = "http_error"      // pod returned an HTTP status >= 400
-	outcomeTransportError = "transport_error" // no HTTP response (connect/timeout/read error)
+	outcomeTransportError = "transport_error" // no HTTP response received (connection or timeout error)
 )
 
 // classifyOutcome buckets a per-pod fan-out result by its status code. A zero
-// status means forward never obtained an HTTP response (transport-level failure
-// such as a connection error or timeout — see forward).
+// status means forward never obtained an HTTP response (a transport-level
+// failure such as a connection error or timeout — see forward). A body-read
+// error that occurs after a response was received keeps that response's status
+// code, so it is bucketed by that status (ok/http_error), not transport_error:
+// the request did reach the pod and was answered.
 func classifyOutcome(status int) string {
 	switch {
 	case status == 0:

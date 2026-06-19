@@ -937,6 +937,19 @@ func TestForwardResponseBodyReadError(t *testing.T) {
 	if !strings.Contains(r.Body, "read error:") {
 		t.Errorf("expected 'read error:' in body, got %q", r.Body)
 	}
+
+	// The response status (200) was received before the body read failed, so
+	// it is preserved in the client-facing result and the outcome is bucketed
+	// by that status — ok, not transport_error. See classifyOutcome.
+	if r.Status != http.StatusOK {
+		t.Errorf("read-error result Status = %d, want 200 (status received before the body read failed)", r.Status)
+	}
+	if n := collectSeriesCount(s.metrics.BroadcastPodResultsTotal); n != 1 {
+		t.Fatalf("broadcast_pod_results_total has %d series, want 1 (only ok)", n)
+	}
+	if got := podResultCount(t, s, outcomeOK); got != 1 {
+		t.Errorf("broadcast_pod_results_total{outcome=ok} = %v, want 1 (read error after 200 is bucketed by status)", got)
+	}
 }
 
 func TestNewPanicsOnNilMetrics(t *testing.T) {

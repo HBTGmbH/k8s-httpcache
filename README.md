@@ -311,7 +311,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `varnishd_up` | Gauge | | Whether the varnishd process is running (1/0) |
 | `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
 | `broadcast_fanout_targets` | Gauge | | Number of frontend pods targeted by the last broadcast |
-| `broadcast_pod_results_total` | Counter | `outcome` | Per-pod broadcast fan-out results, bucketed into `ok` (HTTP < 400), `http_error` (HTTP ≥ 400), or `transport_error` (no HTTP response: connect/timeout/read error). Surfaces partial-fleet invalidation that the aggregate `200` response otherwise hides |
+| `broadcast_pod_results_total` | Counter | `outcome` | Per-pod broadcast fan-out results, bucketed into `ok` (HTTP < 400), `http_error` (HTTP ≥ 400), or `transport_error` (no HTTP response received: connection or timeout error). Surfaces partial-fleet invalidation that the aggregate `200` response otherwise hides |
 | `build_info` | Gauge | `version`, `goversion` | Build metadata (always 1) |
 | `debounce_events_total` | Counter | `group` | Events received per debounce group |
 | `debounce_fires_total` | Counter | `group` | Debounce timer fires per group |
