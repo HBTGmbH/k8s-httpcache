@@ -4922,17 +4922,48 @@ func TestStatusSnapshotTLS(t *testing.T) {
 		t.Error("TLS.LastReloadAt = nil after recordTLSCert, want non-nil")
 	}
 
-	// recordTLSCertInfo: a valid cert is parsed and recorded; an unparseable
-	// one is logged and skipped; a nil store is a safe no-op.
+	// recordTLSCertInfo: a valid cert is parsed and recorded (in the status
+	// store and the expiry gauge); an unparseable one is logged and skipped
+	// (no gauge series); a nil store/metrics is a safe no-op.
 	store2 := &statusStore{startedAt: time.Now()}
-	recordTLSCertInfo(store2, "frontend", makeTestCertPEM(t, "ex.com", []string{"ex.com"}, time.Now().Add(time.Hour)))
-	recordTLSCertInfo(store2, "bad", []byte("not a certificate"))
-	recordTLSCertInfo(nil, "frontend", makeTestCertPEM(t, "x", nil, time.Now().Add(time.Hour)))
+	m := telemetry.NewMetrics(prometheus.NewRegistry(), nil)
+	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	recordTLSCertInfo(store2, m, "frontend", makeTestCertPEM(t, "ex.com", []string{"ex.com"}, expiry))
+	recordTLSCertInfo(store2, m, "bad", []byte("not a certificate"))
+	recordTLSCertInfo(nil, nil, "frontend", makeTestCertPEM(t, "x", nil, time.Now().Add(time.Hour)))
 
 	snap2 := store2.snapshot()
 	if len(snap2.TLS.Certificates) != 1 || snap2.TLS.Certificates[0].Name != "frontend" {
 		t.Errorf("recordTLSCertInfo: certificates = %v, want exactly one named 'frontend'", snap2.TLS.Certificates)
 	}
+	// The expiry gauge holds the cert's NotAfter as a Unix timestamp for the
+	// parseable cert, and the bad cert created no series (no false alerting).
+	var dm dto.Metric
+	err := m.TLSCertExpiryTimestampSeconds.WithLabelValues("frontend").Write(&dm)
+	if err != nil {
+		t.Fatalf("write gauge: %v", err)
+	}
+	if got := dm.GetGauge().GetValue(); got != float64(expiry.Unix()) {
+		t.Errorf("tls_cert_expiry_timestamp_seconds{cert=frontend} = %v, want %v", got, float64(expiry.Unix()))
+	}
+	if n := countSeries(m.TLSCertExpiryTimestampSeconds); n != 1 {
+		t.Errorf("tls_cert_expiry_timestamp_seconds has %d series, want 1 (unparseable cert must not create one)", n)
+	}
+}
+
+// countSeries returns the number of metric series a collector currently exports.
+func countSeries(c prometheus.Collector) int {
+	ch := make(chan prometheus.Metric)
+	go func() {
+		c.Collect(ch)
+		close(ch)
+	}()
+	n := 0
+	for range ch {
+		n++
+	}
+
+	return n
 }
 
 // TestStatusHandlerNoTLS asserts the served JSON when no TLS is configured and

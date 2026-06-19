@@ -88,6 +88,42 @@ func TestBroadcastFanoutTargets(t *testing.T) {
 	assertGaugeValue(t, m.BroadcastFanoutTargets, 3)
 }
 
+func TestBroadcastPodResultsTotal(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.BroadcastPodResultsTotal.WithLabelValues("ok").Inc()
+	m.BroadcastPodResultsTotal.WithLabelValues("http_error").Inc()
+	m.BroadcastPodResultsTotal.WithLabelValues("transport_error").Inc()
+	m.BroadcastPodResultsTotal.WithLabelValues("ok").Inc()
+
+	assertCounterValue(t, m.BroadcastPodResultsTotal.WithLabelValues("ok"), 2)
+	assertCounterValue(t, m.BroadcastPodResultsTotal.WithLabelValues("http_error"), 1)
+	assertCounterValue(t, m.BroadcastPodResultsTotal.WithLabelValues("transport_error"), 1)
+}
+
+func TestBroadcastPodDurationSeconds(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.BroadcastPodDurationSeconds.Observe(0.01)
+	m.BroadcastPodDurationSeconds.Observe(0.02)
+
+	var dm dto.Metric
+	err := m.BroadcastPodDurationSeconds.Write(&dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dm.GetHistogram().GetSampleCount(); got != 2 {
+		t.Errorf("histogram sample count = %d, want 2", got)
+	}
+}
+
+func TestTLSCertExpiryTimestampSeconds(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
+	m.TLSCertExpiryTimestampSeconds.WithLabelValues("frontend").Set(1_700_000_000)
+	assertGaugeValue(t, m.TLSCertExpiryTimestampSeconds.WithLabelValues("frontend"), 1_700_000_000)
+}
+
 func TestBuildInfo(t *testing.T) {
 	t.Parallel()
 	m := NewMetrics(prometheus.NewRegistry(), testBuckets)
@@ -243,6 +279,8 @@ func TestMetricsRegistered(t *testing.T) {
 		"k8s_httpcache_secrets_updates_total",
 		"k8s_httpcache_broadcast_requests_total",
 		"k8s_httpcache_broadcast_fanout_targets",
+		"k8s_httpcache_broadcast_pod_results_total",
+		"k8s_httpcache_broadcast_pod_duration_seconds",
 		"k8s_httpcache_build_info",
 		"k8s_httpcache_debounce_events_total",
 		"k8s_httpcache_debounce_fires_total",
@@ -255,6 +293,7 @@ func TestMetricsRegistered(t *testing.T) {
 		"k8s_httpcache_tls_cert_reloads_total",
 		"k8s_httpcache_tls_cert_operations_total",
 		"k8s_httpcache_tls_certs_active",
+		"k8s_httpcache_tls_cert_expiry_timestamp_seconds",
 	}
 
 	if len(found) != len(want) {

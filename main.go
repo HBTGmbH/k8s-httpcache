@@ -343,19 +343,26 @@ func parseTLSCertInfo(name string, certPEM []byte) (tlsCertInfo, error) {
 }
 
 // recordTLSCertInfo parses a leaf certificate and records its metadata in the
-// status store. Parse failures are logged but never fatal — the certificate has
-// already been validated and loaded by the manager.
-func recordTLSCertInfo(store *statusStore, name string, certPEM []byte) {
-	if store == nil {
-		return
-	}
+// status store and the cert-expiry gauge. Parse failures are logged but never
+// fatal — the certificate has already been validated and loaded by the manager.
+//
+// The expiry gauge is keyed by the configured certificate name, of which there
+// is a fixed set (one per --tls-cert flag), so the series count is bounded and
+// no per-cert cleanup is needed: certificate names are never removed at runtime
+// (an emptied Secret keeps the previously-loaded certificate active).
+func recordTLSCertInfo(store *statusStore, metrics *telemetry.Metrics, name string, certPEM []byte) {
 	info, err := parseTLSCertInfo(name, certPEM)
 	if err != nil {
 		slog.Warn("could not parse TLS certificate for /status", "cert", name, "error", err)
 
 		return
 	}
-	store.recordTLSCert(&info)
+	if store != nil {
+		store.recordTLSCert(&info)
+	}
+	if metrics != nil {
+		metrics.TLSCertExpiryTimestampSeconds.WithLabelValues(name).Set(float64(info.NotAfter.Unix()))
+	}
 }
 
 // statusHandler returns an HTTP handler that serves the /status JSON endpoint.
@@ -1005,7 +1012,7 @@ func run() int {
 		}
 		if !d.Empty() {
 			loadedCerts++
-			recordTLSCertInfo(status, name, d.Cert)
+			recordTLSCertInfo(status, metrics, name, d.Cert)
 		} else {
 			slog.Warn("TLS certificate Secret is empty at startup; https listener has no certificate until it appears", "cert", name)
 		}
@@ -1650,7 +1657,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 
 				continue
 			}
-			recordTLSCertInfo(lc.status, name, d.Cert)
+			recordTLSCertInfo(lc.status, lc.metrics, name, d.Cert)
 			slog.Info("TLS certificate reloaded", "cert", name)
 			emitEvent(lc, v1.EventTypeNormal, "TLSCertReloaded", fmt.Sprintf("TLS certificate %q reloaded", name))
 		}

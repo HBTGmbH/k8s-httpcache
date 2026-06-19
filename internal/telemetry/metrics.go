@@ -9,40 +9,45 @@ const (
 	namespace = "k8s_httpcache"
 
 	// Prometheus metric label keys.
-	labelStatus = "status"
-	labelGroup  = "group"
-	labelResult = "result"
+	labelStatus  = "status"
+	labelGroup   = "group"
+	labelResult  = "result"
+	labelOutcome = "outcome"
+	labelCert    = "cert"
 )
 
 // Metrics holds all Prometheus metrics for k8s-httpcache. Create one per
 // registry with NewMetrics; production uses prometheus.DefaultRegisterer,
 // tests use prometheus.NewRegistry() for isolation.
 type Metrics struct {
-	VCLReloadsTotal              *prometheus.CounterVec
-	VCLRenderErrorsTotal         prometheus.Counter
-	EndpointUpdatesTotal         *prometheus.CounterVec
-	Endpoints                    *prometheus.GaugeVec
-	VCLTemplateChangesTotal      prometheus.Counter
-	VCLTemplateParseErrorsTotal  prometheus.Counter
-	VCLRollbacksTotal            prometheus.Counter
-	VarnishdUp                   prometheus.Gauge
-	BroadcastRequestsTotal       *prometheus.CounterVec
-	BroadcastFanoutTargets       prometheus.Gauge
-	VCLReloadRetriesTotal        prometheus.Counter
-	ValuesUpdatesTotal           *prometheus.CounterVec
-	SecretsUpdatesTotal          *prometheus.CounterVec
-	BuildInfo                    *prometheus.GaugeVec
-	DebounceEventsTotal          *prometheus.CounterVec
-	DebounceFiresTotal           *prometheus.CounterVec
-	DebounceMaxEnforcementsTotal *prometheus.CounterVec
-	VCLRenderDurationSeconds     prometheus.Histogram
-	VCLReloadDurationSeconds     prometheus.Histogram
-	BroadcastDurationSeconds     prometheus.Histogram
-	DebounceLatencySeconds       *prometheus.HistogramVec
-	TLSCertUpdatesTotal          *prometheus.CounterVec
-	TLSCertReloadsTotal          *prometheus.CounterVec
-	TLSCertOperationsTotal       *prometheus.CounterVec
-	TLSCertsActive               prometheus.Gauge
+	VCLReloadsTotal               *prometheus.CounterVec
+	VCLRenderErrorsTotal          prometheus.Counter
+	EndpointUpdatesTotal          *prometheus.CounterVec
+	Endpoints                     *prometheus.GaugeVec
+	VCLTemplateChangesTotal       prometheus.Counter
+	VCLTemplateParseErrorsTotal   prometheus.Counter
+	VCLRollbacksTotal             prometheus.Counter
+	VarnishdUp                    prometheus.Gauge
+	BroadcastRequestsTotal        *prometheus.CounterVec
+	BroadcastFanoutTargets        prometheus.Gauge
+	BroadcastPodResultsTotal      *prometheus.CounterVec
+	BroadcastPodDurationSeconds   prometheus.Histogram
+	VCLReloadRetriesTotal         prometheus.Counter
+	ValuesUpdatesTotal            *prometheus.CounterVec
+	SecretsUpdatesTotal           *prometheus.CounterVec
+	BuildInfo                     *prometheus.GaugeVec
+	DebounceEventsTotal           *prometheus.CounterVec
+	DebounceFiresTotal            *prometheus.CounterVec
+	DebounceMaxEnforcementsTotal  *prometheus.CounterVec
+	VCLRenderDurationSeconds      prometheus.Histogram
+	VCLReloadDurationSeconds      prometheus.Histogram
+	BroadcastDurationSeconds      prometheus.Histogram
+	DebounceLatencySeconds        *prometheus.HistogramVec
+	TLSCertUpdatesTotal           *prometheus.CounterVec
+	TLSCertReloadsTotal           *prometheus.CounterVec
+	TLSCertOperationsTotal        *prometheus.CounterVec
+	TLSCertsActive                prometheus.Gauge
+	TLSCertExpiryTimestampSeconds *prometheus.GaugeVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics on reg.
@@ -111,6 +116,19 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Namespace: namespace,
 			Name:      "broadcast_fanout_targets",
 			Help:      "Number of frontend pods targeted by the last broadcast fan-out.",
+		}),
+
+		BroadcastPodResultsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "broadcast_pod_results_total",
+			Help:      "Total number of per-pod broadcast fan-out results, by outcome (ok, http_error, transport_error).",
+		}, []string{labelOutcome}),
+
+		BroadcastPodDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "broadcast_pod_duration_seconds",
+			Help:      "Per-pod broadcast fan-out request duration in seconds (one observation per pod per request).",
+			Buckets:   prometheus.DefBuckets,
 		}),
 
 		VCLReloadRetriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
@@ -187,13 +205,13 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Namespace: namespace,
 			Name:      "tls_cert_updates_total",
 			Help:      "Total number of TLS certificate Secret updates received.",
-		}, []string{"cert"}),
+		}, []string{labelCert}),
 
 		TLSCertReloadsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "tls_cert_reloads_total",
 			Help:      "Total number of TLS certificate (re)load attempts, by result (success, error, noop).",
-		}, []string{"cert", labelResult}),
+		}, []string{labelCert, labelResult}),
 
 		TLSCertOperationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
@@ -206,6 +224,12 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 			Name:      "tls_certs_active",
 			Help:      "Number of TLS certificates currently active in the cache.",
 		}),
+
+		TLSCertExpiryTimestampSeconds: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "tls_cert_expiry_timestamp_seconds",
+			Help:      "Expiry time (NotAfter) of the active TLS certificate as a Unix timestamp in seconds. Alert with (metric - time()) < threshold.",
+		}, []string{labelCert}),
 	}
 
 	reg.MustRegister(
@@ -222,6 +246,8 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 		m.SecretsUpdatesTotal,
 		m.BroadcastRequestsTotal,
 		m.BroadcastFanoutTargets,
+		m.BroadcastPodResultsTotal,
+		m.BroadcastPodDurationSeconds,
 		m.BuildInfo,
 		m.DebounceEventsTotal,
 		m.DebounceFiresTotal,
@@ -234,6 +260,7 @@ func NewMetrics(reg prometheus.Registerer, debounceBuckets []float64) *Metrics {
 		m.TLSCertReloadsTotal,
 		m.TLSCertOperationsTotal,
 		m.TLSCertsActive,
+		m.TLSCertExpiryTimestampSeconds,
 	)
 
 	return m

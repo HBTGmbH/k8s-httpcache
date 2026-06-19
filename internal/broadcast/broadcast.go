@@ -43,6 +43,29 @@ func normalizeMethod(method string) string {
 	return "other"
 }
 
+// Outcome label values for the broadcast_pod_results_total metric. The set is
+// fixed (three values) so the metric's cardinality is bounded regardless of how
+// the fan-out fails.
+const (
+	outcomeOK             = "ok"              // pod returned an HTTP status < 400
+	outcomeHTTPError      = "http_error"      // pod returned an HTTP status >= 400
+	outcomeTransportError = "transport_error" // no HTTP response (connect/timeout/read error)
+)
+
+// classifyOutcome buckets a per-pod fan-out result by its status code. A zero
+// status means forward never obtained an HTTP response (transport-level failure
+// such as a connection error or timeout — see forward).
+func classifyOutcome(status int) string {
+	switch {
+	case status == 0:
+		return outcomeTransportError
+	case status >= http.StatusBadRequest:
+		return outcomeHTTPError
+	default:
+		return outcomeOK
+	}
+}
+
 // PodResult holds the response from a single pod.
 type PodResult struct {
 	Status int    `json:"status"`
@@ -173,8 +196,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for _, fe := range frontends {
 		wg.Go(func() {
+			start := time.Now()
 			nr := namedResult{name: fe.Name}
 			nr.result = s.forward(r, &fe, body)
+			// Per-pod fan-out telemetry: latency distribution and a
+			// bounded-cardinality outcome bucket. Prometheus metric methods are
+			// safe for concurrent use, so recording here (one goroutine per pod)
+			// needs no extra synchronisation.
+			s.metrics.BroadcastPodDurationSeconds.Observe(time.Since(start).Seconds())
+			s.metrics.BroadcastPodResultsTotal.WithLabelValues(classifyOutcome(nr.result.Status)).Inc()
 			results <- nr
 		})
 	}

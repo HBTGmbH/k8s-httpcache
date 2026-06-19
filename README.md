@@ -306,10 +306,12 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `tls_cert_reloads_total` | Counter | `cert`, `result` | TLS certificate (re)load attempts (`success`, `error`, `noop`) |
 | `tls_cert_operations_total` | Counter | `operation`, `result` | varnishadm TLS operations (`load`, `commit`, `discard`, `rollback`) by result |
 | `tls_certs_active` | Gauge | | TLS certificates currently active in the cache |
+| `tls_cert_expiry_timestamp_seconds` | Gauge | `cert` | Expiry (`NotAfter`) of the active TLS certificate as a Unix timestamp in seconds. Alert on imminent expiry with `tls_cert_expiry_timestamp_seconds - time() < <threshold>` |
 | `endpoints` | Gauge | `role`, `service` | Current ready endpoint count per service |
 | `varnishd_up` | Gauge | | Whether the varnishd process is running (1/0) |
 | `broadcast_requests_total` | Counter | `method`, `status` | Broadcast HTTP requests |
 | `broadcast_fanout_targets` | Gauge | | Number of frontend pods targeted by the last broadcast |
+| `broadcast_pod_results_total` | Counter | `outcome` | Per-pod broadcast fan-out results, bucketed into `ok` (HTTP < 400), `http_error` (HTTP ≥ 400), or `transport_error` (no HTTP response: connect/timeout/read error). Surfaces partial-fleet invalidation that the aggregate `200` response otherwise hides |
 | `build_info` | Gauge | `version`, `goversion` | Build metadata (always 1) |
 | `debounce_events_total` | Counter | `group` | Events received per debounce group |
 | `debounce_fires_total` | Counter | `group` | Debounce timer fires per group |
@@ -318,6 +320,7 @@ The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`
 | `vcl_render_duration_seconds` | Histogram | | Time to render the VCL template to a temporary file |
 | `vcl_reload_duration_seconds` | Histogram | | Time for varnishd VCL reload (`vcl.load` + `vcl.use`), including retries |
 | `broadcast_duration_seconds` | Histogram | | Total wall-clock time for broadcast fan-out to all frontend pods |
+| `broadcast_pod_duration_seconds` | Histogram | | Per-pod broadcast fan-out request duration (one observation per pod per request) |
 
 The `group` label is `frontend` (`--service-name` endpoint changes), `backend` (`--backend`, `--values`, `--secrets`, `--values-dir`, and VCL template changes), or `tls` (`--tls-cert` Secret changes). The `tls` group is fully decoupled from the others: a certificate rotation never re-renders or reloads VCL, and a VCL reload never touches certificates.
 

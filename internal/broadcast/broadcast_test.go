@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // errorReader is an [io.Reader] that always returns an error.
@@ -249,6 +250,91 @@ func TestFrontendDown(t *testing.T) {
 	if !strings.Contains(deadResult.Body, "request error:") {
 		t.Fatalf("pod-dead: expected error message, got %q", deadResult.Body)
 	}
+}
+
+func TestClassifyOutcome(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		status int
+		want   string
+	}{
+		{0, outcomeTransportError},
+		{200, outcomeOK},
+		{204, outcomeOK},
+		{301, outcomeOK},
+		{399, outcomeOK},
+		{400, outcomeHTTPError},
+		{404, outcomeHTTPError},
+		{500, outcomeHTTPError},
+		{503, outcomeHTTPError},
+	}
+	for _, c := range cases {
+		if got := classifyOutcome(c.status); got != c.want {
+			t.Errorf("classifyOutcome(%d) = %q, want %q", c.status, got, c.want)
+		}
+	}
+}
+
+// TestBroadcastPodResultMetrics verifies the per-pod fan-out telemetry: one
+// duration observation per pod, and one increment per pod bucketed into the
+// fixed ok/http_error/transport_error outcome set.
+func TestBroadcastPodResultMetrics(t *testing.T) {
+	t.Parallel()
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ok.Close()
+	serverErr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer serverErr.Close()
+
+	// Create and immediately close a server to get a dead (transport-error) endpoint.
+	dead := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	deadFe := frontendFromServer("pod-dead", dead)
+	dead.Close()
+
+	s := newTestServer()
+	s.SetFrontends([]watcher.Frontend{
+		frontendFromServer("pod-ok", ok),
+		frontendFromServer("pod-5xx", serverErr),
+		deadFe,
+	})
+
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("PURGE", "/x", http.NoBody))
+
+	// One duration observation per pod.
+	var dm dto.Metric
+	err := s.metrics.BroadcastPodDurationSeconds.Write(&dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dm.GetHistogram().GetSampleCount(); got != 3 {
+		t.Errorf("broadcast_pod_duration_seconds sample count = %d, want 3", got)
+	}
+
+	// Exactly three outcome series exist (bounded regardless of fleet size).
+	// Checked before reading individual series so the reads can't inflate it.
+	if n := collectSeriesCount(s.metrics.BroadcastPodResultsTotal); n != 3 {
+		t.Fatalf("broadcast_pod_results_total has %d series, want 3 (ok/http_error/transport_error)", n)
+	}
+	for _, outcome := range []string{outcomeOK, outcomeHTTPError, outcomeTransportError} {
+		if got := podResultCount(t, s, outcome); got != 1 {
+			t.Errorf("broadcast_pod_results_total{outcome=%q} = %v, want 1", outcome, got)
+		}
+	}
+}
+
+// podResultCount reads the value of a single broadcast_pod_results_total series.
+func podResultCount(t *testing.T, s *Server, outcome string) float64 {
+	t.Helper()
+	var m dto.Metric
+	err := s.metrics.BroadcastPodResultsTotal.WithLabelValues(outcome).Write(&m)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return m.GetCounter().GetValue()
 }
 
 func TestMethodAndHeadersPreserved(t *testing.T) {
