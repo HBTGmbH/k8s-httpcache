@@ -12,6 +12,8 @@ updates:
   directory: /.github/test/varnish6
   schedule:
     interval: weekly
+  cooldown:
+    default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
   ignore:
   - dependency-name: varnish
     update-types:
@@ -22,6 +24,8 @@ updates:
   directory: /.github/test/varnish7
   schedule:
     interval: weekly
+  cooldown:
+    default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
   ignore:
   - dependency-name: varnish
     update-types:
@@ -31,6 +35,8 @@ updates:
   directory: /.github/test/varnish8
   schedule:
     interval: weekly
+  cooldown:
+    default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
   ignore:
   - dependency-name: varnish
     update-types:
@@ -40,6 +46,8 @@ updates:
   directory: /.github/test/varnish9
   schedule:
     interval: weekly
+  cooldown:
+    default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
   ignore:
   - dependency-name: varnish
     update-types:
@@ -49,8 +57,12 @@ updates:
   directory: /
   schedule:
     interval: weekly
+  cooldown:
+    default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
 
 - package-ecosystem: github-actions
   directory: /
   schedule:
     interval: weekly
+  cooldown:
+    default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)

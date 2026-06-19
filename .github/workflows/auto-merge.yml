@@ -3,14 +3,20 @@ name: Auto-merge
 on:
   pull_request:
 
-permissions:
-  contents: write
-  pull-requests: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false   # never interrupt enabling auto-merge on a PR
+
+permissions: {}
 
 jobs:
   dependabot:
+    name: Auto-merge Dependabot PRs
     runs-on: ubuntu-latest
     if: github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write       # gh pr merge --auto performs the merge
+      pull-requests: write   # gh pr merge --auto enables auto-merge on the PR
     steps:
     - uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
       id: metadata

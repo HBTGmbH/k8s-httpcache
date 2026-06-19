@@ -4,11 +4,16 @@ on:
   pull_request_target:  # zizmor: ignore[dangerous-triggers]
     types: [opened, edited, synchronize]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true   # supersede stale title checks for the same PR
+
 permissions:
-  pull-requests: read
+  pull-requests: read  # read PR title/metadata for the semantic check
 
 jobs:
   lint:
+    name: Lint PR title
     runs-on: ubuntu-latest
     steps:
     - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50  # v6.1.1

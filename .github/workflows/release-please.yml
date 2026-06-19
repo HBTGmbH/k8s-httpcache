@@ -4,18 +4,23 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false   # never interrupt an in-flight release
+
 permissions:
   contents: read
 
 jobs:
   release-please:
+    name: Release Please
     if: >-
       !startsWith(github.event.head_commit.message, 'docs:') &&
       !startsWith(github.event.head_commit.message, 'docs(')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write       # create the release commit/tag
+      pull-requests: write   # open/update the release PR
     outputs:
       chart_released: ${{ steps.release.outputs['charts/k8s-httpcache--release_created'] }}
       chart_version: ${{ steps.release.outputs['charts/k8s-httpcache--version'] }}
@@ -37,12 +42,13 @@ jobs:
         token: ${{ steps.app-token.outputs.token }}
 
   publish-chart:
+    name: Publish Helm chart
     needs: release-please
     if: needs.release-please.outputs.chart_released == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      contents: read       # checkout the chart sources
+      packages: write       # push the chart to GHCR
     steps:
     - name: Checkout
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0

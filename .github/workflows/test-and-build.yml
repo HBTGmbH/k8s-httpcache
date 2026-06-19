@@ -7,11 +7,16 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   changes:
+    name: Detect changes
     if: >-
       github.event_name != 'push' ||
       (!startsWith(github.event.head_commit.message, 'docs:') &&
@@ -58,6 +63,7 @@ jobs:
             - '.markdownlint-cli2.yaml'
 
   unit-test:
+    name: Unit test
     needs: [changes]
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
@@ -125,6 +131,7 @@ jobs:
           coverage.html
 
   lint:
+    name: Lint
     needs: [changes]
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
@@ -420,6 +427,7 @@ jobs:
 
 
   go-build:
+    name: Build binaries
     needs: [changes]
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
@@ -471,6 +479,7 @@ jobs:
         path: k8s-httpcache-linux-*
 
   test:
+    name: Integration test
     needs: [changes, unit-test, lint, go-build]
     if: >-
       !failure() && !cancelled() &&
@@ -519,10 +528,12 @@ jobs:
     - name: Add tools to PATH
       run: echo "$HOME/tools" >> "$GITHUB_PATH"
     - name: Build test image
+      env:
+        DOCKERFILE: ${{ matrix.dockerfile }}
       run: |
         mkdir .docker-context
         cp k8s-httpcache-linux-amd64 .docker-context/
-        docker build -f .github/test/${{ matrix.dockerfile }} \
+        docker build -f ".github/test/$DOCKERFILE" \
           --build-arg BINARY=k8s-httpcache-linux-amd64 \
           -t localhost/k8s-httpcache:test .docker-context
     - name: Create kind cluster
@@ -604,6 +615,7 @@ jobs:
         kubectl logs -n test-ns -l app=backend-xns --tail=50
 
   build:
+    name: Build image
     needs: [changes, test]
     if: >-
       github.event_name != 'pull_request' &&
@@ -613,8 +625,8 @@ jobs:
       needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      contents: read       # checkout sources for the image build
+      packages: write       # push the test/release image to GHCR
     steps:
     - name: Checkout
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -668,11 +680,12 @@ jobs:
         sbom: false
 
   release:
+    name: Release
     needs: [build]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write       # create the GitHub release
     steps:
     - name: Checkout
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0

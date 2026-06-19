@@ -8,11 +8,16 @@ on:
   schedule:
     - cron: "0 6 * * 1"  # weekly, Monday 06:00 UTC
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   changes:
+    name: Detect changes
     if: >-
       github.event_name != 'push' ||
       (!startsWith(github.event.head_commit.message, 'docs:') &&
@@ -38,12 +43,13 @@ jobs:
             - 'go.sum'
 
   analyze:
+    name: Analyze
     needs: [changes]
     if: >-
       !failure() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
+      security-events: write  # upload CodeQL results to code scanning
     strategy:
       fail-fast: false
       matrix:
