@@ -60,7 +60,9 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/vcl: {{ .Values.vclTemplateContent | sha256sum }}
+        {{- if not .Values.vcl.fileWatch }}
+        checksum/vcl: {{ get (include (print .Template.BasePath "/configmap-vcl.yaml") . | fromYaml) "data" | toYaml | sha256sum }}
+        {{- end }}
         {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations }}
         prometheus.io/scrape: "true"
         prometheus.io/path: /metrics
@@ -417,6 +419,11 @@ spec:
               mountPath: /tmp
             - name: varnish-workdir
               mountPath: /var/lib/varnish
+            {{- if .Values.staticFiles.enabled }}
+            - name: static-files
+              mountPath: {{ .Values.staticFiles.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- range .Values.valuesDirs }}
             - name: values-dir-{{ .name }}
               mountPath: {{ .path }}
@@ -442,6 +449,11 @@ spec:
         - name: varnish-workdir
           emptyDir:
             medium: Memory
+        {{- if .Values.staticFiles.enabled }}
+        - name: static-files
+          configMap:
+            name: {{ .Values.staticFiles.existingConfigMap | default (printf "%s-static" (include "k8s-httpcache.fullname" .)) }}
+        {{- end }}
         {{- range .Values.valuesDirs }}
         {{- if .configMap }}
         - name: values-dir-{{ .name }}
