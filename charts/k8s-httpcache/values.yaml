@@ -208,7 +208,7 @@ varnishncsa:
 # ===========================================================================
 drain:
   # -- Enable graceful connection draining on shutdown
-  enabled: false
+  enabled: true
   # -- Delay before polling for active sessions (empty = app default 15s)
   delay: ""
   # -- Poll interval for active sessions (empty = app default 1s)
@@ -292,6 +292,13 @@ vclTemplateContent: |
   import directors;
   import std;
 
+  <<- range .Frontends >>
+  backend << .Name >> {
+    .host = "<< .Host >>";
+    .port = "<< .Port >>";
+  }
+  <<- end >>
+
   <<- range $name, $bg := .Backends >>
   <<- range $bg.Endpoints >>
   backend << .Name >>_<< $name >> {
@@ -306,6 +313,14 @@ vclTemplateContent: |
   }
 
   sub vcl_init {
+    <<- if .Frontends >>
+    new cluster = directors.shard();
+    <<- range .Frontends >>
+    cluster.add_backend(<< .Name >>);
+    <<- end >>
+    cluster.reconfigure();
+    <<- end >>
+
     <<- range $name, $bg := .Backends >>
     new backend_<< $name >> = directors.round_robin();
     <<- range $bg.Endpoints >>
@@ -329,6 +344,17 @@ vclTemplateContent: |
       }
       return (purge);
     }
+
+    <<- if .Frontends >>
+    if (!req.http.X-Shard-Routed && !req.http.X-No-Shard) {
+      set req.backend_hint = cluster.backend(by=URL);
+      set req.http.x-shard = req.backend_hint;
+      if (req.http.x-shard != server.identity) {
+        set req.http.X-Shard-Routed = "true";
+        return(pass);
+      }
+    }
+    <<- end >>
 
     <<- $backendNames := keys .Backends >>
     <<- if eq (len $backendNames) 1 >>

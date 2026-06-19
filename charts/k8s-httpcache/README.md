@@ -64,7 +64,7 @@ documentation.
 | dnsConfig | object | `{}` | Custom DNS configuration |
 | dnsPolicy | string | `""` | DNS policy (ClusterFirst, Default, None, ClusterFirstWithHostNet) |
 | drain.delay | string | `""` | Delay before polling for active sessions (empty = app default 15s) |
-| drain.enabled | bool | `false` | Enable graceful connection draining on shutdown |
+| drain.enabled | bool | `true` | Enable graceful connection draining on shutdown |
 | drain.pollInterval | string | `""` | Poll interval for active sessions (empty = app default 1s) |
 | drain.timeout | string | `""` | Max time to wait for sessions to reach 0 (empty = app default 0s) |
 | enableServiceLinks | string | `""` | Inject Service environment variables. Empty = Kubernetes default (true); set false to reduce environment clutter. |
