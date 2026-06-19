@@ -628,8 +628,13 @@ jobs:
       run: |
         mkdir .docker-context
         cp k8s-httpcache-linux-* .docker-context/
+    - name: Set SOURCE_DATE_EPOCH from commit
+      run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
     - name: Setup BuildKit
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+      with:
+        version: v0.35.0
+        driver-opts: image=moby/buildkit:v0.31.0@sha256:a095b3d11ce1a9a05b6064ef515dfca0291ec5bcf2ea8178da8f6461924294e1
     - name: Docker Login
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
       if: github.event_name != 'pull_request'
@@ -658,6 +663,8 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        provenance: false
+        sbom: false
 
   release:
     needs: [build]
