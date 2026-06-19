@@ -22,6 +22,23 @@ See the [project README](https://github.com/HBTGmbH/k8s-httpcache#readme) for fu
 configuration, VCL templating, broadcast/invalidation, TLS, metrics, and usage
 documentation.
 
+## Serving static files
+
+Set `staticFiles.enabled=true` and provide a `staticFiles.files` map (filename ->
+content) to render a ConfigMap that is mounted read-only at `staticFiles.mountPath`.
+Files load cleanly via `--set-file`, e.g.:
+
+```sh
+helm upgrade --install my-release oci://ghcr.io/hbtgmbh/charts/k8s-httpcache \
+  --set staticFiles.enabled=true \
+  --set-file 'staticFiles.files.robots\.txt=./robots.txt'
+```
+
+Then add a small `vcl_recv`/`vcl_synth` snippet to `vclTemplateContent` to serve
+them with `std.fileread`. See [Serving static files](https://github.com/HBTGmbH/k8s-httpcache#serving-static-files)
+in the project README for the full recipe and caveats (text-only; updates need a
+VCL reload).
+
 ## Values
 
 | Key | Type | Default | Description |
@@ -204,6 +221,11 @@ documentation.
 | serviceMonitor.scrapeTimeout | string | `""` | Scrape timeout |
 | serviceName | string | `""` |  |
 | startupProbe | object | `{"failureThreshold":30,"httpGet":{"path":"/ready","port":"http"},"periodSeconds":1}` | Startup probe configuration |
+| staticFiles | object | `{"enabled":false,"existingConfigMap":"","files":{},"mountPath":"/etc/k8s-httpcache-static"}` | Serve small static files (robots.txt, health JSON, HTML, CSS, SVG) directly from Varnish via std.fileread. When enabled, `staticFiles.files` are rendered into a ConfigMap and mounted read-only at `staticFiles.mountPath`; add a small vcl_recv/vcl_synth snippet to vclTemplateContent to serve them (see README). Text content only — binary files (favicon.ico, images) are not supported because std.fileread truncates at the first NUL byte. |
+| staticFiles.enabled | bool | `false` | Render the static-files ConfigMap, volume and mount. When false nothing is added and the chart renders exactly as before. |
+| staticFiles.existingConfigMap | string | `""` | Mount this pre-existing ConfigMap instead of generating one from `files`. Its keys are the filenames available under `mountPath`. When set, `files` is ignored and no ConfigMap is created. Updating it requires a pod restart. |
+| staticFiles.files | object | `{}` | Static text files as a map of filename -> content (becomes the ConfigMap `data`). Works with `--set-file`, e.g. `--set-file 'staticFiles.files.robots\.txt=./robots.txt'`. |
+| staticFiles.mountPath | string | `"/etc/k8s-httpcache-static"` | Mount path for the static files (read-only). MUST be a sibling of /etc/k8s-httpcache, never nested under it (that path is the read-only VCL template mount). Reference these paths from std.fileread in your VCL. |
 | strategy | object | `{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0},"type":"RollingUpdate"}` | Deployment strategy (ignored when argoRollouts.enabled is true) |
 | template.delims | string | `""` | Template delimiters (empty = app default "<< >>") |
 | template.funcs | string | `""` | Template function library: "sprig" (default) or "sprout" (empty = app default sprig) |

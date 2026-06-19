@@ -26,6 +26,23 @@ documentation.
 
 {{ template "chart.requirementsSection" . }}
 
+## Serving static files
+
+Set `staticFiles.enabled=true` and provide a `staticFiles.files` map (filename ->
+content) to render a ConfigMap that is mounted read-only at `staticFiles.mountPath`.
+Files load cleanly via `--set-file`, e.g.:
+
+```sh
+helm upgrade --install my-release oci://ghcr.io/hbtgmbh/charts/k8s-httpcache \
+  --set staticFiles.enabled=true \
+  --set-file 'staticFiles.files.robots\.txt=./robots.txt'
+```
+
+Then add a small `vcl_recv`/`vcl_synth` snippet to `vclTemplateContent` to serve
+them with `std.fileread`. See [Serving static files](https://github.com/HBTGmbH/k8s-httpcache#serving-static-files)
+in the project README for the full recipe and caveats (text-only; updates need a
+VCL reload).
+
 {{ template "chart.valuesSection" . }}
 
 {{ template "chart.maintainersSection" . }}

@@ -63,6 +63,9 @@ spec:
         {{- if not .Values.vcl.fileWatch }}
         checksum/vcl: {{ get (include (print .Template.BasePath "/configmap-vcl.yaml") . | fromYaml) "data" | toYaml | sha256sum }}
         {{- end }}
+        {{- if and .Values.staticFiles.enabled .Values.staticFiles.files (not .Values.staticFiles.existingConfigMap) }}
+        checksum/static: {{ get (include (print .Template.BasePath "/configmap-static.yaml") . | fromYaml) "data" | toYaml | sha256sum }}
+        {{- end }}
         {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations }}
         prometheus.io/scrape: "true"
         prometheus.io/path: /metrics

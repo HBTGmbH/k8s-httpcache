@@ -1,0 +1,20 @@
+{{- if and .Values.staticFiles.enabled .Values.staticFiles.files (not .Values.staticFiles.existingConfigMap) }}
+{{- /* Static text files served by VCL via std.fileread. Content is rendered
+       literally (no tpl), so files containing {{ }} or << >> are left intact. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-httpcache.fullname" . }}-static
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-httpcache.labels" . | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "root" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+data:
+  {{- range $name, $content := .Values.staticFiles.files }}
+  {{ $name | quote }}: |-
+    {{- $content | toString | nindent 4 }}
+  {{- end }}
+{{- end }}

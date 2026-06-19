@@ -240,6 +240,17 @@ data:
     host: dir.example.com
     port: 9090
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-httpcache-static
+  namespace: default
+data:
+  robots.txt: |
+    User-agent: *
+    Disallow: /private/
+    # static-file-marker-e2e
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -364,6 +375,9 @@ spec:
         - name: varlibvarnish
           mountPath: /var/lib/varnish
           readOnly: false
+        - name: static-files
+          mountPath: /etc/k8s-httpcache-static
+          readOnly: true
         resources:
           requests:
             cpu: 10m
@@ -381,6 +395,9 @@ spec:
       - name: values-dir-test
         configMap:
           name: k8s-httpcache-values-dir-test
+      - name: static-files
+        configMap:
+          name: k8s-httpcache-static
 ---
 apiVersion: v1
 kind: Service
@@ -499,6 +516,10 @@ data:
     sub vcl_recv {
       call handle_readiness;
 
+      if (req.url == "/robots.txt") {
+        return (synth(700, "static"));
+      }
+
       if (req.method == "PURGE") {
         if (!client.ip ~ purge) {
           return (synth(405, "Not allowed"));
@@ -526,6 +547,18 @@ data:
 
     sub vcl_purge {
       return (synth(200, "Purged"));
+    }
+
+    sub vcl_synth {
+      if (resp.reason == "static") {
+        set resp.status = 200;
+        set resp.reason = "OK";
+        if (req.url == "/robots.txt") {
+          set resp.http.Content-Type = "text/plain; charset=utf-8";
+          synthetic(std.fileread("/etc/k8s-httpcache-static/robots.txt"));
+        }
+        return (deliver);
+      }
     }
 
     sub vcl_deliver {

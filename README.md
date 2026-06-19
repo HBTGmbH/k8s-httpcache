@@ -46,6 +46,7 @@ A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) w
 - JSON [status endpoint](#status-endpoint) (`/status`) on the metrics server providing runtime state (version, uptime, endpoint counts, reload metrics, varnishd process status)
 - [Topology-aware routing](#topology-aware-routing): endpoint zone, node name, and routing hints are exposed in templates, allowing weighted directors that prefer same-zone backends
 - [Dynamic backend discovery](#dynamic-backend-discovery) via label selectors (`--backend-selector`), automatically adding and removing backends as matching Services appear or disappear
+- [Serving static files](#serving-static-files) (`robots.txt`, health JSON, small HTML/CSS) directly from Varnish via `std.fileread`, declared in the Helm chart's `staticFiles` value
 - Optional [access logging](#access-logging) via a managed `varnishncsa` / `vinylncsa` subprocess with auto-restart, configurable log format, VSL query filtering, and stdout line prefixing
 
 ## Container image
@@ -844,6 +845,109 @@ Secret values are rendered directly into VCL and passed to Varnish, so it is imp
 - **Request and response headers.** If your VCL template sets a secret value as an HTTP header (e.g. `bereq.http.Authorization`), that header is visible to backend services and may appear in their access logs. Similarly, secrets placed on response headers (e.g. `resp.http.*`) are visible to clients and any intermediary proxies that log headers. Only set secrets on headers that are strictly necessary, and ensure that both upstream and downstream services treat those headers as sensitive.
 - **Varnish process output and error messages.** When VCL compilation fails, `varnishd` and `varnishadm` may include VCL source lines — containing rendered secrets — in their error output. k8s-httpcache automatically redacts all known secret values (strings of 6 characters or longer) from process output, command responses, log messages, and Kubernetes Events. This protects against accidental exposure in logs, but the redactor only covers values it knows about — secrets must be loaded via `--secrets` to be redacted.
 - **Varnish shared memory log (VSL).** Varnish logs request and response headers to its shared memory log, accessible via `varnishlog` / `varnishncsa`. If a secret is set on a header, it will appear in VSL. This is outside the control of k8s-httpcache. If you expose VSL tooling, be aware that header values may contain secrets.
+
+## Serving static files
+
+Varnish can serve small static assets — `robots.txt`, a health/version JSON, a
+maintenance page, a bit of CSS — directly from memory via the `std` VMOD's
+[`std.fileread`](https://varnish-cache.org/docs/trunk/reference/vmod_std.html#std-fileread),
+with no backend involved. The Helm chart lets you declare those files in
+`values.yaml`; you add a small snippet to your VCL to route requests to them.
+
+### Declare the files in the chart
+
+The `staticFiles` value renders a ConfigMap and mounts it read-only into the
+Varnish container:
+
+```yaml
+staticFiles:
+  enabled: true
+  # Sibling of /etc/k8s-httpcache (the VCL mount) — must not be nested under it.
+  mountPath: /etc/k8s-httpcache-static
+  files:
+    robots.txt: |
+      User-agent: *
+      Disallow:
+    health.json: |
+      {"status":"ok"}
+```
+
+Each key becomes a file under `mountPath` (e.g.
+`/etc/k8s-httpcache-static/robots.txt`). To load a file from disk at install
+time instead of inlining it, use `--set-file`:
+
+```sh
+helm upgrade --install my-release oci://ghcr.io/hbtgmbh/charts/k8s-httpcache \
+  --set staticFiles.enabled=true \
+  --set-file 'staticFiles.files.robots\.txt=./robots.txt'
+```
+
+To mount a ConfigMap you manage yourself (for example one synced by an external
+tool), set `staticFiles.existingConfigMap` instead of `files`; its keys are the
+filenames available under `mountPath`.
+
+### Serve them from VCL
+
+Add a branch to `vcl_recv` and a `vcl_synth` in `vclTemplateContent`. The
+`import std;` line is already present in the default template. A sentinel status
+code (`700`) plus a reason string (`"static"`) keeps this separate from the
+readiness and PURGE synth responses:
+
+```vcl
+sub vcl_recv {
+  call handle_readiness;
+
+  if (req.url == "/robots.txt") {
+    return (synth(700, "static"));
+  }
+  # ... existing PURGE / routing ...
+}
+
+sub vcl_synth {
+  if (resp.reason == "static") {
+    set resp.status = 200;
+    set resp.reason = "OK";
+    if (req.url == "/robots.txt") {
+      set resp.http.Content-Type = "text/plain; charset=utf-8";
+      synthetic(std.fileread("/etc/k8s-httpcache-static/robots.txt"));
+    }
+    return (deliver);
+  }
+}
+```
+
+Defining `sub vcl_synth` only *prepends* to Varnish's built-in handler, so synth
+responses whose reason is not `"static"` (readiness, PURGE, errors) fall through
+to the default behaviour unchanged. For several files, extend the inner `if`:
+
+```vcl
+sub vcl_synth {
+  if (resp.reason == "static") {
+    set resp.status = 200;
+    set resp.reason = "OK";
+    if (req.url == "/robots.txt") {
+      set resp.http.Content-Type = "text/plain; charset=utf-8";
+      synthetic(std.fileread("/etc/k8s-httpcache-static/robots.txt"));
+    } else if (req.url == "/health.json") {
+      set resp.http.Content-Type = "application/json";
+      synthetic(std.fileread("/etc/k8s-httpcache-static/health.json"));
+    }
+    return (deliver);
+  }
+}
+```
+
+### Caveats
+
+- **Updates require a VCL reload.** `std.fileread` reads each file once, at VCL
+  load time, and caches it. For inline `staticFiles.files`, the chart sets a
+  `checksum/static` pod annotation so `helm upgrade` rolls the pods (and reloads
+  VCL) whenever the content changes. For `existingConfigMap`, editing the
+  ConfigMap alone will **not** change what is served — restart the pods
+  (`kubectl rollout restart`) to pick up new content.
+- **Text only.** VCL strings are NUL-terminated, so `std.fileread` truncates a
+  file at its first `0x00` byte. Binary assets (`favicon.ico`, images) are not
+  supported this way — serve them from a real backend instead.
 
 ## TLS / HTTPS
 

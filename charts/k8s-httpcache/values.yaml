@@ -375,6 +375,37 @@ vclTemplateContent: |
   }
 
 # ===========================================================================
+# Static files (optional)
+# ===========================================================================
+# -- Serve small static files (robots.txt, health JSON, HTML, CSS, SVG) directly
+# from Varnish via std.fileread. When enabled, `staticFiles.files` are rendered
+# into a ConfigMap and mounted read-only at `staticFiles.mountPath`; add a small
+# vcl_recv/vcl_synth snippet to vclTemplateContent to serve them (see README).
+# Text content only — binary files (favicon.ico, images) are not supported
+# because std.fileread truncates at the first NUL byte.
+staticFiles:
+  # -- Render the static-files ConfigMap, volume and mount. When false nothing
+  # is added and the chart renders exactly as before.
+  enabled: false
+  # -- Mount path for the static files (read-only). MUST be a sibling of
+  # /etc/k8s-httpcache, never nested under it (that path is the read-only VCL
+  # template mount). Reference these paths from std.fileread in your VCL.
+  mountPath: /etc/k8s-httpcache-static
+  # -- Static text files as a map of filename -> content (becomes the ConfigMap
+  # `data`). Works with `--set-file`, e.g.
+  # `--set-file 'staticFiles.files.robots\.txt=./robots.txt'`.
+  files: {}
+  #  robots.txt: |
+  #    User-agent: *
+  #    Disallow:
+  #  health.json: |
+  #    {"status":"ok"}
+  # -- Mount this pre-existing ConfigMap instead of generating one from `files`.
+  # Its keys are the filenames available under `mountPath`. When set, `files` is
+  # ignored and no ConfigMap is created. Updating it requires a pod restart.
+  existingConfigMap: ""
+
+# ===========================================================================
 # Kubernetes resources
 # ===========================================================================
 serviceAccount:
