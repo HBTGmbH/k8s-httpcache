@@ -14,7 +14,7 @@ echo "=== shellcheck ==="
 shellcheck .github/test/*.sh
 
 echo "=== markdownlint ==="
-markdownlint-cli2 "**/*.md"
+markdownlint --config .markdownlint.yaml "**/*.md"
 
 echo "=== govulncheck ==="
 govulncheck ./...

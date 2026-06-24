@@ -60,12 +60,12 @@ The project uses [golangci-lint](https://golangci-lint.run/) with an extensive r
 golangci-lint run
 ```
 
-YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config in [`.yamllint.yml`](.yamllint.yml)), shell scripts with [ShellCheck](https://www.shellcheck.net/), and Markdown files with [markdownlint-cli2](https://github.com/DavidAnson/markdownlint-cli2) (config in [`.markdownlint-cli2.yaml`](.markdownlint-cli2.yaml)):
+YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config in [`.yamllint.yml`](.yamllint.yml)), shell scripts with [ShellCheck](https://www.shellcheck.net/), and Markdown files with [markdownlint-cli](https://github.com/igorshubovych/markdownlint-cli) (rules in [`.markdownlint.yaml`](.markdownlint.yaml), ignores in [`.markdownlintignore`](.markdownlintignore)):
 
 ```bash
 yamllint --strict .
 shellcheck .github/test/*.sh
-npx --yes markdownlint-cli2 "**/*.md"
+npx --yes markdownlint-cli --config .markdownlint.yaml "**/*.md"
 ```
 
 Dockerfiles are linted with [hadolint](https://github.com/hadolint/hadolint) and the Helm chart with `helm lint`:

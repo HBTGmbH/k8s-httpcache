@@ -2,8 +2,8 @@
   "name": "markdownlint-runner",
   "version": "0.0.0",
   "private": true,
-  "description": "Pinned markdownlint-cli2 used by the Markdown lint CI step (see ../workflows/test-and-build.yml). Install with `npm ci`.",
+  "description": "Pinned markdownlint-cli used by the Markdown lint CI step (see ../workflows/test-and-build.yml). Install with `npm ci`.",
   "devDependencies": {
-    "markdownlint-cli2": "0.22.1"
+    "markdownlint-cli": "0.49.0"
   }
 }

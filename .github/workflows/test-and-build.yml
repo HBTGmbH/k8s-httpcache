@@ -60,7 +60,8 @@ jobs:
             - '**/*.yml'
           md:
             - '**/*.md'
-            - '.markdownlint-cli2.yaml'
+            - '.markdownlint.yaml'
+            - '.markdownlintignore'
 
   unit-test:
     name: Unit test
@@ -267,7 +268,7 @@ jobs:
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.ci == 'true'
       run: yamllint --strict .
-    - name: Restore markdownlint-cli2
+    - name: Restore markdownlint-cli
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
@@ -276,8 +277,8 @@ jobs:
       id: markdownlint
       with:
         path: .github/markdownlint/node_modules
-        key: markdownlint-cli2-${{ hashFiles('.github/markdownlint/package-lock.json') }}
-    - name: Install markdownlint-cli2
+        key: markdownlint-cli-${{ hashFiles('.github/markdownlint/package-lock.json') }}
+    - name: Install markdownlint-cli
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
@@ -285,22 +286,22 @@ jobs:
         steps.markdownlint.outputs.cache-hit != 'true'
       working-directory: .github/markdownlint
       run: npm ci
-    - name: Save markdownlint-cli2
+    - name: Save markdownlint-cli
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.markdownlint.outputs.cache-hit != 'true'
-      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
       with:
         path: .github/markdownlint/node_modules
-        key: markdownlint-cli2-${{ hashFiles('.github/markdownlint/package-lock.json') }}
+        key: markdownlint-cli-${{ hashFiles('.github/markdownlint/package-lock.json') }}
     - name: Markdown lint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true'
-      run: .github/markdownlint/node_modules/.bin/markdownlint-cli2 "**/*.md"
+      run: .github/markdownlint/node_modules/.bin/markdownlint --config .markdownlint.yaml "**/*.md"
     - name: Restore hadolint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
