@@ -2,6 +2,8 @@
 # lines) is controlled by the tool, not us, and they are not hand-authored.
 ignores:
   - "**/CHANGELOG.md"
+  # Dependency READMEs from the pinned markdownlint-cli2 install (.github/markdownlint).
+  - "**/node_modules/**"
 
 config:
   # Allow long lines — tables, CLI examples, and explanatory prose regularly
