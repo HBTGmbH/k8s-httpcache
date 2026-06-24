@@ -122,6 +122,8 @@ func (w *FileValuesWatcher) send(data map[string]any) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// reflect.DeepEqual is deliberate; see ConfigMapWatcher.send for why a
+	// content hash is not used on this dedup path.
 	if w.synced && reflect.DeepEqual(data, w.previous) {
 		return
 	}
@@ -129,10 +131,5 @@ func (w *FileValuesWatcher) send(data map[string]any) {
 	w.synced = true
 	w.previous = data
 
-	// Non-blocking send: drain then send.
-	select {
-	case <-w.ch:
-	default:
-	}
-	w.ch <- data
+	coalescingSend(w.ch, data)
 }

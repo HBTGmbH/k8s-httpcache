@@ -137,10 +137,5 @@ func (w *TLSCertWatcher) send(data TLSCertData) {
 	w.synced = true
 	w.previous = data
 
-	// Non-blocking send: drain then send.
-	select {
-	case <-w.ch:
-	default:
-	}
-	w.ch <- data
+	coalescingSend(w.ch, data)
 }

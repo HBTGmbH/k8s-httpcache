@@ -7178,3 +7178,301 @@ func TestStartTemplateWatch_EnabledChannelAndCleanup(t *testing.T) { //nolint:pa
 	}
 	cancel() // the watchFile goroutine exits on ctx cancel; goleak verifies it.
 }
+
+// --- recoveryState unit tests ---
+//
+// recoveryState is the exponential-backoff retry timer shared by the VCL and
+// TLS reload paths. The integration behaviour is covered by the
+// TestRunLoop_ReloadRecovery* tests; these exercise the type's contract
+// directly, including the disabled and capped edge cases.
+
+func TestRecoveryState_Next(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		initial  time.Duration
+		maxDelay time.Duration
+		delay    time.Duration
+		want     time.Duration
+	}{
+		{"first retry uses initial", 100 * time.Millisecond, 800 * time.Millisecond, 0, 100 * time.Millisecond},
+		{"doubles previous delay", 100 * time.Millisecond, 800 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond},
+		{"doubles again", 100 * time.Millisecond, 800 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond},
+		{"caps at maxDelay", 100 * time.Millisecond, 800 * time.Millisecond, 800 * time.Millisecond, 800 * time.Millisecond},
+		{"no cap when maxDelay is zero", 100 * time.Millisecond, 0, 500 * time.Millisecond, 1000 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := recoveryState{initial: tt.initial, maxDelay: tt.maxDelay, delay: tt.delay}
+			if got := r.next(); got != tt.want {
+				t.Errorf("next() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecoveryState_ArmProgressionAndCap(t *testing.T) {
+	t.Parallel()
+	r := recoveryState{initial: 50 * time.Millisecond, maxDelay: 200 * time.Millisecond}
+
+	// Each consecutive arm doubles the delay, capped at maxDelay.
+	for _, want := range []time.Duration{
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		200 * time.Millisecond,
+	} {
+		got := r.arm()
+		if got != want {
+			t.Fatalf("arm() = %v, want %v", got, want)
+		}
+		if r.timer == nil {
+			t.Fatal("arm() should set a timer")
+		}
+		if r.channel() == nil {
+			t.Fatal("channel() should be non-nil while a retry is armed")
+		}
+	}
+	r.reset()
+}
+
+func TestRecoveryState_ArmDisabled(t *testing.T) {
+	t.Parallel()
+	r := recoveryState{initial: 0} // initial <= 0 disables retries
+
+	if got := r.arm(); got != 0 {
+		t.Errorf("arm() with zero initial = %v, want 0", got)
+	}
+	if r.timer != nil {
+		t.Error("arm() should not create a timer when disabled")
+	}
+	if r.channel() != nil {
+		t.Error("channel() should be nil when no retry is armed")
+	}
+}
+
+func TestRecoveryState_Reset(t *testing.T) {
+	t.Parallel()
+	r := recoveryState{initial: 50 * time.Millisecond}
+	r.arm()
+
+	r.reset()
+
+	if r.timer != nil {
+		t.Error("reset() should clear the timer")
+	}
+	if r.delay != 0 {
+		t.Errorf("reset() should zero the delay, got %v", r.delay)
+	}
+	if r.channel() != nil {
+		t.Error("channel() should be nil after reset()")
+	}
+	// A second reset on an already-clear state must be a safe no-op.
+	r.reset()
+}
+
+func TestRecoveryState_FiredPreservesDelay(t *testing.T) {
+	t.Parallel()
+	r := recoveryState{initial: 50 * time.Millisecond}
+	r.arm() // delay is now 50ms and a timer is armed
+
+	prev := r.fired()
+
+	if prev != 50*time.Millisecond {
+		t.Errorf("fired() = %v, want 50ms", prev)
+	}
+	if r.timer != nil {
+		t.Error("fired() should clear the timer reference so it is not re-selected")
+	}
+	// fired() preserves delay so a re-arm in the same retry cycle keeps doubling.
+	if r.delay != 50*time.Millisecond {
+		t.Errorf("fired() should preserve delay, got %v", r.delay)
+	}
+	if got := r.next(); got != 100*time.Millisecond {
+		t.Errorf("next() after fired() = %v, want 100ms (continued doubling)", got)
+	}
+}
+
+// --- debounceState.reset unit test ---
+
+func TestDebounceState_Reset(t *testing.T) {
+	t.Parallel()
+	s := debounceState{
+		timer:      time.NewTimer(time.Hour),
+		deadline:   time.Now().Add(time.Hour),
+		firstEvent: time.Now(),
+		capped:     true,
+	}
+
+	s.reset()
+
+	if s.timer != nil {
+		t.Error("reset() should clear the timer")
+	}
+	if !s.deadline.IsZero() {
+		t.Error("reset() should zero the deadline")
+	}
+	if !s.firstEvent.IsZero() {
+		t.Error("reset() should zero firstEvent")
+	}
+	if s.capped {
+		t.Error("reset() should clear capped")
+	}
+	// A second reset on an already-clear state must be a safe no-op.
+	s.reset()
+}
+
+// --- setupMetricsServer unit tests ---
+//
+// The /metrics, /status, /healthz and /readyz handlers are covered by their own
+// handler tests, and end-to-end serving is covered by the hurl E2E suite. These
+// exercise the two deterministic branches setupMetricsServer adds: the disabled
+// no-op and the pre-bind listen failure (which must fail startup cleanly rather
+// than from inside the serve goroutine).
+
+func TestSetupMetricsServer_DisabledWhenNoAddr(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{MetricsAddr: ""}
+	errCh := make(chan error, 1)
+
+	srv, err := setupMetricsServer(cfg, &statusStore{}, errCh)
+	if err != nil {
+		t.Fatalf("setupMetricsServer with empty addr = %v, want nil", err)
+	}
+	if srv != nil {
+		t.Error("expected a nil server when no metrics address is configured")
+	}
+}
+
+func TestSetupMetricsServer_ListenError(t *testing.T) {
+	t.Parallel()
+	// Occupy an ephemeral port so setupMetricsServer's bind on the same address
+	// fails synchronously.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("pre-binding a port: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	addr := ln.Addr().String()
+
+	cfg := &config.Config{
+		MetricsAddr: addr,
+		ListenAddrs: []config.ListenAddrSpec{{Port: 8080}},
+	}
+	errCh := make(chan error, 1)
+
+	srv, gotErr := setupMetricsServer(cfg, &statusStore{}, errCh)
+	if gotErr == nil {
+		t.Fatal("setupMetricsServer with an occupied address should return an error")
+	}
+	if srv != nil {
+		t.Error("expected a nil server when the bind fails")
+	}
+	if !strings.Contains(gotErr.Error(), addr) {
+		t.Errorf("error %q should mention the occupied address %q", gotErr, addr)
+	}
+}
+
+func TestSetupMetricsServer_ServesAndShutsDown(t *testing.T) {
+	t.Parallel()
+	// Reserve an ephemeral port, then hand its address to setupMetricsServer.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserving a port: %v", err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	cfg := &config.Config{
+		MetricsAddr: addr,
+		ListenAddrs: []config.ListenAddrSpec{{Port: 8080}},
+	}
+	status := &statusStore{varnishdUp: true} // /healthz returns 200 when varnishd is up
+	errCh := make(chan error, 1)
+
+	srv, err := setupMetricsServer(cfg, status, errCh)
+	if err != nil {
+		t.Fatalf("setupMetricsServer: %v", err)
+	}
+	if srv == nil {
+		t.Fatal("expected a non-nil server when a metrics address is configured")
+	}
+	t.Cleanup(func() { _ = srv.Close() }) // safety net if an assertion fails early
+
+	// The listener is bound before setupMetricsServer returns, so the endpoint is
+	// reachable as soon as the serve goroutine is scheduled; retry briefly.
+	client := &http.Client{Timeout: 2 * time.Second}
+	var resp *http.Response
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err = client.Get("http://" + addr + "/healthz")
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metrics server never became reachable: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	// Graceful shutdown stops the server cleanly: Serve returns ErrServerClosed,
+	// which is filtered, so no fatal serve error is reported.
+	shutdownErr := srv.Shutdown(t.Context())
+	if shutdownErr != nil {
+		t.Errorf("Shutdown: %v", shutdownErr)
+	}
+	select {
+	case serveErr := <-errCh:
+		t.Errorf("unexpected serve error after shutdown: %v", serveErr)
+	default:
+	}
+}
+
+// --- writeInitialVCLFile unit tests ---
+
+func TestWriteInitialVCLFile_WritesAndCleansUp(t *testing.T) {
+	t.Parallel()
+	const contents = "vcl 4.1;\n"
+
+	path, cleanup, err := writeInitialVCLFile(contents)
+	if err != nil {
+		t.Fatalf("writeInitialVCLFile: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading written VCL file: %v", err)
+	}
+	if string(got) != contents {
+		t.Errorf("file contents = %q, want %q", got, contents)
+	}
+
+	cleanup()
+	_, statErr := os.Stat(path)
+	if !os.IsNotExist(statErr) {
+		t.Errorf("cleanup() should have removed %s, stat err = %v", path, statErr)
+	}
+}
+
+func TestWriteInitialVCLFile_CreateError(t *testing.T) {
+	// Point the temp dir at a path that does not exist so os.CreateTemp fails.
+	// t.Setenv forbids t.Parallel, so this test runs serially.
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "does-not-exist"))
+
+	path, cleanup, err := writeInitialVCLFile("vcl 4.1;")
+	if err == nil {
+		t.Fatal("writeInitialVCLFile should fail when the temp dir is missing")
+	}
+	if path != "" {
+		t.Errorf("path = %q on error, want empty", path)
+	}
+	if cleanup != nil {
+		t.Error("cleanup should be nil on error")
+	}
+}

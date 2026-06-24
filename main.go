@@ -95,6 +95,18 @@ type debounceState struct {
 	capped     bool      // true when debounce-max forced a shorter timer
 }
 
+// reset stops any pending timer and clears the group back to its zero-burst
+// state. Called after a group fires so the next event starts a fresh burst.
+func (s *debounceState) reset() {
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	s.timer = nil
+	s.deadline = time.Time{}
+	s.firstEvent = time.Time{}
+	s.capped = false
+}
+
 // resetDebounce stops the current timer and starts a new one,
 // capping the duration at the deadline when debounceMax is active.
 func resetDebounce(s *debounceState, debounce, debounceMax time.Duration) {
@@ -119,6 +131,76 @@ func resetDebounce(s *debounceState, debounce, debounceMax time.Duration) {
 		s.timer.Stop()
 	}
 	s.timer = time.NewTimer(d)
+}
+
+// recoveryState drives an exponential-backoff retry timer used to re-attempt a
+// failed reload even when no new events arrive. The first retry waits initial;
+// each consecutive failure doubles the delay, capped at maxDelay. A zero initial
+// disables retries entirely. Shared by the independent VCL and TLS reload paths.
+type recoveryState struct {
+	initial  time.Duration
+	maxDelay time.Duration
+	timer    *time.Timer
+	delay    time.Duration
+}
+
+// next returns the delay for the next retry: initial the first time, then
+// double the previous delay (capped at maxDelay).
+func (r *recoveryState) next() time.Duration {
+	if r.delay == 0 {
+		return r.initial
+	}
+	next := r.delay * 2
+	if r.maxDelay > 0 && next > r.maxDelay {
+		next = r.maxDelay
+	}
+
+	return next
+}
+
+// arm schedules a retry after next() and returns the chosen delay so the caller
+// can log it with a path-specific (static) message. It returns 0 and arms
+// nothing when retries are disabled (initial <= 0).
+func (r *recoveryState) arm() time.Duration {
+	if r.initial <= 0 {
+		return 0
+	}
+	delay := r.next()
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.timer = time.NewTimer(delay)
+	r.delay = delay
+
+	return delay
+}
+
+// reset stops any pending retry and resets the backoff.
+func (r *recoveryState) reset() {
+	if r.timer != nil {
+		r.timer.Stop()
+		r.timer = nil
+	}
+	r.delay = 0
+}
+
+// fired clears the timer reference after its channel has fired (so the drained
+// timer is not selected again) and returns the delay that had elapsed.
+func (r *recoveryState) fired() time.Duration {
+	delay := r.delay
+	r.timer = nil
+
+	return delay
+}
+
+// channel returns the retry timer's channel, or nil when no retry is armed so
+// the select case is never taken.
+func (r *recoveryState) channel() <-chan time.Time {
+	if r.timer == nil {
+		return nil
+	}
+
+	return r.timer.C
 }
 
 // statusStore holds runtime state for the /status endpoint.
@@ -524,6 +606,54 @@ func (lc *loopConfig) debug(msg string, args ...any) {
 	l.Debug(msg, args...)
 }
 
+// setupMetricsServer starts the Prometheus metrics / status / health HTTP
+// server when cfg.MetricsAddr is set, serving /metrics, /status, /healthz and
+// /readyz. The listener is bound synchronously so a port conflict fails startup
+// cleanly (deferred cleanup runs) rather than from inside the goroutine via
+// [os.Exit]; a fatal serve error is delivered on serverErrCh. It returns the
+// running server so the caller can [http.Server.Shutdown] it on exit, or
+// (nil, nil) when no metrics address is configured.
+func setupMetricsServer(cfg *config.Config, status *statusStore, serverErrCh chan<- error) (*http.Server, error) {
+	if cfg.MetricsAddr == "" {
+		//nolint:nilnil // (nil, nil) signals "no metrics server configured"; absence is not an error
+		return nil, nil
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(&telemetry.ZeroCounterFilter{Inner: prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/status", statusHandler(status))
+	mux.HandleFunc("/healthz", healthzHandler(status))
+	readyzAddr := net.JoinHostPort("localhost", strconv.FormatInt(int64(cfg.ListenAddrs[0].Port), 10))
+	mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
+	metricsSrv := &http.Server{
+		Addr:              cfg.MetricsAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout,
+		ReadTimeout:       cfg.MetricsReadTimeout,
+		WriteTimeout:      cfg.MetricsWriteTimeout,
+		IdleTimeout:       cfg.MetricsIdleTimeout,
+	}
+	// Pre-bind so a port conflict fails startup cleanly (deferred cleanup
+	// runs) rather than from inside the goroutine via [os.Exit].
+	ln, listenErr := (&net.ListenConfig{}).Listen(context.Background(), "tcp", cfg.MetricsAddr)
+	if listenErr != nil {
+		return nil, fmt.Errorf("metrics server listen on %s: %w", cfg.MetricsAddr, listenErr)
+	}
+	go func() {
+		slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
+
+		serveErr := metricsSrv.Serve(ln)
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			select {
+			case serverErrCh <- fmt.Errorf("metrics server: %w", serveErr):
+			default:
+			}
+		}
+	}()
+
+	return metricsSrv, nil
+}
+
 // main is a thin wrapper around run. It exists so that run's deferred cleanups
 // (the initial VCL temp file and the TLS temp dir) execute before the process
 // exits: [os.Exit] does not run deferred functions, so the cleanup must live in
@@ -573,38 +703,24 @@ func run() int {
 	serverErrCh := make(chan error, 2)
 
 	// Start Prometheus metrics server if configured.
-	if cfg.MetricsAddr != "" {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.HandlerFor(&telemetry.ZeroCounterFilter{Inner: prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
-		mux.HandleFunc("/status", statusHandler(status))
-		mux.HandleFunc("/healthz", healthzHandler(status))
-		readyzAddr := net.JoinHostPort("localhost", strconv.FormatInt(int64(cfg.ListenAddrs[0].Port), 10))
-		mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
-		metricsSrv := &http.Server{
-			Addr:              cfg.MetricsAddr,
-			Handler:           mux,
-			ReadHeaderTimeout: cfg.MetricsReadHeaderTimeout,
-			ReadTimeout:       cfg.MetricsReadTimeout,
-			WriteTimeout:      cfg.MetricsWriteTimeout,
-			IdleTimeout:       cfg.MetricsIdleTimeout,
-		}
-		// Pre-bind so a port conflict fails startup cleanly (deferred cleanup
-		// runs) rather than from inside the goroutine via [os.Exit].
-		ln, listenErr := (&net.ListenConfig{}).Listen(context.Background(), "tcp", cfg.MetricsAddr)
-		if listenErr != nil {
-			slog.Error("metrics server listen", "addr", cfg.MetricsAddr, "error", listenErr)
+	metricsSrv, metricsErr := setupMetricsServer(cfg, status, serverErrCh)
+	if metricsErr != nil {
+		slog.Error("metrics server", "error", metricsErr)
 
-			return 1
-		}
-		go func() {
-			slog.Info("starting metrics server", "addr", cfg.MetricsAddr)
-
-			serveErr := metricsSrv.Serve(ln)
-			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				select {
-				case serverErrCh <- fmt.Errorf("metrics server: %w", serveErr):
-				default:
-				}
+		return 1
+	}
+	if metricsSrv != nil {
+		// Shut the metrics server down last (this defer is registered early, so
+		// it runs after all other cleanup): /healthz and /readyz stay reachable
+		// for kube probes throughout drain. The event loop has already exited by
+		// the time defers run, so a fresh background context is used rather than
+		// the cancelled run ctx.
+		defer func() {
+			shutdownCtx, cancelShutdown := kubeContext(cfg.ShutdownTimeout)
+			defer cancelShutdown()
+			shutdownErr := metricsSrv.Shutdown(shutdownCtx)
+			if shutdownErr != nil {
+				slog.Warn("metrics server shutdown", "error", shutdownErr)
 			}
 		}()
 	}
@@ -1285,19 +1401,17 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		templateChanged bool
 		pendingReasons  []string
 
-		// Recovery retry: when a reload fails we arm recoveryTimer so the
-		// reload is retried even if no new Kubernetes events arrive. The
-		// delay starts at reloadRecoveryInitial, doubles on each consecutive
-		// failure, and is capped at reloadRecoveryMax. Reset on success.
-		recoveryTimer *time.Timer
-		recoveryDelay time.Duration
+		// Recovery retry: when a reload fails we arm vclRecovery so the reload
+		// is retried even if no new Kubernetes events arrive. The delay starts
+		// at reloadRecoveryInitial, doubles on each consecutive failure, and is
+		// capped at reloadRecoveryMax. Reset on success.
+		vclRecovery = recoveryState{initial: lc.reloadRecoveryInitial, maxDelay: lc.reloadRecoveryMax}
 
 		// TLS certificate reloads are fully decoupled from VCL reloads: their
 		// own debounce group and independent recovery timer, so a cert
 		// rotation never re-renders VCL and a VCL reload never touches certs.
-		tlsCert          debounceState
-		tlsRecoveryTimer *time.Timer
-		tlsRecoveryDelay time.Duration
+		tlsCert     debounceState
+		tlsRecovery = recoveryState{initial: lc.reloadRecoveryInitial, maxDelay: lc.reloadRecoveryMax}
 	)
 
 	// latestTLS holds the most recent certificate material per logical name;
@@ -1340,61 +1454,14 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		tombstoneSweep = ticker.C
 	}
 
-	// nextRecoveryDelay returns the delay for the next recovery retry:
-	// reloadRecoveryInitial the first time, then double (capped at max).
-	nextRecoveryDelay := func() time.Duration {
-		if recoveryDelay == 0 {
-			return lc.reloadRecoveryInitial
-		}
-		next := recoveryDelay * 2
-		if lc.reloadRecoveryMax > 0 && next > lc.reloadRecoveryMax {
-			next = lc.reloadRecoveryMax
-		}
-
-		return next
-	}
-
-	armRecovery := func() {
-		if lc.reloadRecoveryInitial <= 0 {
-			return
-		}
-		delay := nextRecoveryDelay()
-		if recoveryTimer != nil {
-			recoveryTimer.Stop()
-		}
-		recoveryTimer = time.NewTimer(delay)
-		recoveryDelay = delay
-		slog.Warn("scheduling reload retry after failure", "delay", delay)
-	}
-
-	clearRecovery := func() {
-		if recoveryTimer != nil {
-			recoveryTimer.Stop()
-			recoveryTimer = nil
-		}
-		recoveryDelay = 0
-	}
-
 	// handleReload executes the VCL reload logic, clearing both groups'
 	// timers and deadlines. On success it clears any pending recovery
 	// retry; on failure it keeps pendingReload/pendingReasons set and arms
 	// the recovery timer so the reload is retried later.
 	handleReload := func() {
 		// Clear both groups.
-		if frontend.timer != nil {
-			frontend.timer.Stop()
-		}
-		frontend.timer = nil
-		frontend.deadline = time.Time{}
-		frontend.firstEvent = time.Time{}
-		frontend.capped = false
-		if backend.timer != nil {
-			backend.timer.Stop()
-		}
-		backend.timer = nil
-		backend.deadline = time.Time{}
-		backend.firstEvent = time.Time{}
-		backend.capped = false
+		frontend.reset()
+		backend.reset()
 
 		if !pendingReload {
 			lc.debug("decision", "action", "reload-skipped", "reason", "no-pending")
@@ -1413,7 +1480,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		// will fail the same way; they recover when new inputs arrive.
 		markRetry := func() {
 			pendingReload = true
-			armRecovery()
+			if d := vclRecovery.arm(); d > 0 {
+				slog.Warn("scheduling reload retry after failure", "delay", d)
+			}
 		}
 
 		// clearPending marks the reload attempt complete (success or
@@ -1421,7 +1490,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		// pending recovery retry is stopped.
 		clearPending := func() {
 			pendingReasons = pendingReasons[:0]
-			clearRecovery()
+			vclRecovery.reset()
 		}
 
 		// If the template file changed, try to parse the new version.
@@ -1540,50 +1609,11 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		clearPending()
 	}
 
-	// TLS certificate recovery retry — independent of the VCL recovery state
-	// above. Reuses the same backoff bounds but its own timer/delay.
-	nextTLSRecoveryDelay := func() time.Duration {
-		if tlsRecoveryDelay == 0 {
-			return lc.reloadRecoveryInitial
-		}
-		next := tlsRecoveryDelay * 2
-		if lc.reloadRecoveryMax > 0 && next > lc.reloadRecoveryMax {
-			next = lc.reloadRecoveryMax
-		}
-
-		return next
-	}
-	armTLSRecovery := func() {
-		if lc.reloadRecoveryInitial <= 0 {
-			return
-		}
-		delay := nextTLSRecoveryDelay()
-		if tlsRecoveryTimer != nil {
-			tlsRecoveryTimer.Stop()
-		}
-		tlsRecoveryTimer = time.NewTimer(delay)
-		tlsRecoveryDelay = delay
-		slog.Warn("scheduling TLS certificate reload retry after failure", "delay", delay)
-	}
-	clearTLSRecovery := func() {
-		if tlsRecoveryTimer != nil {
-			tlsRecoveryTimer.Stop()
-			tlsRecoveryTimer = nil
-		}
-		tlsRecoveryDelay = 0
-	}
-
 	// handleCertReload installs every pending TLS certificate via the manager,
 	// independently of the VCL reload path. Names that fail stay pending and a
 	// recovery retry is armed; names that succeed are cleared.
 	handleCertReload := func() {
-		if tlsCert.timer != nil {
-			tlsCert.timer.Stop()
-		}
-		tlsCert.timer = nil
-		tlsCert.deadline = time.Time{}
-		tlsCert.firstEvent = time.Time{}
-		tlsCert.capped = false
+		tlsCert.reset()
 
 		if len(pendingCertNames) == 0 {
 			return
@@ -1616,9 +1646,11 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		}
 
 		if failed {
-			armTLSRecovery()
+			if d := tlsRecovery.arm(); d > 0 {
+				slog.Warn("scheduling TLS certificate reload retry after failure", "delay", d)
+			}
 		} else {
-			clearTLSRecovery()
+			tlsRecovery.reset()
 		}
 	}
 
@@ -1783,19 +1815,19 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			evicted := sweepExpiredTombstones(removedGen, time.Now(), lc.backendTombstoneTTL)
 			lc.debug("event", "kind", "tombstone-sweep", "evicted", evicted, "remaining", len(removedGen))
 
-		case <-timerChan(recoveryTimer):
-			// Clear the timer reference before retrying. On failure
-			// handleReload's markRetry will arm a fresh one; on success
-			// clearRecovery leaves it nil. Setting nil here avoids
+		case <-vclRecovery.channel():
+			// fired clears the timer reference before retrying. On failure
+			// handleReload's markRetry arms a fresh one; on success
+			// vclRecovery.clear leaves it nil. Clearing here avoids
 			// re-selecting the drained channel on the next iteration.
-			recoveryTimer = nil
-			slog.Info("reload recovery timer fired, retrying reload", "previous_delay", recoveryDelay)
+			prevDelay := vclRecovery.fired()
+			slog.Info("reload recovery timer fired, retrying reload", "previous_delay", prevDelay)
 			handleReload()
 			// If handleReload did nothing (no pending reload), reset the
 			// backoff so a future failure starts again at the initial
-			// delay. Success already clears it via clearRecovery.
-			if recoveryTimer == nil {
-				recoveryDelay = 0
+			// delay. Success already clears it via vclRecovery.clear.
+			if vclRecovery.timer == nil {
+				vclRecovery.delay = 0
 			}
 
 		case <-timerChan(tlsCert.timer):
@@ -1809,12 +1841,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			}
 			handleCertReload()
 
-		case <-timerChan(tlsRecoveryTimer):
-			tlsRecoveryTimer = nil
-			slog.Info("TLS certificate recovery timer fired, retrying", "previous_delay", tlsRecoveryDelay)
+		case <-tlsRecovery.channel():
+			prevDelay := tlsRecovery.fired()
+			slog.Info("TLS certificate recovery timer fired, retrying", "previous_delay", prevDelay)
 			handleCertReload()
-			if tlsRecoveryTimer == nil {
-				tlsRecoveryDelay = 0
+			if tlsRecovery.timer == nil {
+				tlsRecovery.delay = 0
 			}
 
 		case ev := <-lc.ncsaEvents:

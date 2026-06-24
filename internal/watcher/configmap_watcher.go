@@ -111,6 +111,10 @@ func (w *ConfigMapWatcher) send(data map[string]any) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// reflect.DeepEqual is deliberate here: these values are small parsed
+	// config maps, so exact comparison is cheap, and a content hash would add
+	// collision risk on a correctness-critical dedup (a false "equal" would
+	// silently keep stale config applied).
 	if w.synced && reflect.DeepEqual(data, w.previous) {
 		return
 	}
@@ -118,10 +122,5 @@ func (w *ConfigMapWatcher) send(data map[string]any) {
 	w.synced = true
 	w.previous = data
 
-	// Non-blocking send: drain then send.
-	select {
-	case <-w.ch:
-	default:
-	}
-	w.ch <- data
+	coalescingSend(w.ch, data)
 }

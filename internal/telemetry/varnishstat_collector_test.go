@@ -2310,3 +2310,27 @@ func TestCollectNoPanicOnLabelCardinalityMismatch(t *testing.T) {
 		t.Error("expected varnish_main_cache_hit to be emitted despite the mismatched sess counters")
 	}
 }
+
+func TestToLowerASCII(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"all lowercase unchanged", "cache_hit", "cache_hit"},
+		{"uppercase at start", "ABC", "abc"},
+		{"uppercase in middle", "aBc", "abc"},
+		{"mixed with non-letters preserved", "Hello.World_1", "hello.world_1"},
+		{"digits and symbols untouched", "MAIN.n_object", "main.n_object"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := toLowerASCII(tt.in); got != tt.want {
+				t.Errorf("toLowerASCII(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

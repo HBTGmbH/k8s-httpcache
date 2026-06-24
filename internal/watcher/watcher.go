@@ -205,12 +205,7 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	w.synced = true
 	w.previous = endpoints
 
-	// Non-blocking send: drain then send.
-	select {
-	case <-w.ch:
-	default:
-	}
-	w.ch <- endpoints
+	coalescingSend(w.ch, endpoints)
 }
 
 // resolvePort picks the port number from the EndpointSlice ports list.
@@ -292,4 +287,21 @@ func EndpointsEqual(a, b []Endpoint) bool {
 	}
 
 	return true
+}
+
+// coalescingSend drains any stale buffered value then enqueues v on a cap-1
+// channel, so the consumer always observes the latest value without the
+// producer ever blocking.
+//
+// INVARIANT: callers MUST hold the watcher mutex that serialises all sends on
+// ch across both the drain and the send. The drain+send pair only guarantees
+// buffer space (and thus a non-blocking send) when every sender is serialised;
+// calling this without that mutex reintroduces the stale-value race documented
+// on BackendWatcher.resend.
+func coalescingSend[T any](ch chan T, v T) {
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- v
 }

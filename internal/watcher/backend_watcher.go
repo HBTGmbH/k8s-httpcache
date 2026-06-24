@@ -228,6 +228,11 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 	bw.mu.Unlock()
 }
 
+// resolveExternalPort determines the port for an ExternalName backend from the
+// configured override. With no override it defaults to 80 (logging a warning)
+// for backward compatibility. A future opt-in flag (e.g. --external-name-require-port,
+// plumbed as a requireExplicitPort bool on BackendWatcher/BackendDiscoveryWatcher)
+// could instead return an error here when set, without changing this default.
 func (bw *BackendWatcher) resolveExternalPort() (int32, error) {
 	if bw.portOverride == "" {
 		bw.log.Warn("no port specified for ExternalName service, defaulting to 80",
@@ -290,16 +295,11 @@ func (bw *BackendWatcher) resend() {
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
 
-	// Non-blocking send: drain then send. The channel operations must stay
-	// under the mutex so they are atomic with send() — otherwise a resend
-	// racing a newer update can drain the fresh value and deliver the stale
-	// one (and the drain+send pair only guarantees buffer space when all
-	// senders are serialised).
-	select {
-	case <-bw.ch:
-	default:
-	}
-	bw.ch <- bw.previous
+	// The send must stay under the mutex so it is atomic with send() —
+	// otherwise a resend racing a newer update can drain the fresh value and
+	// deliver the stale one (coalescingSend's drain+send pair only guarantees
+	// buffer space when all senders are serialised).
+	coalescingSend(bw.ch, bw.previous)
 }
 
 // sendFromChild forwards an endpoint update originating from the given child
@@ -355,10 +355,5 @@ func (bw *BackendWatcher) sendLocked(endpoints []Endpoint) {
 	bw.synced = true
 	bw.previous = endpoints
 
-	// Non-blocking send: drain then send.
-	select {
-	case <-bw.ch:
-	default:
-	}
-	bw.ch <- endpoints
+	coalescingSend(bw.ch, endpoints)
 }
