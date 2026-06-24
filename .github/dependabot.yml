@@ -66,3 +66,11 @@ updates:
     interval: weekly
   cooldown:
     default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
+
+# Pinned markdownlint-cli used by the Markdown lint CI step (see test-and-build.yml).
+- package-ecosystem: npm
+  directory: /.github/markdownlint
+  schedule:
+    interval: weekly
+  cooldown:
+    default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
