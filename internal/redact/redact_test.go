@@ -428,3 +428,74 @@ func TestRedactWriterCrossWriteBoundary(t *testing.T) {
 		t.Log("cross-boundary redaction now works (buffered writer?)")
 	}
 }
+
+// captureWriter is a single-writer [io.Writer] sink that records the last bytes
+// written, so a test goroutine can inspect what its own redactingWriter emitted.
+type captureWriter struct {
+	last []byte
+}
+
+func (c *captureWriter) Write(p []byte) (int, error) {
+	c.last = append(c.last[:0], p...)
+
+	return len(p), nil
+}
+
+// TestRedactWriterNoTornReadUnderConcurrentUpdate hammers the production Writer
+// path (used on varnishd stdout/stderr) with concurrent writes while Update
+// swaps the replacer pointer, and asserts every write emits either the fully
+// redacted line or the fully verbatim line — never a torn mix of the two. This
+// adds the correctness invariant TestRedactConcurrent lacks. Run under -race.
+func TestRedactWriterNoTornReadUnderConcurrentUpdate(t *testing.T) {
+	t.Parallel()
+
+	const secret = "SUPERSECRETVALUE1234567890"
+	const line = "token=" + secret + " end"
+	const redacted = "token=[REDACTED] end"
+
+	r := NewRedactor()
+	var wg sync.WaitGroup
+
+	// Updater: toggle whether the secret is a redaction target, swapping the
+	// replacer pointer under the concurrent writers.
+	wg.Go(func() {
+		with := map[string]map[string]any{"app": {"token": secret}}
+		without := map[string]map[string]any{"app": {"token": "otherlongvalue999"}}
+		for i := range 5000 {
+			if i%2 == 0 {
+				r.Update(with)
+			} else {
+				r.Update(without)
+			}
+		}
+	})
+
+	// Writers: each with its own sink (single-writer → no sink race). Every write's
+	// output must be one of the two valid full forms, never a fragment.
+	var mu sync.Mutex
+	var failure string
+	for range 8 {
+		wg.Go(func() {
+			sink := &captureWriter{}
+			w := r.Writer(sink)
+			for range 5000 {
+				_, _ = w.Write([]byte(line))
+				out := string(sink.last)
+				if out != line && out != redacted {
+					mu.Lock()
+					if failure == "" {
+						failure = out
+					}
+					mu.Unlock()
+
+					return
+				}
+			}
+		})
+	}
+
+	wg.Wait()
+	if failure != "" {
+		t.Fatalf("torn redaction observed: %q (want %q or %q)", failure, line, redacted)
+	}
+}

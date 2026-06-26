@@ -1131,3 +1131,65 @@ func TestDrainRacesNewConnections(t *testing.T) {
 	defer cancel()
 	_ = s.Shutdown(ctx)
 }
+
+// TestServeHTTPRacesSetFrontends races SetFrontends churn against concurrent
+// ServeHTTP fan-out: the fan-out captures the frontend slice under s.mu.RLock
+// while the churner replaces it under s.mu.Lock. Run under -race it validates the
+// RWMutex and the immutable-snapshot design (SetFrontends replaces, never
+// mutates), and asserts every response is a valid 200 (frontends present) or 503
+// (empty set) — never a panic or corrupt status.
+func TestServeHTTPRacesSetFrontends(t *testing.T) {
+	t.Parallel()
+	s := newTestServer()
+
+	newPod := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+	}
+	p0, p1 := newPod(), newPod()
+	defer p0.Close()
+	defer p1.Close()
+
+	two := []watcher.Frontend{frontendFromServer("pod-0", p0), frontendFromServer("pod-1", p1)}
+	one := []watcher.Frontend{frontendFromServer("pod-0", p0)}
+	var empty []watcher.Frontend
+	s.SetFrontends(two)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	badStatus := 0
+
+	// Churner: cycle the frontend list under concurrent fan-out.
+	wg.Go(func() {
+		sets := [][]watcher.Frontend{two, one, empty}
+		for i := range 3000 {
+			s.SetFrontends(sets[i%3])
+		}
+	})
+
+	// Requesters: fan-out concurrently; every response must be 200 or 503.
+	for range 8 {
+		wg.Go(func() {
+			for range 300 {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
+				s.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK && rec.Code != http.StatusServiceUnavailable {
+					mu.Lock()
+					if badStatus == 0 {
+						badStatus = rec.Code
+					}
+					mu.Unlock()
+
+					return
+				}
+			}
+		})
+	}
+
+	wg.Wait()
+	if badStatus != 0 {
+		t.Fatalf("unexpected response status under SetFrontends race: %d", badStatus)
+	}
+}

@@ -4812,3 +4812,64 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestStartNCSA_RestartLoopRacesSignalAndStop drives the varnishncsa restart
+// loop (subprocess crashing immediately, breaker disabled so it spins) while
+// concurrent goroutines call ForwardSignal(SIGKILL) — which reads m.ncsaProc
+// under m.ncsaMu — and finally StopNCSA. Run under -race it exercises the
+// ncsaMu/ncsaProc read-write race and the ncsaStop/ncsaDone handshake, and
+// asserts StopNCSA still returns (the loop is not wedged or starved).
+func TestStartNCSA_RestartLoopRacesSignalAndStop(t *testing.T) {
+	t.Parallel()
+
+	var startCount atomic.Int64
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			startCount.Add(1)
+
+			return &mockProc{waitErr: errors.New("crashed"), pid: 4321}, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSARestartDelay = time.Millisecond
+	m.NCSAMaxCrashes = 0 // disable the crash-loop breaker so the loop spins
+	m.NCSAStableUptime = 0
+	m.ncsaRun = r
+	m.StartNCSA("/usr/bin/varnishncsa", []string{"-b"}, "")
+
+	// Race ForwardSignal(SIGKILL) against the monitor's ncsaProc writes.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				m.ForwardSignal(syscall.SIGKILL)
+			}
+		})
+	}
+
+	// Let the restart loop spin and overlap with the signalers.
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// StopNCSA must return (loop not wedged, stop signal not lost).
+	done := make(chan struct{})
+	go func() { m.StopNCSA(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("StopNCSA did not return; restart loop may be wedged")
+	}
+
+	if n := startCount.Load(); n < 2 {
+		t.Errorf("restart loop did not spin: startCount=%d, want >= 2", n)
+	}
+}
