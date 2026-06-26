@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.2.0...v1.2.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* some minor concurrency issues ([09af0e5](https://github.com/HBTGmbH/k8s-httpcache/commit/09af0e585bae938149f93377b670aec2edc42e29))
+
 ## [1.2.0](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.1.0...v1.2.0) (2026-06-19)
 
 
