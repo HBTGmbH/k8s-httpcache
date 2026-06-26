@@ -21,6 +21,6 @@ spec:
     updateMode: {{ .Values.verticalPodAutoscaler.updateMode | quote }}
   {{- with .Values.verticalPodAutoscaler.resourcePolicy }}
   resourcePolicy:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
 {{- end }}

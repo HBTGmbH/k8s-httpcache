@@ -13,23 +13,23 @@ metadata:
 spec:
   {{- with .Values.httpRoute.parentRefs }}
   parentRefs:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- with .Values.httpRoute.hostnames }}
   hostnames:
     {{- range . }}
-    - {{ . | quote }}
+    - {{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | quote }}
     {{- end }}
   {{- end }}
   rules:
     {{- range .Values.httpRoute.rules }}
     - {{- with .matches }}
       matches:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .filters }}
       filters:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       backendRefs:
         - name: {{ include "k8s-httpcache.fullname" $ }}

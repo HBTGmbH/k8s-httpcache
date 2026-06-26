@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "k8s-httpcache.labels" . | nindent 4 }}
     {{- with .Values.prometheusRule.labels }}
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
     {{- end }}
   {{- with include "k8s-httpcache.annotations" (dict "root" .) }}
   annotations:
@@ -120,6 +120,6 @@ spec:
             description: varnishadm TLS certificate operations failed in the last 15 minutes.
     {{- end }}
     {{- with .Values.prometheusRule.rules }}
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
     {{- end }}
 {{- end }}

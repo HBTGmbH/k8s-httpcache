@@ -16,6 +16,6 @@ spec:
       {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
   {{- with .Values.istio.requestAuthentication.jwtRules }}
   jwtRules:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
 {{- end }}

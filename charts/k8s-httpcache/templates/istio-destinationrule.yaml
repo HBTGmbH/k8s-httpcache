@@ -11,13 +11,13 @@ metadata:
     {{- . | nindent 4 }}
   {{- end }}
 spec:
-  host: {{ .Values.istio.destinationRule.host | default (include "k8s-httpcache.serviceFQDN" .) }}
+  host: {{ include "k8s-httpcache.tpl" (dict "value" (.Values.istio.destinationRule.host | default (include "k8s-httpcache.serviceFQDN" .)) "ctx" $) }}
   {{- with .Values.istio.destinationRule.trafficPolicy }}
   trafficPolicy:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- with .Values.istio.destinationRule.subsets }}
   subsets:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
 {{- end }}

@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "k8s-httpcache.labels" . | nindent 4 }}
     {{- with .Values.serviceMonitor.labels }}
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
     {{- end }}
   {{- with include "k8s-httpcache.annotations" (dict "root" .) }}
   annotations:
@@ -31,6 +31,6 @@ spec:
       {{- end }}
       {{- with .Values.serviceMonitor.relabelings }}
       relabelings:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
 {{- end }}

@@ -14,18 +14,18 @@ spec:
   hosts:
     {{- if .Values.istio.virtualService.hosts }}
     {{- range .Values.istio.virtualService.hosts }}
-    - {{ . | quote }}
+    - {{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | quote }}
     {{- end }}
     {{- else }}
     - {{ include "k8s-httpcache.fullname" . | quote }}
     {{- end }}
   {{- with .Values.istio.virtualService.gateways }}
   gateways:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- if .Values.istio.virtualService.http }}
   http:
-    {{- toYaml .Values.istio.virtualService.http | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" .Values.istio.virtualService.http "ctx" $) | nindent 4 }}
   {{- else }}
   {{- /* Default: route all HTTP traffic to the Service. */}}
   http:
@@ -37,10 +37,10 @@ spec:
   {{- end }}
   {{- with .Values.istio.virtualService.tls }}
   tls:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- with .Values.istio.virtualService.tcp }}
   tcp:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
 {{- end }}

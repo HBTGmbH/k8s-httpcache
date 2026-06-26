@@ -12,21 +12,21 @@ metadata:
   {{- end }}
 spec:
   {{- with .Values.ingress.className }}
-  ingressClassName: {{ . }}
+  ingressClassName: {{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) }}
   {{- end }}
   {{- if .Values.ingress.tls }}
   tls:
     {{- range .Values.ingress.tls }}
     - hosts:
         {{- range .hosts }}
-        - {{ . | quote }}
+        - {{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | quote }}
         {{- end }}
-      secretName: {{ .secretName }}
+      secretName: {{ include "k8s-httpcache.tpl" (dict "value" .secretName "ctx" $) }}
     {{- end }}
   {{- end }}
   rules:
     {{- range .Values.ingress.hosts }}
-    - host: {{ .host | quote }}
+    - host: {{ include "k8s-httpcache.tpl" (dict "value" .host "ctx" $) | quote }}
       http:
         paths:
           {{- range .paths }}

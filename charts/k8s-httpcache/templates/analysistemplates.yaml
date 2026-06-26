@@ -11,6 +11,6 @@ metadata:
   labels:
     {{- include "k8s-httpcache.labels" $ | nindent 4 }}
 spec:
-  {{- toYaml .spec | nindent 2 }}
+  {{- include "k8s-httpcache.tpl" (dict "value" .spec "ctx" $) | nindent 2 }}
 {{- end }}
 {{- end }}

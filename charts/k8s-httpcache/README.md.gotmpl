@@ -43,6 +43,38 @@ them with `std.fileread`. See [Serving static files](https://github.com/HBTGmbH/
 in the project README for the full recipe and caveats (text-only; updates need a
 VCL reload).
 
+## Templating values
+
+Most values may themselves contain Helm template expressions, evaluated at install /
+upgrade time so you can reference release metadata, other values, or helper templates.
+Because `{{ "{{" }} ... {{ "}}" }}` at the start of a YAML scalar is parsed as a mapping
+(and would need quoting), this chart uses **`<< ... >>`** as the delimiters instead:
+
+```yaml
+serviceName: << .Release.Name >>-frontend
+commonAnnotations:
+  team: << .Release.Namespace >>
+backends:
+  - name: origin
+    service: << .Release.Name >>-app
+ingress:
+  hosts:
+    - host: << .Release.Name >>.example.com
+```
+
+`<< ... >>` is rewritten to `{{ "{{" }} ... {{ "}}" }}` and rendered with `tpl`. Values that
+do not contain `<<` are left exactly as-is, so existing releases render unchanged. This
+applies to names, annotations/labels, backends, listen addresses, hosts, and the other
+configuration and structured blocks.
+
+Two exceptions, because `<< ... >>` there belongs to the **application** (its own runtime
+template delimiters), not to Helm:
+
+* **`vclTemplateContent`** and **`staticFiles`** are rendered with plain `tpl`. Inside them,
+  use `<< ... >>` for the app's runtime VCL templating (`<< .Frontends >>`, `<< .Backends >>`)
+  and `{{ "{{" }} ... {{ "}}" }}` for Helm-render-time values.
+* **`extraManifests`** accepts **both** `<< ... >>` and `{{ "{{" }} ... {{ "}}" }}`.
+
 {{ template "chart.valuesSection" . }}
 
 {{ template "chart.maintainersSection" . }}

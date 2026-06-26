@@ -47,14 +47,14 @@ spec:
   {{- if .Values.argoRollouts.enabled }}
   strategy:
     {{- if .Values.argoRollouts.strategy }}
-    {{- toYaml .Values.argoRollouts.strategy | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" .Values.argoRollouts.strategy "ctx" $) | nindent 4 }}
     {{- else }}
     canary: {}
     {{- end }}
   {{- else }}
   {{- with .Values.strategy }}
   strategy:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- end }}
   selector:
@@ -76,17 +76,17 @@ spec:
         prometheus.io/port: {{ .Values.container.httpMetricsPort | default 9101 | quote }}
         {{- end }}
       {{- with .Values.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       labels:
         {{- include "k8s-httpcache.labels" . | nindent 8 }}
         {{- with .Values.podLabels }}
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
         {{- end }}
     spec:
       {{- with (concat (default (list) (.Values.global).imagePullSecrets) (default (list) .Values.imagePullSecrets)) }}
       imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "k8s-httpcache.serviceAccountName" . }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
@@ -104,38 +104,38 @@ spec:
       {{- end }}
       {{- with .Values.hostAliases }}
       hostAliases:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.dnsPolicy }}
       dnsPolicy: {{ . }}
       {{- end }}
       {{- with .Values.dnsConfig }}
       dnsConfig:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.extraInitContainers }}
       initContainers:
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -143,13 +143,13 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.securityContext }}
           securityContext:
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
           {{- end }}
           args:
             {{- /* --- Required flags --- */}}
-            - --service-name={{ default (include "k8s-httpcache.fullname" .) .Values.serviceName }}
-            - --namespace={{ default "$(NAMESPACE)" .Values.namespace }}
-            - --vcl-template={{ .Values.vclTemplate }}
+            - --service-name={{ include "k8s-httpcache.tpl" (dict "value" (default (include "k8s-httpcache.fullname" .) .Values.serviceName) "ctx" $) }}
+            - --namespace={{ include "k8s-httpcache.tpl" (dict "value" (default "$(NAMESPACE)" .Values.namespace) "ctx" $) }}
+            - --vcl-template={{ include "k8s-httpcache.tpl" (dict "value" .Values.vclTemplate "ctx" $) }}
             {{- /* --- Cache binary paths --- */}}
             {{- with .Values.varnish.varnishdPath }}
             - --varnishd-path={{ . }}
@@ -177,36 +177,36 @@ spec:
             {{- end }}
             {{- /* --- Listen addresses (repeatable) --- */}}
             {{- range .Values.listenAddrs }}
-            - --listen-addr={{ . }}
+            - --listen-addr={{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) }}
             {{- end }}
             {{- /* --- Backends (repeatable) --- */}}
             {{- range .Values.backends }}
-            - --backend={{ .name }}:{{ .service }}{{ if .port }}:{{ .port }}{{ end }}
+            - --backend={{ include "k8s-httpcache.tpl" (dict "value" .name "ctx" $) }}:{{ include "k8s-httpcache.tpl" (dict "value" .service "ctx" $) }}{{ if .port }}:{{ include "k8s-httpcache.tpl" (dict "value" (toString .port) "ctx" $) }}{{ end }}
             {{- end }}
             {{- /* --- Backend discovery (repeatable) --- */}}
             {{- range .Values.backendDiscovery }}
             {{- $parts := list }}
             {{- range $k, $v := .selector }}
-            {{- $parts = append $parts (printf "%s=%s" $k $v) }}
+            {{- $parts = append $parts (printf "%s=%s" $k (include "k8s-httpcache.tpl" (dict "value" (toString $v) "ctx" $))) }}
             {{- end }}
             {{- $sel := join "," $parts }}
-            - --backend-selector={{ if .allNamespaces }}*//{{ else if .namespace }}{{ .namespace }}//{{ end }}{{ $sel }}{{ if .port }}:{{ .port }}{{ end }}
+            - --backend-selector={{ if .allNamespaces }}*//{{ else if .namespace }}{{ include "k8s-httpcache.tpl" (dict "value" .namespace "ctx" $) }}//{{ end }}{{ $sel }}{{ if .port }}:{{ include "k8s-httpcache.tpl" (dict "value" (toString .port) "ctx" $) }}{{ end }}
             {{- end }}
             {{- /* --- Values (repeatable) --- */}}
             {{- range .Values.values }}
-            - --values={{ .name }}:{{ .configmap }}
+            - --values={{ include "k8s-httpcache.tpl" (dict "value" .name "ctx" $) }}:{{ include "k8s-httpcache.tpl" (dict "value" .configmap "ctx" $) }}
             {{- end }}
             {{- /* --- Secrets (repeatable) --- */}}
             {{- range .Values.secrets }}
-            - --secrets={{ .name }}:{{ .secret }}
+            - --secrets={{ include "k8s-httpcache.tpl" (dict "value" .name "ctx" $) }}:{{ include "k8s-httpcache.tpl" (dict "value" .secret "ctx" $) }}
             {{- end }}
             {{- /* --- TLS certificates (repeatable) --- */}}
             {{- range .Values.tlsCerts }}
-            - --tls-cert={{ .name }}:{{ .secret }}
+            - --tls-cert={{ include "k8s-httpcache.tpl" (dict "value" .name "ctx" $) }}:{{ include "k8s-httpcache.tpl" (dict "value" .secret "ctx" $) }}
             {{- end }}
             {{- /* --- Values dirs (repeatable) --- */}}
             {{- range .Values.valuesDirs }}
-            - --values-dir={{ .name }}:{{ .path }}
+            - --values-dir={{ include "k8s-httpcache.tpl" (dict "value" .name "ctx" $) }}:{{ include "k8s-httpcache.tpl" (dict "value" .path "ctx" $) }}
             {{- end }}
             {{- with .Values.valuesDirPollInterval }}
             - --values-dir-poll-interval={{ . }}
@@ -216,7 +216,7 @@ spec:
             {{- end }}
             {{- /* --- Exclude annotations (repeatable) --- */}}
             {{- range .Values.excludeAnnotations }}
-            - --exclude-annotations={{ . }}
+            - --exclude-annotations={{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) }}
             {{- end }}
             {{- /* --- Broadcast --- */}}
             {{- if .Values.broadcast.enabled }}
@@ -238,6 +238,12 @@ spec:
             {{- with .Values.broadcast.readHeaderTimeout }}
             - --broadcast-read-header-timeout={{ . }}
             {{- end }}
+            {{- with .Values.broadcast.readTimeout }}
+            - --broadcast-read-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.broadcast.writeTimeout }}
+            - --broadcast-write-timeout={{ . }}
+            {{- end }}
             {{- with .Values.broadcast.clientIdleTimeout }}
             - --broadcast-client-idle-timeout={{ . }}
             {{- end }}
@@ -254,6 +260,15 @@ spec:
             {{- end }}
             {{- with .Values.metrics.readHeaderTimeout }}
             - --metrics-read-header-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.metrics.readTimeout }}
+            - --metrics-read-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.metrics.writeTimeout }}
+            - --metrics-write-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.metrics.idleTimeout }}
+            - --metrics-idle-timeout={{ . }}
             {{- end }}
             {{- if .Values.metrics.varnishstatExport }}
             - --varnishstat-export
@@ -328,6 +343,12 @@ spec:
             {{- with .Values.debounce.backendMax }}
             - --backend-debounce-max={{ . }}
             {{- end }}
+            {{- with .Values.debounce.tlsCertDuration }}
+            - --tls-cert-debounce={{ . }}
+            {{- end }}
+            {{- with .Values.debounce.tlsCertMax }}
+            - --tls-cert-debounce-max={{ . }}
+            {{- end }}
             {{- with .Values.debounce.latencyBuckets }}
             - --debounce-latency-buckets={{ . }}
             {{- end }}
@@ -357,6 +378,13 @@ spec:
             {{- with .Values.vcl.kept }}
             - --vcl-kept={{ . }}
             {{- end }}
+            {{- /* --- Startup / Kubernetes API timing --- */}}
+            {{- with .Values.timing.startupTimeout }}
+            - --startup-timeout={{ . }}
+            {{- end }}
+            {{- with .Values.timing.kubeApiTimeout }}
+            - --kube-api-timeout={{ . }}
+            {{- end }}
             {{- /* --- Extra args (before --) --- */}}
             {{- range .Values.extraArgs }}
             - {{ . }}
@@ -382,7 +410,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             {{- with .Values.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
             {{- end }}
           ports:
             - name: http
@@ -405,21 +433,21 @@ spec:
             {{- end }}
           {{- with .Values.startupProbe }}
           startupProbe:
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
           {{- end }}
           {{- if .Values.metrics.enabled }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
           {{- end }}
           {{- with .Values.readinessProbe }}
           readinessProbe:
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
           {{- end }}
           {{- end }}
           {{- with .Values.lifecycle }}
           lifecycle:
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
           {{- end }}
           volumeMounts:
             - name: vcl-template
@@ -436,29 +464,51 @@ spec:
             {{- end }}
             {{- range .Values.valuesDirs }}
             - name: values-dir-{{ .name }}
-              mountPath: {{ .path }}
+              mountPath: {{ include "k8s-httpcache.tpl" (dict "value" .path "ctx" $) }}
               readOnly: true
             {{- end }}
             {{- with .Values.extraVolumeMounts }}
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
             {{- end }}
           {{- with .Values.resources }}
           resources:
-            {{- toYaml . | nindent 12 }}
+            {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
           {{- end }}
         {{- with .Values.extraContainers }}
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
         {{- end }}
       volumes:
         - name: vcl-template
           configMap:
             name: {{ include "k8s-httpcache.fullname" . }}-vcl
         - name: tmp
+          {{- if .Values.volumes.tmp.volume }}
+          {{- toYaml .Values.volumes.tmp.volume | nindent 10 }}
+          {{- else if or .Values.volumes.tmp.medium .Values.volumes.tmp.sizeLimit }}
           emptyDir:
-            medium: Memory
+            {{- with .Values.volumes.tmp.medium }}
+            medium: {{ . }}
+            {{- end }}
+            {{- with .Values.volumes.tmp.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         - name: varnish-workdir
+          {{- if .Values.volumes.varnishWorkdir.volume }}
+          {{- toYaml .Values.volumes.varnishWorkdir.volume | nindent 10 }}
+          {{- else if or .Values.volumes.varnishWorkdir.medium .Values.volumes.varnishWorkdir.sizeLimit }}
           emptyDir:
-            medium: Memory
+            {{- with .Values.volumes.varnishWorkdir.medium }}
+            medium: {{ . }}
+            {{- end }}
+            {{- with .Values.volumes.varnishWorkdir.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         {{- if and .Values.staticFiles.enabled (or .Values.staticFiles.files .Values.staticFiles.existingConfigMap) }}
         - name: static-files
           configMap:
@@ -468,9 +518,9 @@ spec:
         {{- if .configMap }}
         - name: values-dir-{{ .name }}
           configMap:
-            name: {{ .configMap }}
+            name: {{ include "k8s-httpcache.tpl" (dict "value" .configMap "ctx" $) }}
         {{- end }}
         {{- end }}
         {{- with .Values.extraVolumes }}
-        {{- toYaml . | nindent 8 }}
+        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
         {{- end }}

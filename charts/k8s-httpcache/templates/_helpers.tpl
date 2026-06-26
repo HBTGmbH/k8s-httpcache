@@ -20,6 +20,46 @@ Create chart name and version as used by the chart label.
 {{- end }}
 
 {{/*
+Render a value as a Helm template using << >> as the delimiters, so values.yaml can
+carry template expressions without quoting {{ }} (which YAML parses as a mapping).
+Behaviour: if the (stringified) value contains "<<", rewrite << ... >> to {{ ... }} and run
+`tpl`; otherwise return it unchanged — so releases that never use << >> render byte-for-byte
+as before (fully backward compatible). Strings pass straight through; maps/lists are toYaml'd
+first (pipe the call site through nindent).
+
+DO NOT use this for vclTemplateContent or staticFiles: there << >> is the *application's*
+runtime delimiter (rendered by plain `tpl`; use {{ }} for Helm-render-time values there).
+
+Usage:
+  scalar:    {{ include "k8s-httpcache.tpl" (dict "value" .Values.serviceName "ctx" $) }}
+  structure: {{ include "k8s-httpcache.tpl" (dict "value" .Values.podAnnotations "ctx" $) | nindent 8 }}
+*/}}
+{{- define "k8s-httpcache.tpl" -}}
+{{- $v := .value -}}
+{{- if not (kindIs "string" $v) -}}
+{{- $v = toYaml $v -}}
+{{- end -}}
+{{- if contains "<<" $v -}}
+{{- tpl (regexReplaceAll "(?s)<<(.*?)>>" $v "{{${1}}}") .ctx -}}
+{{- else -}}
+{{- $v -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Like k8s-httpcache.tpl but ALWAYS runs `tpl`, so both << >> and {{ }} are rendered.
+Used for sites that already ran `tpl` unconditionally (extraManifests), to stay backward
+compatible while also accepting the << >> convention.
+*/}}
+{{- define "k8s-httpcache.render" -}}
+{{- $v := .value -}}
+{{- if not (kindIs "string" $v) -}}
+{{- $v = toYaml $v -}}
+{{- end -}}
+{{- tpl (regexReplaceAll "(?s)<<(.*?)>>" $v "{{${1}}}") .ctx -}}
+{{- end }}
+
+{{/*
 Common labels.
 */}}
 {{- define "k8s-httpcache.labels" -}}
@@ -30,7 +70,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- with .Values.commonLabels }}
-{{ toYaml . }}
+{{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) }}
 {{- end }}
 {{- end }}
 
@@ -44,7 +84,7 @@ When called without extra: include "k8s-httpcache.annotations" (dict "root" .)
 {{- $extra := .extra | default dict }}
 {{- $merged := mustMergeOverwrite (deepCopy $common) $extra }}
 {{- if $merged }}
-{{- toYaml $merged }}
+{{- include "k8s-httpcache.tpl" (dict "value" $merged "ctx" .root) }}
 {{- end }}
 {{- end }}
 
@@ -55,7 +95,7 @@ Selector labels.
 app.kubernetes.io/name: {{ include "k8s-httpcache.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- with .Values.selectorLabels }}
-{{ toYaml . }}
+{{ include "k8s-httpcache.tpl" (dict "value" . "ctx" $) }}
 {{- end }}
 {{- end }}
 

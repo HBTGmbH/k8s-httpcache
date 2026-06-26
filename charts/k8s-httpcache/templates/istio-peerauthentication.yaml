@@ -16,10 +16,10 @@ spec:
       {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
   {{- with .Values.istio.peerAuthentication.mtls }}
   mtls:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- with .Values.istio.peerAuthentication.portLevelMtls }}
   portLevelMtls:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
 {{- end }}

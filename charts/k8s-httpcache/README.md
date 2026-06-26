@@ -39,6 +39,38 @@ them with `std.fileread`. See [Serving static files](https://github.com/HBTGmbH/
 in the project README for the full recipe and caveats (text-only; updates need a
 VCL reload).
 
+## Templating values
+
+Most values may themselves contain Helm template expressions, evaluated at install /
+upgrade time so you can reference release metadata, other values, or helper templates.
+Because `{{ ... }}` at the start of a YAML scalar is parsed as a mapping
+(and would need quoting), this chart uses **`<< ... >>`** as the delimiters instead:
+
+```yaml
+serviceName: << .Release.Name >>-frontend
+commonAnnotations:
+  team: << .Release.Namespace >>
+backends:
+  - name: origin
+    service: << .Release.Name >>-app
+ingress:
+  hosts:
+    - host: << .Release.Name >>.example.com
+```
+
+`<< ... >>` is rewritten to `{{ ... }}` and rendered with `tpl`. Values that
+do not contain `<<` are left exactly as-is, so existing releases render unchanged. This
+applies to names, annotations/labels, backends, listen addresses, hosts, and the other
+configuration and structured blocks.
+
+Two exceptions, because `<< ... >>` there belongs to the **application** (its own runtime
+template delimiters), not to Helm:
+
+* **`vclTemplateContent`** and **`staticFiles`** are rendered with plain `tpl`. Inside them,
+  use `<< ... >>` for the app's runtime VCL templating (`<< .Frontends >>`, `<< .Backends >>`)
+  and `{{ ... }}` for Helm-render-time values.
+* **`extraManifests`** accepts **both** `<< ... >>` and `{{ ... }}`.
+
 ## Values
 
 | Key | Type | Default | Description |
@@ -61,9 +93,11 @@ VCL reload).
 | broadcast.drainTimeout | string | `""` | Time to wait for broadcast connections to drain (empty = app default 30s) |
 | broadcast.enabled | bool | `true` |  |
 | broadcast.readHeaderTimeout | string | `""` | Max time to read request headers on broadcast server (empty = app default 10s) |
+| broadcast.readTimeout | string | `""` | Max time to read the entire request, headers + body (empty = app default 15s) |
 | broadcast.serverIdleTimeout | string | `""` | Max idle time for client keep-alive connections (empty = app default 120s) |
 | broadcast.shutdownTimeout | string | `""` | Time to wait for in-flight requests after draining (empty = app default 5s) |
 | broadcast.targetListenAddr | string | `""` |  |
+| broadcast.writeTimeout | string | `""` | Max time to write the response, must exceed read + client timeouts (empty = app default 30s) |
 | clusterDomain | string | `"cluster.local"` | Cluster DNS domain, used to build the in-cluster Service FQDN (e.g. for Istio resources) |
 | commonAnnotations | object | `{}` | Annotations to add to all resources |
 | commonLabels | object | `{}` | Labels to add to all resources |
@@ -78,6 +112,8 @@ VCL reload).
 | debounce.frontendMax | string | `""` | Max debounce duration for frontend changes (empty = inherits max) |
 | debounce.latencyBuckets | string | `""` | Histogram bucket boundaries for debounce_latency_seconds metric (empty = app default) |
 | debounce.max | string | `""` | Maximum debounce duration before forced reload (empty = app default 0s) |
+| debounce.tlsCertDuration | string | `""` | Debounce duration for TLS certificate changes (empty = inherits duration) |
+| debounce.tlsCertMax | string | `""` | Max debounce duration for TLS certificate changes (empty = inherits max) |
 | dnsConfig | object | `{}` | Custom DNS configuration |
 | dnsPolicy | string | `""` | DNS policy (ClusterFirst, Default, None, ClusterFirstWithHostNet) |
 | drain.delay | string | `""` | Delay before polling for active sessions (empty = app default 15s) |
@@ -156,10 +192,13 @@ VCL reload).
 | logging.level | string | `""` | Log level: DEBUG, INFO, WARN, ERROR (empty = app default INFO) |
 | metrics.addr | string | `""` | Listen address for the metrics server (empty = app default ":9101") |
 | metrics.enabled | bool | `true` |  |
+| metrics.idleTimeout | string | `""` | Max idle time for keep-alive connections on metrics server (empty = app default 120s) |
 | metrics.readHeaderTimeout | string | `""` | Max time to read request headers on metrics server (empty = app default 10s) |
+| metrics.readTimeout | string | `""` | Max time to read the entire request, headers + body (empty = app default 15s) |
 | metrics.scrapeAnnotations | bool | `false` | Add the de-facto prometheus.io/{scrape,path,port} annotations to the pods for annotation-based Prometheus discovery. Leave false when using the ServiceMonitor or PodMonitor to avoid double scraping. |
 | metrics.varnishstatExport | bool | `false` | Enable varnishstat Prometheus exporter |
 | metrics.varnishstatExportFilter | string | `""` | Counter groups to export (empty = all). Only effective when varnishstatExport is true. |
+| metrics.writeTimeout | string | `""` | Max time to write the response (empty = app default 15s) |
 | minReadySeconds | string | `""` | Minimum seconds a new pod must be ready before it is considered available (empty = omit) |
 | nameOverride | string | `""` | Override the chart name |
 | namespace | string | `""` |  |
@@ -204,10 +243,16 @@ VCL reload).
 | securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsGroup":1000,"runAsNonRoot":true,"runAsUser":1000}` | Container-level security context |
 | selectorLabels | object | `{}` | Extra labels added to selector matchLabels (and thus to pod labels and all label selectors). WARNING: changing these on an existing release will cause a new Deployment to be created and the old ReplicaSet to be orphaned. |
 | service.annotations | object | `{}` | Annotations for the Service |
+| service.externalTrafficPolicy | string | `""` | External traffic policy: Cluster or Local (for type LoadBalancer/NodePort; empty = omit) |
 | service.httpBroadcastPort | int | `8088` | Boardcast port exposed by the Service |
 | service.httpMetricsPort | int | `9101` | Metrics port exposed by the Service |
 | service.httpPort | int | `80` | HTTP port exposed by the Service |
 | service.httpsPort | int | `443` | HTTPS port exposed by the Service (only when tlsCerts is set). |
+| service.internalTrafficPolicy | string | `""` | Internal traffic policy: Cluster or Local (empty = omit) |
+| service.loadBalancerClass | string | `""` | loadBalancerClass for type LoadBalancer (empty = omit) |
+| service.loadBalancerSourceRanges | list | `[]` | Source CIDR ranges allowed to reach a LoadBalancer Service (empty list = omit) |
+| service.sessionAffinity | string | `""` | Session affinity: None or ClientIP (empty = omit) |
+| service.sessionAffinityConfig | object | `{}` | Session affinity configuration (e.g. clientIP.timeoutSeconds) |
 | service.type | string | `"ClusterIP"` | Service type |
 | serviceAccount.annotations | object | `{}` | Annotations for the ServiceAccount |
 | serviceAccount.automountServiceAccountToken | bool | `true` | Automount API credentials |
@@ -231,6 +276,8 @@ VCL reload).
 | template.funcs | string | `""` | Template function library: "sprig" (default) or "sprout" (empty = app default sprig) |
 | template.zone | string | `""` | Topology zone override (empty = auto-detect from NODE_NAME) |
 | terminationGracePeriodSeconds | int | `90` | Termination grace period in seconds |
+| timing.kubeApiTimeout | string | `""` | Timeout for one-shot Kubernetes API calls at startup (empty = app default 30s) |
+| timing.startupTimeout | string | `""` | Max time to wait for the initial endpoint snapshot at startup (empty = app default 3m, 0 = no limit) |
 | tlsCerts | list | `[]` | kubernetes.io/tls Secrets to install as frontend TLS certificates (Varnish 9+, repeatable). Each entry: { name, secret } where secret references a Secret with tls.crt/tls.key (e.g. produced by cert-manager). Generates --tls-cert=name:secret. Requires an https listener in listenAddrs (e.g. "https=:8443,https"). Certificates are hot-reloaded on rotation without restarting Varnish; multiple entries are selected by SNI. The 'name' is a logical/SNI label. |
 | tolerations | list | `[]` | Tolerations |
 | topologySpreadConstraints | list | `[]` | Topology spread constraints |
@@ -266,6 +313,13 @@ VCL reload).
 | vinyl.vinyldPath | string | `""` | Path to vinyld binary (Vinyl Cache 9+; takes precedence over varnish paths) |
 | vinyl.vinylncsaPath | string | `""` | Path to vinylncsa binary (Vinyl Cache 9+; takes precedence over varnishncsa.path) |
 | vinyl.vinylstatPath | string | `""` | Path to vinylstat binary (Vinyl Cache 9+; takes precedence over varnish paths) |
+| volumes | object | `{"tmp":{"medium":"Memory","sizeLimit":"","volume":{}},"varnishWorkdir":{"medium":"Memory","sizeLimit":"","volume":{}}}` | Backing for the container's /tmp (rendered VCL) and /var/lib/varnish (varnishd workdir / shared memory log). Defaults preserve the previous behaviour (in-memory emptyDir). Set `medium: ""` to use node disk (e.g. for large file-backed `-s file` storage, since a Memory emptyDir counts against the pod's memory), add a `sizeLimit`, or supply a full `volume` spec to replace the emptyDir entirely (e.g. a persistentVolumeClaim). |
+| volumes.tmp.medium | string | `"Memory"` | emptyDir medium for /tmp ("Memory" or "" for node disk) |
+| volumes.tmp.sizeLimit | string | `""` | emptyDir size limit for /tmp (e.g. 256Mi; empty = no limit) |
+| volumes.tmp.volume | object | `{}` | Full volume spec for /tmp; when set it replaces the emptyDir entirely |
+| volumes.varnishWorkdir.medium | string | `"Memory"` | emptyDir medium for /var/lib/varnish ("Memory" or "" for node disk) |
+| volumes.varnishWorkdir.sizeLimit | string | `""` | emptyDir size limit for /var/lib/varnish (e.g. 512Mi; empty = no limit) |
+| volumes.varnishWorkdir.volume | object | `{}` | Full volume spec for /var/lib/varnish; when set it replaces the emptyDir entirely |
 
 ## Maintainers
 

@@ -14,10 +14,10 @@ metadata:
   {{- end }}
 spec:
   from:
-    {{- toYaml .Values.referenceGrant.from | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" .Values.referenceGrant.from "ctx" $) | nindent 4 }}
   to:
     {{- if .Values.referenceGrant.to }}
-    {{- toYaml .Values.referenceGrant.to | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" .Values.referenceGrant.to "ctx" $) | nindent 4 }}
     {{- else }}
     - group: ""
       kind: Service

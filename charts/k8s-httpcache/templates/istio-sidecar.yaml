@@ -18,11 +18,11 @@ spec:
   {{- end }}
   {{- with .Values.istio.sidecar.ingress }}
   ingress:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   egress:
     {{- if .Values.istio.sidecar.egress }}
-    {{- toYaml .Values.istio.sidecar.egress | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" .Values.istio.sidecar.egress "ctx" $) | nindent 4 }}
     {{- else }}
     {{- /* Default: this namespace plus the Istio control plane. */}}
     - hosts:
@@ -31,6 +31,6 @@ spec:
     {{- end }}
   {{- with .Values.istio.sidecar.outboundTrafficPolicy }}
   outboundTrafficPolicy:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
 {{- end }}

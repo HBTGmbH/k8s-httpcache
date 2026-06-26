@@ -17,10 +17,10 @@ spec:
   action: {{ .Values.istio.authorizationPolicy.action }}
   {{- with .Values.istio.authorizationPolicy.provider }}
   provider:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- with .Values.istio.authorizationPolicy.rules }}
   rules:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
 {{- end }}

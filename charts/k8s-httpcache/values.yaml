@@ -169,6 +169,10 @@ broadcast:
   serverIdleTimeout: ""
   # -- Max time to read request headers on broadcast server (empty = app default 10s)
   readHeaderTimeout: ""
+  # -- Max time to read the entire request, headers + body (empty = app default 15s)
+  readTimeout: ""
+  # -- Max time to write the response, must exceed read + client timeouts (empty = app default 30s)
+  writeTimeout: ""
   # -- Max idle time for connections to Varnish pods (empty = app default 4s)
   clientIdleTimeout: ""
   # -- Timeout for each fan-out request (empty = app default 3s)
@@ -184,6 +188,12 @@ metrics:
   addr: ""
   # -- Max time to read request headers on metrics server (empty = app default 10s)
   readHeaderTimeout: ""
+  # -- Max time to read the entire request, headers + body (empty = app default 15s)
+  readTimeout: ""
+  # -- Max time to write the response (empty = app default 15s)
+  writeTimeout: ""
+  # -- Max idle time for keep-alive connections on metrics server (empty = app default 120s)
+  idleTimeout: ""
   # -- Enable varnishstat Prometheus exporter
   varnishstatExport: false
   # -- Counter groups to export (empty = all). Only effective when varnishstatExport is true.
@@ -252,6 +262,10 @@ debounce:
   backendDuration: ""
   # -- Max debounce duration for backend changes (empty = inherits max)
   backendMax: ""
+  # -- Debounce duration for TLS certificate changes (empty = inherits duration)
+  tlsCertDuration: ""
+  # -- Max debounce duration for TLS certificate changes (empty = inherits max)
+  tlsCertMax: ""
   # -- Histogram bucket boundaries for debounce_latency_seconds metric (empty = app default)
   latencyBuckets: ""
 
@@ -283,6 +297,15 @@ vcl:
   reloadRetryInterval: ""
   # -- Number of old VCL objects to retain after reload (empty = app default 0)
   kept: ""
+
+# ===========================================================================
+# Startup / Kubernetes API timing
+# ===========================================================================
+timing:
+  # -- Max time to wait for the initial endpoint snapshot at startup (empty = app default 3m, 0 = no limit)
+  startupTimeout: ""
+  # -- Timeout for one-shot Kubernetes API calls at startup (empty = app default 30s)
+  kubeApiTimeout: ""
 
 # ===========================================================================
 # Extra varnishd arguments (passed after --)
@@ -483,6 +506,18 @@ service:
   httpMetricsPort: 9101
   # -- Annotations for the Service
   annotations: {}
+  # -- External traffic policy: Cluster or Local (for type LoadBalancer/NodePort; empty = omit)
+  externalTrafficPolicy: ""
+  # -- Internal traffic policy: Cluster or Local (empty = omit)
+  internalTrafficPolicy: ""
+  # -- loadBalancerClass for type LoadBalancer (empty = omit)
+  loadBalancerClass: ""
+  # -- Source CIDR ranges allowed to reach a LoadBalancer Service (empty list = omit)
+  loadBalancerSourceRanges: []
+  # -- Session affinity: None or ClientIP (empty = omit)
+  sessionAffinity: ""
+  # -- Session affinity configuration (e.g. clientIP.timeoutSeconds)
+  sessionAffinityConfig: {}
 
 # -- Deployment strategy (ignored when argoRollouts.enabled is true)
 strategy:
@@ -530,6 +565,33 @@ resources: {}
 #   memory: 8Mi
 # limits:
 #   memory: 128Mi
+
+# ===========================================================================
+# Ephemeral working-directory volumes
+# ===========================================================================
+# -- Backing for the container's /tmp (rendered VCL) and /var/lib/varnish
+# (varnishd workdir / shared memory log). Defaults preserve the previous
+# behaviour (in-memory emptyDir). Set `medium: ""` to use node disk (e.g. for
+# large file-backed `-s file` storage, since a Memory emptyDir counts against
+# the pod's memory), add a `sizeLimit`, or supply a full `volume` spec to
+# replace the emptyDir entirely (e.g. a persistentVolumeClaim).
+volumes:
+  tmp:
+    # -- emptyDir medium for /tmp ("Memory" or "" for node disk)
+    medium: Memory
+    # -- emptyDir size limit for /tmp (e.g. 256Mi; empty = no limit)
+    sizeLimit: ""
+    # -- Full volume spec for /tmp; when set it replaces the emptyDir entirely
+    volume: {}
+    #  persistentVolumeClaim:
+    #    claimName: my-tmp-pvc
+  varnishWorkdir:
+    # -- emptyDir medium for /var/lib/varnish ("Memory" or "" for node disk)
+    medium: Memory
+    # -- emptyDir size limit for /var/lib/varnish (e.g. 512Mi; empty = no limit)
+    sizeLimit: ""
+    # -- Full volume spec for /var/lib/varnish; when set it replaces the emptyDir entirely
+    volume: {}
 
 # -- Node selector
 nodeSelector: {}

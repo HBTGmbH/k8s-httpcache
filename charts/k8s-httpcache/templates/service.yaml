@@ -11,6 +11,26 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.service.type }}
+  {{- with .Values.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+  {{- with .Values.service.internalTrafficPolicy }}
+  internalTrafficPolicy: {{ . }}
+  {{- end }}
+  {{- with .Values.service.loadBalancerClass }}
+  loadBalancerClass: {{ . }}
+  {{- end }}
+  {{- with .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
+  {{- end }}
+  {{- with .Values.service.sessionAffinity }}
+  sessionAffinity: {{ . }}
+  {{- end }}
+  {{- with .Values.service.sessionAffinityConfig }}
+  sessionAffinityConfig:
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
+  {{- end }}
   selector:
     {{- include "k8s-httpcache.selectorLabels" . | nindent 4 }}
   ports:

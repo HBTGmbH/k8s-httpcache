@@ -16,12 +16,12 @@ spec:
       {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
   {{- with .Values.networkPolicy.policyTypes }}
   policyTypes:
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
   {{- end }}
   {{- if has "Ingress" .Values.networkPolicy.policyTypes }}
   ingress:
     {{- if .Values.networkPolicy.ingress }}
-    {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" .Values.networkPolicy.ingress "ctx" $) | nindent 4 }}
     {{- else }}
     {{- /* Default: allow traffic to the exposed container ports from any source. */}}
     - ports:
@@ -56,7 +56,7 @@ spec:
           port: 53
     {{- end }}
     {{- with .Values.networkPolicy.egress }}
-    {{- toYaml . | nindent 4 }}
+    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
     {{- end }}
     {{- else }}
     []
