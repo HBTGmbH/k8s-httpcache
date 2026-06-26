@@ -1754,3 +1754,81 @@ func TestBackendWatcher_TransitionChurnRace(t *testing.T) {
 	cancel()
 	<-drained
 }
+
+// TestBackendWatcherMetadataSnapshot checks Metadata's basic contract: empty
+// non-nil maps when unset, the observed values once set, and that the returned
+// maps are clones the caller cannot use to mutate watcher state.
+func TestBackendWatcherMetadataSnapshot(t *testing.T) {
+	t.Parallel()
+	bw := NewBackendWatcher(fake.NewSimpleClientset(), "ns", "svc", "")
+
+	labels, annotations := bw.Metadata()
+	if labels == nil || annotations == nil {
+		t.Fatalf("Metadata returned nil maps: labels=%v annotations=%v", labels, annotations)
+	}
+	if len(labels) != 0 || len(annotations) != 0 {
+		t.Fatalf("Metadata on unset watcher = (%v, %v), want empty", labels, annotations)
+	}
+
+	bw.mu.Lock()
+	bw.labels = map[string]string{"app": "web"}
+	bw.annotations = map[string]string{"team": "core"}
+	bw.mu.Unlock()
+
+	labels, annotations = bw.Metadata()
+	if labels["app"] != "web" || annotations["team"] != "core" {
+		t.Fatalf("Metadata = (%v, %v)", labels, annotations)
+	}
+
+	// Mutating the returned maps must not affect the watcher's stored copies.
+	labels["app"] = "mutated"
+	annotations["team"] = "mutated"
+	labels2, annotations2 := bw.Metadata()
+	if labels2["app"] != "web" || annotations2["team"] != "core" {
+		t.Fatalf("Metadata returned an aliased map: (%v, %v)", labels2, annotations2)
+	}
+}
+
+// TestBackendWatcherMetadataNoTornRead is the regression guard for F3: Metadata
+// must read labels and annotations under a single lock so the two never come
+// from different update generations. The writer always sets both fields to the
+// same generation under one lock (mirroring syncService), so a consistent
+// reader must never see mismatched generations. Reading via separate
+// Labels()/Annotations() calls would tear here; run under -race.
+func TestBackendWatcherMetadataNoTornRead(t *testing.T) {
+	t.Parallel()
+	bw := NewBackendWatcher(fake.NewSimpleClientset(), "ns", "svc", "")
+
+	gens := []string{"a", "b"}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			v := gens[i%2]
+			bw.mu.Lock()
+			bw.labels = map[string]string{"gen": v}
+			bw.annotations = map[string]string{"gen": v}
+			bw.mu.Unlock()
+			i++
+		}
+	}()
+
+	for range 200000 {
+		labels, annotations := bw.Metadata()
+		if labels["gen"] != annotations["gen"] {
+			close(stop)
+			<-done
+			t.Fatalf("torn metadata read: labels gen=%q, annotations gen=%q",
+				labels["gen"], annotations["gen"])
+		}
+	}
+	close(stop)
+	<-done
+}

@@ -12,7 +12,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes/fake"
+	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 )
 
 func TestResolvePort(t *testing.T) {
@@ -1204,5 +1206,74 @@ func TestRunIPv4AndIPv6SlicesCoexist(t *testing.T) {
 	}
 	if eps[1].Host != "fd00::1" {
 		t.Errorf("eps[1].Host = %q, want fd00::1", eps[1].Host)
+	}
+}
+
+// blockingEndpointSliceLister is a stub EndpointSliceLister whose List signals
+// once entered and then blocks until released. It lets a test observe whether
+// Watcher.sync holds the watcher mutex across the lister read.
+type blockingEndpointSliceLister struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (l *blockingEndpointSliceLister) EndpointSlices(string) discoverylisters.EndpointSliceNamespaceLister {
+	return l
+}
+
+func (l *blockingEndpointSliceLister) List(labels.Selector) ([]*discoveryv1.EndpointSlice, error) {
+	close(l.entered)
+	<-l.release
+
+	return nil, nil
+}
+
+func (*blockingEndpointSliceLister) Get(string) (*discoveryv1.EndpointSlice, error) {
+	return nil, nil //nolint:nilnil // unused stub method; Watcher.sync only calls List, never Get
+}
+
+// TestWatcherSyncReadsUnderLock asserts that Watcher.sync performs the lister
+// read while holding the watcher mutex, so the read and the subsequent
+// coalescing send form one atomic critical section. Without this, the explicit
+// sync in Run and a concurrent informer-handler sync could interleave their
+// reads and sends so a goroutine that read an older store state sends last,
+// leaving a stale value buffered on the cap-1 channel. The simple single-object
+// watchers (Secret/ConfigMap/TLSCert) and BackendWatcher.syncService follow the
+// same pattern.
+func TestWatcherSyncReadsUnderLock(t *testing.T) {
+	t.Parallel()
+
+	w := New(fake.NewSimpleClientset(), "ns", "svc", "")
+	lister := &blockingEndpointSliceLister{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		w.sync(lister)
+		close(done)
+	}()
+
+	select {
+	case <-lister.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for sync to enter the lister read")
+	}
+
+	// The mutex must be held during the lister read. Before the fix the read
+	// ran outside the lock and TryLock would succeed here.
+	if w.mu.TryLock() {
+		w.mu.Unlock()
+		close(lister.release)
+		<-done
+		t.Fatal("watcher mutex was not held during the lister read; read+send is not atomic")
+	}
+
+	close(lister.release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for sync to finish")
 	}
 }

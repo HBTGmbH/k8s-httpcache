@@ -86,10 +86,17 @@ func (w *SecretWatcher) Run(ctx context.Context) error {
 }
 
 func (w *SecretWatcher) sync(lister corelisters.SecretLister) {
+	// Hold the mutex across the lister read and the send so the two are atomic:
+	// the explicit sync in Run can run concurrently with an informer-handler
+	// sync, and serialising read+send guarantees the last sender is the last
+	// reader, so a stale value can't win the cap-1 channel. See Watcher.sync.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	secret, err := lister.Secrets(w.namespace).Get(w.secretName)
 	if err != nil {
 		// Secret not found — emit empty data.
-		w.send(nil)
+		w.sendLocked(nil)
 
 		return
 	}
@@ -104,14 +111,12 @@ func (w *SecretWatcher) sync(lister corelisters.SecretLister) {
 		parsed[k] = val
 	}
 
-	w.send(parsed)
+	w.sendLocked(parsed)
 }
 
-func (w *SecretWatcher) send(data map[string]any) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// reflect.DeepEqual is deliberate; see ConfigMapWatcher.send for why a
+// sendLocked performs the dedup and drain-then-send. Callers must hold w.mu.
+func (w *SecretWatcher) sendLocked(data map[string]any) {
+	// reflect.DeepEqual is deliberate; see ConfigMapWatcher.sendLocked for why a
 	// content hash is not used on this dedup path.
 	if w.synced && reflect.DeepEqual(data, w.previous) {
 		return

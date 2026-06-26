@@ -94,6 +94,28 @@ func (bw *BackendWatcher) Annotations() map[string]string {
 	return maps.Clone(bw.annotations)
 }
 
+// Metadata returns copies of the most recently observed Service labels and
+// annotations, read together under a single lock so the two always come from
+// the same observation. Calling Labels() and Annotations() separately can tear:
+// a metadata update landing between the two calls would pair labels from one
+// generation with annotations from the next. Both maps are empty (non-nil) when
+// unset, so callers never need to nil-check.
+func (bw *BackendWatcher) Metadata() (map[string]string, map[string]string) {
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+
+	labels := make(map[string]string)
+	if bw.labels != nil {
+		labels = maps.Clone(bw.labels)
+	}
+	annotations := make(map[string]string)
+	if bw.annotations != nil {
+		annotations = maps.Clone(bw.annotations)
+	}
+
+	return labels, annotations
+}
+
 // SetExcludeAnnotations sets the annotation exclusion filter. Must be called
 // before Run.
 func (bw *BackendWatcher) SetExcludeAnnotations(exclude func(string) bool) {
@@ -148,10 +170,20 @@ func (bw *BackendWatcher) Run(ctx context.Context) error {
 }
 
 func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.ServiceLister) {
+	// Hold bw.mu across the lister read and every send so the read+send is one
+	// atomic critical section: the explicit syncService in Run can run
+	// concurrently with an informer-handler syncService, and serialising them
+	// keeps a goroutine that read an older Service state from sending last and
+	// leaving a stale value buffered on the cap-1 channel. (The child-delegation
+	// path is additionally guarded by sendFromChild's identity check.) Every
+	// operation here is in-memory and non-blocking, so the section stays cheap.
+	// See Watcher.sync.
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+
 	svc, err := lister.Services(bw.namespace).Get(bw.serviceName)
 	if err != nil {
 		// Service not found or error — emit empty endpoints.
-		bw.mu.Lock()
 		if !bw.serviceNotFound {
 			bw.serviceNotFound = true
 			bw.log.Warn("backend Service not found, emitting empty endpoints",
@@ -160,14 +192,12 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 		bw.labels = nil
 		bw.annotations = nil
 		bw.stopEndpointSliceWatcherLocked()
-		bw.mu.Unlock()
-		bw.send(nil)
+		bw.sendLocked(nil)
 
 		return
 	}
 
 	// Service exists — reset the warning flag so we warn again if it disappears.
-	bw.mu.Lock()
 	bw.serviceNotFound = false
 
 	// Track Service labels and annotations; trigger a resend when metadata
@@ -182,22 +212,17 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 	annotationsChanged := !maps.Equal(bw.annotations, newAnnotations)
 	bw.annotations = newAnnotations
 
-	synced := bw.synced
-	bw.mu.Unlock()
-
-	if (labelsChanged || annotationsChanged) && synced {
-		bw.resend()
+	if (labelsChanged || annotationsChanged) && bw.synced {
+		bw.resendLocked()
 	}
 
 	if svc.Spec.Type == corev1.ServiceTypeExternalName {
-		bw.mu.Lock()
 		bw.stopEndpointSliceWatcherLocked()
-		bw.mu.Unlock()
 
 		if svc.Spec.ExternalName == "" {
 			bw.log.Warn("ExternalName service has empty externalName, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName)
-			bw.send(nil)
+			bw.sendLocked(nil)
 
 			return
 		}
@@ -206,7 +231,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 		if err != nil {
 			bw.log.Error("cannot resolve port for ExternalName service, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
-			bw.send(nil)
+			bw.sendLocked(nil)
 
 			return
 		}
@@ -215,17 +240,15 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 			Port: port,
 			Name: externalEndpointName,
 		}}
-		bw.send(endpoints)
+		bw.sendLocked(endpoints)
 
 		return
 	}
 
 	// Non-ExternalName service: delegate to EndpointSlice watcher.
-	bw.mu.Lock()
 	if bw.childWatcher == nil {
 		bw.startEndpointSliceWatcherLocked(ctx)
 	}
-	bw.mu.Unlock()
 }
 
 // resolveExternalPort determines the port for an ExternalName backend from the
@@ -295,10 +318,17 @@ func (bw *BackendWatcher) resend() {
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
 
-	// The send must stay under the mutex so it is atomic with send() —
-	// otherwise a resend racing a newer update can drain the fresh value and
-	// deliver the stale one (coalescingSend's drain+send pair only guarantees
-	// buffer space when all senders are serialised).
+	bw.resendLocked()
+}
+
+// resendLocked re-sends the last known endpoints, bypassing the dedup in
+// sendLocked. Callers must hold bw.mu.
+//
+// The send must stay under the mutex so it is atomic with sendLocked() —
+// otherwise a resend racing a newer update can drain the fresh value and
+// deliver the stale one (coalescingSend's drain+send pair only guarantees
+// buffer space when all senders are serialised).
+func (bw *BackendWatcher) resendLocked() {
 	coalescingSend(bw.ch, bw.previous)
 }
 

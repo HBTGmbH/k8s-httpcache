@@ -86,10 +86,17 @@ func (w *ConfigMapWatcher) Run(ctx context.Context) error {
 }
 
 func (w *ConfigMapWatcher) sync(lister corelisters.ConfigMapLister) {
+	// Hold the mutex across the lister read and the send so the two are atomic:
+	// the explicit sync in Run can run concurrently with an informer-handler
+	// sync, and serialising read+send guarantees the last sender is the last
+	// reader, so a stale value can't win the cap-1 channel. See Watcher.sync.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	cm, err := lister.ConfigMaps(w.namespace).Get(w.configMapName)
 	if err != nil {
 		// ConfigMap not found — emit empty data.
-		w.send(nil)
+		w.sendLocked(nil)
 
 		return
 	}
@@ -104,13 +111,11 @@ func (w *ConfigMapWatcher) sync(lister corelisters.ConfigMapLister) {
 		parsed[k] = val
 	}
 
-	w.send(parsed)
+	w.sendLocked(parsed)
 }
 
-func (w *ConfigMapWatcher) send(data map[string]any) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+// sendLocked performs the dedup and drain-then-send. Callers must hold w.mu.
+func (w *ConfigMapWatcher) sendLocked(data map[string]any) {
 	// reflect.DeepEqual is deliberate here: these values are small parsed
 	// config maps, so exact comparison is cheap, and a content hash would add
 	// collision risk on a correctness-critical dedup (a false "equal" would

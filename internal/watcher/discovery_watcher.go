@@ -315,10 +315,14 @@ func (dw *BackendDiscoveryWatcher) collectInitialState(ctx context.Context, pend
 			// removal is reconciled later via the normal update path.
 			continue
 		case eps := <-mb.watcher.Changes():
+			// Read labels+annotations as one consistent snapshot (see
+			// BackendWatcher.Metadata), before taking dw.mu to avoid nesting the
+			// child's lock under it.
+			svcLabels, svcAnnotations := mb.watcher.Metadata()
 			dw.mu.Lock()
 			dw.initialState[mb.name] = eps
-			dw.initialLabels[mb.name] = mb.watcher.Labels()
-			dw.initialAnnotations[mb.name] = mb.watcher.Annotations()
+			dw.initialLabels[mb.name] = svcLabels
+			dw.initialAnnotations[mb.name] = svcAnnotations
 			dw.mu.Unlock()
 		}
 	}
@@ -351,8 +355,11 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 					// slice to keep the two cases distinguishable.
 					eps = []Endpoint{}
 				}
+				// Read labels+annotations as one consistent snapshot (see
+				// BackendWatcher.Metadata).
+				svcLabels, svcAnnotations := bw.Metadata()
 				select {
-				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: bw.Labels(), Annotations: bw.Annotations(), Gen: gen}:
+				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: svcLabels, Annotations: svcAnnotations, Gen: gen}:
 				case <-fwdCtx.Done():
 					return
 				}

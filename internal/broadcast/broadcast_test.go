@@ -1038,3 +1038,96 @@ func TestForwardPreservesHostHeader(t *testing.T) {
 		t.Fatalf("forwarded Host = %q, want %q (purges keyed by host would miss)", gotHost, "example.com")
 	}
 }
+
+// TestDrainRacesNewConnections races a burst of new client connections against a
+// concurrent Drain. New connections keep arriving while Drain flips the draining
+// flag, samples conns.Load(), and waits on connsDrained — exactly the window
+// guarded by the conns atomic, drainOnce, and the connsDrained channel. Run under
+// -race it asserts Drain still completes (no lost wake-up, no hang) and the
+// connection counter balances back to zero.
+func TestDrainRacesNewConnections(t *testing.T) {
+	t.Parallel()
+	s := newTestServer()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = s.srv.Serve(ln) }()
+	addr := ln.Addr().String()
+
+	// Two fake upstream pods so the fan-out has real targets.
+	newPod := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+	}
+	p0, p1 := newPod(), newPod()
+	defer p0.Close()
+	defer p1.Close()
+	s.SetFrontends([]watcher.Frontend{
+		frontendFromServer("pod-0", p0),
+		frontendFromServer("pod-1", p1),
+	})
+
+	// Fire continuous client requests, each on a fresh connection
+	// (DisableKeepAlives), so the server sees rapid StateNew→StateClosed
+	// transitions racing the drain. Clients ignore errors — Drain's Shutdown
+	// makes later requests fail, which is expected.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			cl := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				resp, reqErr := cl.Get("http://" + addr + "/purge/foo")
+				if reqErr == nil {
+					_, _ = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+				}
+			}
+		})
+	}
+
+	// Let connections build up in flight, then drain while they keep arriving.
+	time.Sleep(75 * time.Millisecond)
+	drainErr := make(chan error, 1)
+	go func() { drainErr <- s.Drain(5 * time.Second) }()
+
+	// Keep racing new connections against the drain for a moment, then stop the
+	// clients so conns can fall to zero and signalDrained can fire.
+	time.Sleep(75 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// Drain must complete (not hang) and report success.
+	select {
+	case drainResult := <-drainErr:
+		if drainResult != nil {
+			t.Fatalf("Drain returned error: %v", drainResult)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("Drain did not return; possible lost wake-up under the connection race")
+	}
+
+	// Connection accounting must balance back to zero (no double-count or negative
+	// drift from the StateNew/StateClosed race). Poll briefly: the final
+	// StateClosed callbacks may trail Drain's return by a moment.
+	deadline := time.Now().Add(2 * time.Second)
+	for s.conns.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("conns = %d after drain, want 0", s.conns.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Idempotent safety-net shutdown (Drain already called srv.Shutdown).
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_ = s.Shutdown(ctx)
+}

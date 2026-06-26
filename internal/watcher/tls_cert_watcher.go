@@ -111,25 +111,30 @@ func (w *TLSCertWatcher) Run(ctx context.Context) error {
 }
 
 func (w *TLSCertWatcher) sync(lister corelisters.SecretLister) {
+	// Hold the mutex across the lister read and the send so the two are atomic:
+	// the explicit sync in Run can run concurrently with an informer-handler
+	// sync, and serialising read+send guarantees the last sender is the last
+	// reader, so a stale value can't win the cap-1 channel. See Watcher.sync.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	secret, err := lister.Secrets(w.namespace).Get(w.secretName)
 	if err != nil {
 		// Secret not found — emit empty data.
-		w.send(TLSCertData{})
+		w.sendLocked(TLSCertData{})
 
 		return
 	}
 
-	w.send(TLSCertData{
+	w.sendLocked(TLSCertData{
 		Cert: secret.Data[tlsCertKey],
 		Key:  secret.Data[tlsKeyKey],
 		CA:   secret.Data[tlsCAKey],
 	})
 }
 
-func (w *TLSCertWatcher) send(data TLSCertData) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+// sendLocked performs the dedup and drain-then-send. Callers must hold w.mu.
+func (w *TLSCertWatcher) sendLocked(data TLSCertData) {
 	if w.synced && data.equal(w.previous) {
 		return
 	}

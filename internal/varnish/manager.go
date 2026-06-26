@@ -666,7 +666,9 @@ func (m *Manager) reload(vclPath string) error {
 			m.log.Info("activated VCL", "name", name)
 		}
 
-		// Discard old available VCLs in the background (best-effort).
+		// Discard old available VCLs (best-effort). Runs synchronously on the
+		// reload path; the cleanup is a few fast varnishadm calls, and any
+		// failure is logged and ignored rather than failing the reload.
 		m.discardOldVCLs(name)
 
 		return nil

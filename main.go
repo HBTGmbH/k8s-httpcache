@@ -973,10 +973,13 @@ func run() int {
 		}
 		data.frontends = <-w.Changes()
 		for i, bw := range bwWatchers {
+			eps := <-bw.Changes()
+			// Read labels+annotations as one consistent snapshot (see Metadata).
+			svcLabels, svcAnnotations := bw.Metadata()
 			data.backends[bwNames[i]] = renderer.BackendGroup{
-				Endpoints:   <-bw.Changes(),
-				Labels:      bw.Labels(),
-				Annotations: bw.Annotations(),
+				Endpoints:   eps,
+				Labels:      svcLabels,
+				Annotations: svcAnnotations,
 			}
 		}
 		for _, dw := range discoveryWatchers {
@@ -1145,7 +1148,9 @@ func run() int {
 			name := bwNames[i]
 			go func() {
 				for eps := range bw.Changes() {
-					backendCh <- backendChange{name: name, endpoints: eps, labels: bw.Labels(), annotations: bw.Annotations()}
+					// Read labels+annotations as one consistent snapshot (see Metadata).
+					svcLabels, svcAnnotations := bw.Metadata()
+					backendCh <- backendChange{name: name, endpoints: eps, labels: svcLabels, annotations: svcAnnotations}
 				}
 			}()
 		}

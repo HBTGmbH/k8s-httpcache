@@ -114,6 +114,16 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
+	// Hold the mutex across the lister read and the send so the two are atomic:
+	// the explicit sync in Run can run concurrently with an informer-handler
+	// sync, and without this the goroutine that read the older store state could
+	// send last, leaving a stale value buffered on the cap-1 channel. Serialising
+	// read+send guarantees the last sender is the last reader, so the delivered
+	// value converges to the latest store state. The read is an in-memory lister
+	// lookup, so the critical section stays cheap.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	epSlices, err := lister.EndpointSlices(w.namespace).List(labels.Everything())
 	if err != nil {
 		w.log.Error("failed to list EndpointSlices", "error", err)
@@ -182,9 +192,6 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	endpoints = slices.CompactFunc(endpoints, func(a, b Endpoint) bool {
 		return a.Host == b.Host && a.Port == b.Port
 	})
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	if w.synced && EndpointsEqual(endpoints, w.previous) {
 		return

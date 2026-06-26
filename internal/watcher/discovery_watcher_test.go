@@ -2483,3 +2483,136 @@ func TestDiscoveryWatcher_ChurnRace(t *testing.T) {
 		t.Error(genFail)
 	}
 }
+
+// waitForCond polls cond until it returns true or timeout elapses, failing the
+// test with desc on timeout. Used by the churn stress tests to assert on the
+// steady state the informers eventually converge to.
+func waitForCond(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for condition: %s", desc)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestDiscoveryWatcher_CrossWatcherHandoffChurnRace stresses the cross-watcher
+// name-handoff path: two BackendDiscoveryWatchers with the same label selector,
+// scoped to different namespaces but sharing one NameRegistry, repeatedly hand
+// the bare backend name "web" back and forth as a matching Service ping-pongs
+// between the two namespaces. Run under -race it exercises NameRegistry
+// claim/release, syncServices, and the per-backend forwarding goroutines all at
+// once, then asserts the steady state once the churn stops.
+//
+// Gen ordering across the two watchers is deliberately NOT asserted: cross-
+// watcher (and late-forward) reordering is legal by design and is reconciled by
+// the event loop's liveGen/removedGen guards, covered by the TestRunLoop_*
+// tests. The value here is the -race / deadlock / panic exercise plus the
+// steady-state invariants below.
+func TestDiscoveryWatcher_CrossWatcherHandoffChurnRace(t *testing.T) {
+	t.Parallel()
+	clientset := fake.NewClientset()
+	sel := labels.SelectorFromSet(labels.Set{"app": "web"})
+	reg := NewNameRegistry()
+
+	dw1 := NewBackendDiscoveryWatcher(clientset, "ns1", false, sel, "", nil)
+	dw1.SetNameRegistry(reg)
+	dw2 := NewBackendDiscoveryWatcher(clientset, "ns2", false, sel, "", nil)
+	dw2.SetNameRegistry(reg)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done1, done2 := make(chan struct{}), make(chan struct{})
+	go func() { defer close(done1); _ = dw1.Run(ctx) }()
+	go func() { defer close(done2); _ = dw2.Run(ctx) }()
+
+	waitForInitial(t, dw1)
+	waitForInitial(t, dw2)
+	// Let both informers register their watches before driving events; the fake
+	// clientset drops events delivered in the gap between cache sync and watch
+	// registration.
+	waitForWatch()
+
+	// Each watcher's updateCh is cap-16; removal sends block if nobody drains it.
+	// Drain both for the whole test (contents are not asserted — only that
+	// draining stays race-free under churn).
+	startDrain := func(dw *BackendDiscoveryWatcher) <-chan struct{} {
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case _, ok := <-dw.Changes():
+					if !ok {
+						return
+					}
+				}
+			}
+		}()
+
+		return stopped
+	}
+	drain1, drain2 := startDrain(dw1), startDrain(dw2)
+
+	lbls := map[string]string{"app": "web"}
+	svc1 := makeDiscoverableService("ns1", "web", lbls)
+	slice1 := makeDiscoverableEndpointSlice("ns1", "web", "web-ns1", "10.1.0.1", 8080)
+	svc2 := makeDiscoverableService("ns2", "web", lbls)
+	slice2 := makeDiscoverableEndpointSlice("ns2", "web", "web-ns2", "10.2.0.1", 8080)
+
+	// Ping-pong "web" between the two namespaces to force repeated handoffs.
+	for range 30 {
+		_, _ = clientset.CoreV1().Services("ns1").Create(ctx, svc1, metav1.CreateOptions{})
+		_, _ = clientset.DiscoveryV1().EndpointSlices("ns1").Create(ctx, slice1, metav1.CreateOptions{})
+		_ = clientset.CoreV1().Services("ns1").Delete(ctx, "web", metav1.DeleteOptions{})
+		_ = clientset.DiscoveryV1().EndpointSlices("ns1").Delete(ctx, "web-ns1", metav1.DeleteOptions{})
+
+		_, _ = clientset.CoreV1().Services("ns2").Create(ctx, svc2, metav1.CreateOptions{})
+		_, _ = clientset.DiscoveryV1().EndpointSlices("ns2").Create(ctx, slice2, metav1.CreateOptions{})
+		_ = clientset.CoreV1().Services("ns2").Delete(ctx, "web", metav1.DeleteOptions{})
+		_ = clientset.DiscoveryV1().EndpointSlices("ns2").Delete(ctx, "web-ns2", metav1.DeleteOptions{})
+	}
+
+	// Settle phase 1 — delete "web" everywhere and require the registry to release
+	// the bare name. A leaked claim (release-by-wrong-owner, or a missed release)
+	// would wedge "web" forever and time out here.
+	_ = clientset.CoreV1().Services("ns1").Delete(ctx, "web", metav1.DeleteOptions{})
+	_ = clientset.DiscoveryV1().EndpointSlices("ns1").Delete(ctx, "web-ns1", metav1.DeleteOptions{})
+	_ = clientset.CoreV1().Services("ns2").Delete(ctx, "web", metav1.DeleteOptions{})
+	_ = clientset.DiscoveryV1().EndpointSlices("ns2").Delete(ctx, "web-ns2", metav1.DeleteOptions{})
+	waitForCond(t, 30*time.Second, "registry released 'web' and both watchers dropped it after full delete",
+		func() bool {
+			return !registryClaimed(reg, "web") &&
+				!backendExists(dw1, "ns1/web") &&
+				!backendExists(dw2, "ns2/web")
+		})
+
+	// Settle phase 2 — recreate "web" only in ns1. With the registry now free,
+	// exactly one watcher (dw1) must adopt it: no drop, no double-ownership.
+	_, _ = clientset.CoreV1().Services("ns1").Create(ctx, svc1, metav1.CreateOptions{})
+	_, _ = clientset.DiscoveryV1().EndpointSlices("ns1").Create(ctx, slice1, metav1.CreateOptions{})
+	waitForCond(t, 30*time.Second, "surviving 'web' adopted by exactly one watcher with a single registry owner",
+		func() bool {
+			return backendExists(dw1, "ns1/web") &&
+				!backendExists(dw2, "ns2/web") &&
+				registryClaimed(reg, "web")
+		})
+
+	// Clean shutdown: both Run goroutines and both drainers must return.
+	cancel()
+	for _, c := range []<-chan struct{}{drain1, drain2, done1, done2} {
+		select {
+		case <-c:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for goroutine shutdown")
+		}
+	}
+}
