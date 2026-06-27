@@ -176,7 +176,8 @@ jobs:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0
+          ~/go/bin/nilaway
+        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260625224722-136c083a9b77
     - name: Install analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -186,6 +187,7 @@ jobs:
       run: |
         go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
         go install golang.org/x/tools/cmd/deadcode@v0.47.0
+        go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260625224722-136c083a9b77
     - name: Save analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -197,13 +199,20 @@ jobs:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0
+          ~/go/bin/nilaway
+        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260625224722-136c083a9b77
     - name: Run govulncheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.go == 'true' ||
         needs.changes.outputs.ci == 'true'
       run: govulncheck ./...
+    - name: Run nilaway
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.go == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      run: nilaway -include-pkgs="k8s-httpcache" -exclude-test-files ./...
     - name: Run deadcode
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
