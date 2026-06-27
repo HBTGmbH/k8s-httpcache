@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.1.0...k8s-httpcache-v1.2.0) (2026-06-27)
+
+
+### Features
+
+* **chart:** make most Helm values templateable ([5831319](https://github.com/HBTGmbH/k8s-httpcache/commit/5831319b2058fad235ed141556e6c2ad90f28b13))
+
 ## [1.1.0](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.0.0...k8s-httpcache-v1.1.0) (2026-06-20)
 
 

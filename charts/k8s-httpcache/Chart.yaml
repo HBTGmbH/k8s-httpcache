@@ -2,7 +2,7 @@ apiVersion: v2
 name: k8s-httpcache
 description: Running the Varnish/Vinyl HTTP cache on Kubernetes
 type: application
-version: 1.1.0
+version: 1.2.0
 appVersion: "0.1.0"
 keywords:
   - varnish
