@@ -82,7 +82,7 @@ jobs:
       with:
         go-version-file: go.mod
     - name: Restore gotestsum
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: gotestsum
       with:
         path: ~/go/bin/gotestsum
@@ -94,12 +94,12 @@ jobs:
           | tar -xz -C ~/go/bin gotestsum
     - name: Save gotestsum
       if: steps.gotestsum.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/go/bin/gotestsum
         key: gotestsum-1.13.0-linux-amd64
     - name: Restore go-test-coverage
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: go-test-coverage
       with:
         path: ~/go/bin/go-test-coverage
@@ -109,7 +109,7 @@ jobs:
       run: go install github.com/vladopajic/go-test-coverage/v2@v2.18.8
     - name: Save go-test-coverage
       if: steps.go-test-coverage.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/go/bin/go-test-coverage
         key: go-test-coverage-2.18.8
@@ -170,13 +170,13 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.go == 'true' ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: analysis-tools
       with:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.4.0-deadcode-0.46.0
+        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0
     - name: Install analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -184,20 +184,20 @@ jobs:
         needs.changes.outputs.ci == 'true') &&
         steps.analysis-tools.outputs.cache-hit != 'true'
       run: |
-        go install golang.org/x/vuln/cmd/govulncheck@v1.4.0
-        go install golang.org/x/tools/cmd/deadcode@v0.46.0
+        go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
+        go install golang.org/x/tools/cmd/deadcode@v0.47.0
     - name: Save analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.go == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.analysis-tools.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: |
           ~/go/bin/govulncheck
           ~/go/bin/deadcode
-        key: analysis-tools-govulncheck-1.4.0-deadcode-0.46.0
+        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0
     - name: Run govulncheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -227,7 +227,7 @@ jobs:
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: actionlint
       with:
         path: ~/tools/actionlint
@@ -247,7 +247,7 @@ jobs:
         (startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.ci == 'true') &&
         steps.actionlint.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools/actionlint
         key: actionlint-1.7.12-linux-amd64
@@ -273,7 +273,7 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: markdownlint
       with:
         path: .github/markdownlint/node_modules
@@ -292,7 +292,7 @@ jobs:
         needs.changes.outputs.md == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.markdownlint.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: .github/markdownlint/node_modules
         key: markdownlint-cli-${{ hashFiles('.github/markdownlint/package-lock.json') }}
@@ -306,7 +306,7 @@ jobs:
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: hadolint
       with:
         path: ~/tools/hadolint
@@ -325,7 +325,7 @@ jobs:
         (startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.ci == 'true') &&
         steps.hadolint.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools/hadolint
         key: hadolint-2.14.0-linux-amd64
@@ -346,7 +346,7 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: kubeconform
       with:
         path: ~/tools/kubeconform
@@ -370,7 +370,7 @@ jobs:
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.kubeconform.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools/kubeconform
         key: kubeconform-0.8.0-linux-amd64
@@ -391,7 +391,7 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.ci == 'true'
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: helm-docs
       with:
         path: ~/tools/helm-docs
@@ -413,7 +413,7 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.ci == 'true') &&
         steps.helm-docs.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools/helm-docs
         key: helm-docs-1.14.2-linux-amd64
@@ -454,7 +454,7 @@ jobs:
     - name: Cache binaries
       id: cache
       # zizmor: ignore[cache-poisoning]
-      uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: k8s-httpcache-linux-*
         key: binaries-${{ steps.version.outputs.value }}-${{ hashFiles('**/*.go', 'go.mod', 'go.sum') }}
@@ -511,7 +511,7 @@ jobs:
       with:
         name: binaries
     - name: Restore test tools
-      uses: actions/cache/restore@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: test-tools
       with:
         path: ~/tools
@@ -527,7 +527,7 @@ jobs:
         chmod +x ~/tools/oha
     - name: Save test tools
       if: steps.test-tools.outputs.cache-hit != 'true'
-      uses: actions/cache/save@2c8a9bd7457de244a408f35966fab2fb45fda9c8  # v6.0.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools
         key: test-tools-hurl-8.0.1-oha-1.14.0
@@ -652,7 +652,7 @@ jobs:
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
       with:
         version: v0.35.0
-        driver-opts: image=moby/buildkit:v0.31.0@sha256:a095b3d11ce1a9a05b6064ef515dfca0291ec5bcf2ea8178da8f6461924294e1
+        driver-opts: image=moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
         cache-binary: false
     - name: Docker Login
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
