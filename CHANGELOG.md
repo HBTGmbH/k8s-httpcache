@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.2](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.2.1...v1.2.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* config validation and VCL comment parsing ([89400a9](https://github.com/HBTGmbH/k8s-httpcache/commit/89400a960fa744771395f735e9e760948b0accb0))
+* make watcher/discovery more robust ([df786d7](https://github.com/HBTGmbH/k8s-httpcache/commit/df786d7021ea4af7edd61be01e6015a365831ebb))
+
 ## [1.2.1](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.2.0...v1.2.1) (2026-06-26)
 
 
