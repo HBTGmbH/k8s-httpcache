@@ -1891,6 +1891,70 @@ func registryClaimed(r *NameRegistry, name string) bool {
 	return ok
 }
 
+// TestDiscoveryWatcher_ShutdownReleasesClaimsBeforeForwarding pins the early-
+// return cleanup path. Run registers shutdown() with defer so it runs on EVERY
+// return — including the early return from collectInitialState when ctx is
+// cancelled mid-startup, before the forwarding goroutines are started and
+// before the normal <-ctx.Done() exit. In that state a backend is claimed but
+// its fwdCancel is still nil. shutdown() must release the registry claim (and
+// clear backends) anyway, or a watcher that exited during initial sync would
+// strand its claimed bare names in the shared NameRegistry forever, so another
+// watcher sharing the registry could never adopt them.
+//
+// The existing TestDiscoveryWatcher_NameRegistryShutdownReleasesClaims covers
+// the steady-state Run exit (forwarding already running); this covers the
+// pre-forwarding state and that a second shutdown() is a no-op.
+func TestDiscoveryWatcher_ShutdownReleasesClaimsBeforeForwarding(t *testing.T) {
+	t.Parallel()
+
+	sel, _ := labels.Parse("app=web")
+	reg := NewNameRegistry()
+
+	dwA := NewBackendDiscoveryWatcher(fake.NewClientset(), "ns1", false, sel, "", nil)
+	dwA.SetNameRegistry(reg)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// syncServices claims "web" and creates the backend without starting its
+	// forwarding goroutine (initialized is still false) — exactly the state Run
+	// is in when collectInitialState returns early.
+	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	dwA.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{svc}})
+
+	if !registryClaimed(reg, "web") {
+		t.Fatal("watcher should have claimed 'web' after discovery")
+	}
+	dwA.mu.Lock()
+	fwdStarted := dwA.backends["ns1/web"].fwdCancel != nil
+	dwA.mu.Unlock()
+	if fwdStarted {
+		t.Fatal("precondition: forwarding must not be started before initial sync completes")
+	}
+
+	// The deferred shutdown fires on the early collectInitialState error return.
+	dwA.shutdown()
+
+	if registryClaimed(reg, "web") {
+		t.Fatal("shutdown must release the registry claim so another watcher can adopt 'web'")
+	}
+	if backendExists(dwA, "ns1/web") {
+		t.Fatal("shutdown must clear the backends map")
+	}
+
+	// A second shutdown is a harmless no-op on the now-nil backends map.
+	dwA.shutdown()
+
+	// A different watcher sharing the registry can now take over the name.
+	dwB := NewBackendDiscoveryWatcher(fake.NewClientset(), "ns2", false, sel, "", nil)
+	dwB.SetNameRegistry(reg)
+	svcB := makeDiscoverableService("ns2", "web", map[string]string{"app": "web"})
+	dwB.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{svcB}})
+	if !backendExists(dwB, "ns2/web") {
+		t.Fatal("a watcher sharing the registry should adopt 'web' after the owner shut down")
+	}
+}
+
 // TestDiscoveryWatcher_NameRegistryThreeWatchersSingleOwner verifies that when
 // three watchers sharing a registry all match the same Service, exactly one
 // ends up managing it.

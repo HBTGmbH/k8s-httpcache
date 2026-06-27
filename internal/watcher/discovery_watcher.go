@@ -244,6 +244,11 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 		return fmt.Errorf("adding event handler: %w", err)
 	}
 
+	// Release child watchers and registry claims on every return path,
+	// including the early return from collectInitialState below (a ctx cancel
+	// during initial sync) — not just the normal post-<-ctx.Done() exit.
+	defer dw.shutdown()
+
 	factory.Start(ctx.Done())
 	factory.WaitForCacheSync(ctx.Done())
 
@@ -280,9 +285,19 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 
-	// Stop all child watchers and release their registry claims so another
-	// watcher sharing the registry can take over the names if it outlives us.
+	return nil
+}
+
+// shutdown stops all child watchers and releases their registry claims so
+// another watcher sharing the registry can take over the names if it outlives
+// us. It is registered with defer in Run, so it runs on every return path.
+// Safe to call regardless of how far startup progressed: it ranges an empty
+// backends map before any backend is discovered and is a no-op once backends
+// has been cleared (the syncServices nil-guard covers any racing callback).
+func (dw *BackendDiscoveryWatcher) shutdown() {
 	dw.mu.Lock()
+	defer dw.mu.Unlock()
+
 	for key, mb := range dw.backends {
 		if mb.fwdCancel != nil {
 			mb.fwdCancel()
@@ -293,9 +308,6 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 		}
 	}
 	dw.backends = nil
-	dw.mu.Unlock()
-
-	return nil
 }
 
 // collectInitialState blocks until each backend in pending has delivered its

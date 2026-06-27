@@ -3891,3 +3891,170 @@ func TestCommentOutImportStdFrom(t *testing.T) {
 		})
 	}
 }
+
+// --- Block-comment detection (inBlockComment) ---
+//
+// The drain-injection helpers used to decide "is this match inside a /* */
+// block comment?" with strings.Count(before,"/*")-strings.Count(before,"*/").
+// That also counts "/*"/"*/" appearing inside // or # line comments and inside
+// string literals, so e.g. a comment "# proxies /api/*" before a real
+// `import std;` made the heuristic believe the import was commented out. The
+// tests below pin the comment/string-aware replacement.
+
+func TestInBlockComment(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		vcl    string
+		marker string // inBlockComment is evaluated at the first index of marker
+		want   bool
+	}{
+		{"plain code", "vcl 4.1;\nimport std;", "import", false},
+		{"inside multiline block comment", "vcl 4.1;\n/*\nimport std;\n*/", "import", true},
+		{"after closed block comment", "/* gone */ import std;", "import", false},
+		{"slashstar in hash line comment", "# handles /api/* and /x/*\nimport std;", "import", false},
+		{"slashstar in slashslash line comment", "// see /api/*\nimport std;", "import", false},
+		{"starslash in line comment", "# weird */ token\nimport std;", "import", false},
+		{"slashstar in short string", "backend b { .url = \"/*\"; }\nimport std;", "import", false},
+		{"slashstar in long string", "sub x { set req.http.h = {\"/* not a comment\"}; }\nimport std;", "import", false},
+		{"unterminated block comment", "/* never closed\nimport std;", "import", true},
+		{"nested-looking stars", "/* a * b ** c */import std;", "import", false},
+		{"second block comment open", "/* one */\ncode;\n/* two\nimport std;", "import", true},
+		{"starslash without open is not a comment", "*/ import std;", "import", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pos := strings.Index(tt.vcl, tt.marker)
+			if pos < 0 {
+				t.Fatalf("marker %q not found in vcl", tt.marker)
+			}
+			if got := inBlockComment(tt.vcl, pos); got != tt.want {
+				t.Errorf("inBlockComment(%q, %d) = %v, want %v", tt.vcl, pos, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestInjectDrainVCL_LineCommentSlashStarNotMisdetected is the end-to-end
+// reproduction of the bug: with drain enabled and a line comment containing
+// "/*" (a URL wildcard) before the user's real `import std;`, the renderer must
+// NOT inject a duplicate import. Exactly one `import std;` must appear, or the
+// VCL would fail to compile ("module std already imported").
+func TestInjectDrainVCL_LineCommentSlashStarNotMisdetected(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"#", "//"} {
+		t.Run(prefix, func(t *testing.T) {
+			t.Parallel()
+			tmpl := "vcl 4.1;\n" + prefix + " this proxy handles /api/* and /static/*\nimport std;\n\n" +
+				"backend origin {\n  .host = \"127.0.0.1\";\n  .port = \"8080\";\n}\n\n" +
+				"sub vcl_deliver {\n  set resp.http.X-Test = \"1\";\n}\n"
+			path := writeTempTemplate(t, tmpl)
+			r, err := New(path, "{{", "}}", "sprig")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			r.SetDrainBackend("drain_flag")
+			out, err := r.Render(nil, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("render error: %v", err)
+			}
+			if n := strings.Count(out, "import std;"); n != 1 {
+				t.Errorf("got %d `import std;`, want exactly 1 (a duplicate means the line-comment /* was misdetected)\n--- rendered VCL ---\n%s", n, out)
+			}
+			// Drain VCL must still be injected.
+			if !strings.Contains(out, "backend drain_flag {") {
+				t.Error("expected drain backend declaration")
+			}
+			if !strings.Contains(out, "std.healthy(drain_flag)") {
+				t.Error("expected std.healthy(drain_flag) drain check")
+			}
+		})
+	}
+}
+
+// TestInjectDrainVCL_RealBlockCommentImportStillInjected guards the opposite
+// direction: an `import std;` that is genuinely inside a /* */ block comment is
+// NOT active, so the injector must still add its own — proving the new helper
+// keeps detecting real block comments (no over-correction).
+func TestInjectDrainVCL_RealBlockCommentImportStillInjected(t *testing.T) {
+	t.Parallel()
+	tmpl := "vcl 4.1;\n/*\nimport std;\n*/\n\n" +
+		"backend origin {\n  .host = \"127.0.0.1\";\n  .port = \"8080\";\n}\n\n" +
+		"sub vcl_deliver {\n  set resp.http.X-Test = \"1\";\n}\n"
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "{{", "}}", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	// Two textual occurrences: the commented-out one + the injected active one.
+	if n := strings.Count(out, "import std;"); n != 2 {
+		t.Errorf("got %d `import std;`, want 2 (commented + injected); a real block comment must not count as an active import\n--- rendered VCL ---\n%s", n, out)
+	}
+	if !strings.Contains(out, "/*\nimport std;\n*/") {
+		t.Error("expected the user's block comment to be preserved intact")
+	}
+	if !strings.Contains(out, "std.healthy(drain_flag)") {
+		t.Error("expected std.healthy(drain_flag) drain check")
+	}
+}
+
+// --- Direct coverage of the three call sites that used the old heuristic ---
+
+func TestImportStdPositions_LineCommentSlashStarNotSkipped(t *testing.T) {
+	t.Parallel()
+	vcl := "vcl 4.1;\n# proxies /api/* and /v2/*\nimport std;\n"
+	pos := importStdPositions(vcl)
+	if len(pos) != 1 {
+		t.Fatalf("importStdPositions found %d, want 1 (line-comment /* must not hide the import)", len(pos))
+	}
+}
+
+func TestImportStdPositions_RealBlockCommentSkipped(t *testing.T) {
+	t.Parallel()
+	// First import is inside /* */ (skip); second is active (keep).
+	vcl := "vcl 4.1;\n/*\nimport std;\n*/\nimport std;\n"
+	pos := importStdPositions(vcl)
+	if len(pos) != 1 {
+		t.Fatalf("importStdPositions found %d, want 1 (commented skipped, active kept)", len(pos))
+	}
+	if pos[0][0] < strings.Index(vcl, "*/") {
+		t.Error("importStdPositions returned the block-commented import, not the active one after */")
+	}
+}
+
+func TestBackendBlockEnds_LineCommentSlashStarNotSkipped(t *testing.T) {
+	t.Parallel()
+	vcl := "vcl 4.1;\n# matches /api/*\nbackend origin {\n  .host = \"127.0.0.1\";\n}\n"
+	ends := backendBlockEnds(vcl)
+	if len(ends) != 1 {
+		t.Fatalf("backendBlockEnds found %d backends, want 1 (line-comment /* must not hide it)", len(ends))
+	}
+}
+
+func TestBackendBlockEnds_RealBlockCommentSkipped(t *testing.T) {
+	t.Parallel()
+	// A backend inside a block comment must be skipped; the real one kept.
+	vcl := "vcl 4.1;\n/*\nbackend commented {\n  .host = \"10.0.0.1\";\n}\n*/\nbackend real {\n  .host = \"127.0.0.1\";\n}\n"
+	ends := backendBlockEnds(vcl)
+	if len(ends) != 1 {
+		t.Fatalf("backendBlockEnds found %d backends, want 1 (only the non-commented backend)", len(ends))
+	}
+}
+
+func TestFirstSubVCLDeliverStart_LineCommentSlashStarNotSkipped(t *testing.T) {
+	t.Parallel()
+	vcl := "vcl 4.1;\n# see /docs/* for details\nsub vcl_deliver {\n  set resp.http.X = \"1\";\n}\n"
+	got := firstSubVCLDeliverStart(vcl)
+	if got < 0 {
+		t.Fatal("firstSubVCLDeliverStart returned -1; the line-comment /* hid the sub")
+	}
+	if !strings.HasPrefix(vcl[got:], "sub vcl_deliver") {
+		t.Errorf("offset %d does not start at 'sub vcl_deliver': %q", got, vcl[got:min(got+20, len(vcl))])
+	}
+}

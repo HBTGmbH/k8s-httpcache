@@ -283,14 +283,76 @@ func vclVersionEnd(vcl string) int {
 // and trailing newline) so it can be identified in user VCL.
 var importStdRe = regexp.MustCompile(`(?m)^[\t ]*import\s+std\s*;\s*\n?`)
 
+// inBlockComment reports whether byte offset pos in vcl lies inside a /* */
+// block comment. It performs a single left-to-right scan that also recognises
+// // and # line comments and "..." / {"..."} string literals, so a "/*" or
+// "*/" appearing inside a line comment (e.g. "# proxies /api/*") or a string
+// literal does not corrupt the result. A naive delimiter tally (counting "/*"
+// minus "*/" in the prefix) would miscount those and wrongly treat real code
+// (a later "import std;", "backend", or "sub vcl_deliver") as commented out.
+//
+// Callers pass pos = the start offset of a regex match, which is always at a
+// line boundary (the patterns are anchored with (?m)^), so pos never falls in
+// the middle of a token or string.
+func inBlockComment(vcl string, pos int) bool {
+	const (
+		stNormal     = iota
+		stBlock      // inside /* */
+		stLine       // inside // or # up to newline
+		stString     // inside "..."
+		stLongString // inside {"..."}
+	)
+	state := stNormal
+	limit := min(pos, len(vcl))
+	for i := 0; i < limit; i++ {
+		switch state {
+		case stNormal:
+			switch {
+			case vcl[i] == '/' && i+1 < len(vcl) && vcl[i+1] == '*':
+				state = stBlock
+				i++
+			case vcl[i] == '/' && i+1 < len(vcl) && vcl[i+1] == '/':
+				state = stLine
+				i++
+			case vcl[i] == '#':
+				state = stLine
+			case vcl[i] == '{' && i+1 < len(vcl) && vcl[i+1] == '"':
+				state = stLongString
+				i++
+			case vcl[i] == '"':
+				state = stString
+			}
+		case stBlock:
+			if vcl[i] == '*' && i+1 < len(vcl) && vcl[i+1] == '/' {
+				state = stNormal
+				i++
+			}
+		case stLine:
+			if vcl[i] == '\n' {
+				state = stNormal
+			}
+		case stString:
+			if vcl[i] == '"' {
+				state = stNormal
+			}
+		case stLongString:
+			if vcl[i] == '"' && i+1 < len(vcl) && vcl[i+1] == '}' {
+				state = stNormal
+				i++
+			}
+		}
+	}
+
+	return state == stBlock
+}
+
 // importStdPositions returns the [start, end) byte offsets of all top-level
 // "import std;" occurrences in vcl (skipping those inside /* */ block comments).
 func importStdPositions(vcl string) [][2]int {
 	locs := importStdRe.FindAllStringIndex(vcl, -1)
 	var result [][2]int
 	for _, loc := range locs {
-		before := vcl[:loc[0]]
-		if strings.Count(before, "/*")-strings.Count(before, "*/") > 0 {
+		if inBlockComment(vcl, loc[0]) {
 			continue // inside a block comment — keep it
 		}
 		result = append(result, [2]int{loc[0], loc[1]})
@@ -341,8 +403,7 @@ func backendBlockEnds(vcl string) []int {
 	var ends []int
 	for _, loc := range locs {
 		// Skip matches inside /* */ block comments.
-		before := vcl[:loc[0]]
-		if strings.Count(before, "/*")-strings.Count(before, "*/") > 0 {
+		if inBlockComment(vcl, loc[0]) {
 			continue
 		}
 
@@ -427,8 +488,7 @@ var subVCLDeliverRe = regexp.MustCompile(`(?m)^[\t ]*sub\s+vcl_deliver\s*\{`)
 // comments), or -1 if there is none.
 func firstSubVCLDeliverStart(vcl string) int {
 	for _, loc := range subVCLDeliverRe.FindAllStringIndex(vcl, -1) {
-		before := vcl[:loc[0]]
-		if strings.Count(before, "/*")-strings.Count(before, "*/") > 0 {
+		if inBlockComment(vcl, loc[0]) {
 			continue // inside a block comment
 		}
 

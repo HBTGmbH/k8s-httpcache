@@ -1270,6 +1270,26 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 				return nil
 			}
+			if c.BroadcastClientTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-client-timeout must be >= 0, got %v", c.BroadcastClientTimeout)
+
+				return nil
+			}
+			if c.BroadcastClientIdleTimeout < 0 {
+				actionErr = validationError(cmd, "--broadcast-client-idle-timeout must be >= 0, got %v", c.BroadcastClientIdleTimeout)
+
+				return nil
+			}
+			if c.DrainDelay < 0 {
+				actionErr = validationError(cmd, "--drain-delay must be >= 0, got %v", c.DrainDelay)
+
+				return nil
+			}
+			if c.DrainTimeout < 0 {
+				actionErr = validationError(cmd, "--drain-timeout must be >= 0, got %v", c.DrainTimeout)
+
+				return nil
+			}
 
 			// Parse debounce latency buckets.
 			for p := range strings.SplitSeq(rawDebounceLatencyBuckets, ",") {

@@ -4615,3 +4615,115 @@ func TestParseTLSCertDebounceMaxLessThanDebounce(t *testing.T) {
 		t.Errorf("error = %q, want substring '--tls-cert-debounce-max'", err)
 	}
 }
+
+// --- Non-negative validation for the previously-unvalidated duration flags ---
+//
+// BroadcastClientTimeout, BroadcastClientIdleTimeout, DrainDelay and
+// DrainTimeout lacked the ">= 0" check that every other timeout flag has. A
+// negative value silently degraded behaviour (e.g. a negative
+// --broadcast-client-timeout disables the fan-out timeout AND shrinks the
+// write-timeout consistency check). These tests pin the new validation: each
+// flag rejects negatives, but still accepts 0 (documented "disabled"/"skip"
+// values) and positive durations.
+
+// nonNegativeDurationFlags is the set of duration flags whose negative-value
+// validation was added. The substring is what the validation error must contain.
+var nonNegativeDurationFlags = []struct {
+	flag      string
+	errSubstr string
+}{
+	{"broadcast-client-timeout", "--broadcast-client-timeout must be >= 0"},
+	{"broadcast-client-idle-timeout", "--broadcast-client-idle-timeout must be >= 0"},
+	{"drain-delay", "--drain-delay must be >= 0"},
+	{"drain-timeout", "--drain-timeout must be >= 0"},
+}
+
+// parseWithDuration runs Parse with the minimal valid args plus one duration
+// flag set to value. Broadcast is disabled so the write-timeout consistency
+// check (which is orthogonal to the per-flag non-negative check) never
+// interferes with the 0/positive acceptance cases.
+func parseWithDuration(t *testing.T, flag, value string) error {
+	t.Helper()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--broadcast-addr=none",
+		"--" + flag + "=" + value,
+	})
+
+	return err
+}
+
+func TestParseNegativeDurationFlagsRejected(t *testing.T) {
+	t.Parallel()
+	for _, tc := range nonNegativeDurationFlags {
+		t.Run(tc.flag, func(t *testing.T) {
+			t.Parallel()
+			err := parseWithDuration(t, tc.flag, "-5s")
+			if err == nil {
+				t.Fatalf("expected error for --%s=-5s, got nil", tc.flag)
+			}
+			if !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Errorf("error = %q, want substring %q", err, tc.errSubstr)
+			}
+		})
+	}
+}
+
+func TestParseZeroDurationFlagsAccepted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range nonNegativeDurationFlags {
+		t.Run(tc.flag, func(t *testing.T) {
+			t.Parallel()
+			// 0 is a valid, documented value for all four (no timeout / skip).
+			err := parseWithDuration(t, tc.flag, "0s")
+			if err != nil {
+				t.Errorf("--%s=0s should be accepted, got %v", tc.flag, err)
+			}
+		})
+	}
+}
+
+func TestParsePositiveDurationFlagsAccepted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range nonNegativeDurationFlags {
+		t.Run(tc.flag, func(t *testing.T) {
+			t.Parallel()
+			err := parseWithDuration(t, tc.flag, "7s")
+			if err != nil {
+				t.Errorf("--%s=7s should be accepted, got %v", tc.flag, err)
+			}
+		})
+	}
+}
+
+// TestParseNegativeBroadcastClientTimeoutNotMasked guards the specific
+// interaction the validation gap exposed: with broadcast ENABLED, a negative
+// --broadcast-client-timeout must be rejected outright by its own check, not
+// flow into the write-timeout consistency check at config.go (where
+// read + client shrinks and could let an otherwise-too-small write timeout
+// through, or surface a confusing unrelated error).
+func TestParseNegativeBroadcastClientTimeoutNotMasked(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		// Broadcast enabled (default addr); a generous write timeout so the
+		// only thing that can fail is the client-timeout sign check.
+		"--broadcast-read-timeout=5s",
+		"--broadcast-client-timeout=-5s",
+		"--broadcast-write-timeout=60s",
+	})
+	if err == nil {
+		t.Fatal("expected error for negative --broadcast-client-timeout")
+	}
+	if !strings.Contains(err.Error(), "--broadcast-client-timeout must be >= 0") {
+		t.Errorf("error = %q, want the client-timeout sign check, not a masked/other error", err)
+	}
+}
