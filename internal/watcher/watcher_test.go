@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1275,5 +1276,87 @@ func TestWatcherSyncReadsUnderLock(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for sync to finish")
+	}
+}
+
+// TestCoalescingSendSerializedConverges stresses coalescingSend's core
+// invariant (watcher.go: callers must serialise every send under one mutex).
+// Many senders, each holding the mutex, push a strictly increasing value onto a
+// cap-1 channel while a consumer drains continuously. Two properties must hold:
+//
+//   - The drain-then-send pair never blocks: the test completing (rather than
+//     deadlocking) is the proof.
+//   - The buffered value converges to the last send. Because the value is
+//     incremented inside the critical section, the final send in serialisation
+//     order carries the largest value (== total sends), and nothing overwrites
+//     it afterwards, so the consumer must eventually observe it.
+//
+// Its real value is under -race: it exercises the unsynchronised
+// drain (`<-ch`) + send (`ch <- v`) pair concurrently with a receiver and
+// asserts the serialisation makes that safe.
+func TestCoalescingSendSerializedConverges(t *testing.T) {
+	t.Parallel()
+
+	const (
+		senders   = 8
+		perSender = 2000
+	)
+	total := senders * perSender
+
+	ch := make(chan int, 1)
+	var (
+		mu  sync.Mutex // serialises every send, per coalescingSend's invariant
+		seq int        // serialisation-ordered value, guarded by mu
+	)
+
+	// The consumer is the sole writer of maxSeen; the test goroutine reads it
+	// only after consumerDone is closed, so the close establishes the
+	// happens-before edge and no lock is needed on maxSeen.
+	maxSeen := 0
+	done := make(chan struct{})
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		record := func(v int) {
+			if v > maxSeen {
+				maxSeen = v
+			}
+		}
+		for {
+			select {
+			case <-done:
+				// Final non-blocking drain to observe the last buffered value
+				// in case it was enqueued after the previous receive.
+				select {
+				case v := <-ch:
+					record(v)
+				default:
+				}
+
+				return
+			case v := <-ch:
+				record(v)
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for range senders {
+		wg.Go(func() {
+			for range perSender {
+				mu.Lock()
+				seq++
+				coalescingSend(ch, seq)
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	close(done)
+	<-consumerDone
+
+	if maxSeen != total {
+		t.Errorf("consumer converged to %d, want %d (latest serialised send must survive coalescing)", maxSeen, total)
 	}
 }

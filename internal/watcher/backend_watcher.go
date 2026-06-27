@@ -24,6 +24,17 @@ var errNamedPortExternalName = errors.New("named port not supported for External
 // ExternalName services, which have no underlying EndpointSlice.
 const externalEndpointName = "external"
 
+// BackendState is an atomic snapshot of a backend's endpoints together with the
+// Service labels and annotations observed at the same instant. Delivering the
+// three as one value (instead of an endpoint slice plus a separate Metadata()
+// read) guarantees consumers never pair endpoints from one observation with
+// metadata from another. Labels and Annotations are always non-nil.
+type BackendState struct {
+	Endpoints   []Endpoint
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
 // BackendWatcher watches a Service object and emits endpoints. For ExternalName
 // services it emits the hostname directly. For all other types it delegates to
 // an internal EndpointSlice Watcher.
@@ -33,7 +44,7 @@ type BackendWatcher struct {
 	serviceName  string
 	portOverride string
 	log          *slog.Logger
-	ch           chan []Endpoint
+	ch           chan BackendState
 
 	excludeAnnotation func(string) bool // nil = no filtering
 
@@ -57,12 +68,12 @@ func NewBackendWatcher(clientset kubernetes.Interface, namespace, serviceName, p
 		serviceName:  serviceName,
 		portOverride: portOverride,
 		log:          slog.Default(),
-		ch:           make(chan []Endpoint, 1),
+		ch:           make(chan BackendState, 1),
 	}
 }
 
-// Changes returns the channel on which endpoint updates are delivered.
-func (bw *BackendWatcher) Changes() <-chan []Endpoint {
+// Changes returns the channel on which endpoint+metadata snapshots are delivered.
+func (bw *BackendWatcher) Changes() <-chan BackendState {
 	return bw.ch
 }
 
@@ -329,7 +340,23 @@ func (bw *BackendWatcher) resend() {
 // deliver the stale one (coalescingSend's drain+send pair only guarantees
 // buffer space when all senders are serialised).
 func (bw *BackendWatcher) resendLocked() {
-	coalescingSend(bw.ch, bw.previous)
+	coalescingSend(bw.ch, bw.snapshotLocked(bw.previous))
+}
+
+// snapshotLocked pairs eps with copies of the currently observed Service labels
+// and annotations, read under bw.mu so the endpoints and metadata always come
+// from one consistent observation. Both maps are non-nil. Callers must hold bw.mu.
+func (bw *BackendWatcher) snapshotLocked(eps []Endpoint) BackendState {
+	labels := make(map[string]string)
+	if bw.labels != nil {
+		labels = maps.Clone(bw.labels)
+	}
+	annotations := make(map[string]string)
+	if bw.annotations != nil {
+		annotations = maps.Clone(bw.annotations)
+	}
+
+	return BackendState{Endpoints: eps, Labels: labels, Annotations: annotations}
 }
 
 // sendFromChild forwards an endpoint update originating from the given child
@@ -385,5 +412,5 @@ func (bw *BackendWatcher) sendLocked(endpoints []Endpoint) {
 	bw.synced = true
 	bw.previous = endpoints
 
-	coalescingSend(bw.ch, endpoints)
+	coalescingSend(bw.ch, bw.snapshotLocked(endpoints))
 }

@@ -7150,6 +7150,7 @@ func TestWireValuesFanIn_DisabledNilNoGoroutine(t *testing.T) { //nolint:paralle
 	dir := t.TempDir()
 	fvw := watcher.NewFileValuesWatcher(dir, time.Second)
 	ch := wireValuesFanIn(
+		t.Context(),
 		&config.Config{ValuesDirWatch: false},
 		nil, nil,
 		[]*watcher.FileValuesWatcher{fvw}, []string{"d"},
@@ -7157,6 +7158,29 @@ func TestWireValuesFanIn_DisabledNilNoGoroutine(t *testing.T) { //nolint:paralle
 	if ch != nil {
 		t.Error("expected nil values channel: values-dir watch disabled and no --values watchers")
 	}
+}
+
+// TestWireValuesFanIn_FanInGoroutineExitsOnContextCancel verifies the fan-in
+// goroutine returns when ctx is cancelled even though the ConfigMapWatcher's
+// Changes() channel is never closed (informer-backed watchers don't close their
+// channels — closing them would risk a send-on-closed panic). Without the
+// ctx-aware select (a plain `for range w.Changes()`) the goroutine would block
+// forever on the open channel and goleak would flag the leak.
+func TestWireValuesFanIn_FanInGoroutineExitsOnContextCancel(t *testing.T) { //nolint:paralleltest // goleak must run in isolation
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	// A ConfigMapWatcher we never Run: its Changes() channel is created by the
+	// constructor and is never closed, so a range-based fan-in would never end.
+	vw := watcher.NewConfigMapWatcher(fake.NewClientset(), "ns", "cm")
+	ctx, cancel := context.WithCancel(t.Context())
+	ch := wireValuesFanIn(ctx, &config.Config{}, []*watcher.ConfigMapWatcher{vw}, []string{"v"}, nil, nil)
+	if ch == nil {
+		t.Fatal("expected non-nil values channel with one --values watcher")
+	}
+
+	// Cancel; goleak (which retries) confirms the fan-in goroutine returned
+	// rather than leaking on the never-closed channel.
+	cancel()
 }
 
 func TestStartTemplateWatch_EnabledChannelAndCleanup(t *testing.T) { //nolint:paralleltest // goleak must run in isolation

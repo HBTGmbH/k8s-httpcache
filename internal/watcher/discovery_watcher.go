@@ -326,15 +326,13 @@ func (dw *BackendDiscoveryWatcher) collectInitialState(ctx context.Context, pend
 			// (which would leave Initial() unclosed and stall startup). The
 			// removal is reconciled later via the normal update path.
 			continue
-		case eps := <-mb.watcher.Changes():
-			// Read labels+annotations as one consistent snapshot (see
-			// BackendWatcher.Metadata), before taking dw.mu to avoid nesting the
-			// child's lock under it.
-			svcLabels, svcAnnotations := mb.watcher.Metadata()
+		case st := <-mb.watcher.Changes():
+			// The snapshot carries endpoints and metadata from one consistent
+			// observation (see BackendState), so they can never be torn apart.
 			dw.mu.Lock()
-			dw.initialState[mb.name] = eps
-			dw.initialLabels[mb.name] = svcLabels
-			dw.initialAnnotations[mb.name] = svcAnnotations
+			dw.initialState[mb.name] = st.Endpoints
+			dw.initialLabels[mb.name] = st.Labels
+			dw.initialAnnotations[mb.name] = st.Annotations
 			dw.mu.Unlock()
 		}
 	}
@@ -356,10 +354,11 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 			select {
 			case <-fwdCtx.Done():
 				return
-			case eps, ok := <-bw.Changes():
+			case st, ok := <-bw.Changes():
 				if !ok {
 					return
 				}
+				eps := st.Endpoints
 				if eps == nil {
 					// The child watcher emits nil when the Service has no
 					// ready endpoints. Nil Endpoints on a BackendUpdate
@@ -367,11 +366,10 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 					// slice to keep the two cases distinguishable.
 					eps = []Endpoint{}
 				}
-				// Read labels+annotations as one consistent snapshot (see
-				// BackendWatcher.Metadata).
-				svcLabels, svcAnnotations := bw.Metadata()
+				// st carries endpoints and metadata from one consistent
+				// observation (see BackendState).
 				select {
-				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: svcLabels, Annotations: svcAnnotations, Gen: gen}:
+				case dw.updateCh <- BackendUpdate{Name: svcName, Endpoints: eps, Labels: st.Labels, Annotations: st.Annotations, Gen: gen}:
 				case <-fwdCtx.Done():
 					return
 				}
