@@ -55,16 +55,25 @@ func waitForWatch() {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// readBackendChanges reads from the BackendWatcher's Changes channel with a timeout.
+// readBackendChanges reads from the BackendWatcher's Changes channel with a
+// timeout and returns the snapshot's endpoints.
 func readBackendChanges(t *testing.T, bw *BackendWatcher) []Endpoint {
 	t.Helper()
+
+	return readBackendState(t, bw).Endpoints
+}
+
+// readBackendState reads a full endpoint+metadata snapshot from the
+// BackendWatcher's Changes channel with a timeout.
+func readBackendState(t *testing.T, bw *BackendWatcher) BackendState {
+	t.Helper()
 	select {
-	case eps := <-bw.Changes():
-		return eps
+	case st := <-bw.Changes():
+		return st
 	case <-time.After(60 * time.Second):
 		t.Fatal("timeout waiting for backend endpoint change")
 
-		return nil
+		return BackendState{}
 	}
 }
 
@@ -112,8 +121,8 @@ func TestBackendWatcher_ForwardingDropsStaleChildSend(t *testing.T) {
 	bw.sendFromChild(active, freshEps)
 	select {
 	case got := <-bw.Changes():
-		if !EndpointsEqual(got, freshEps) {
-			t.Fatalf("delivered endpoints = %+v, want %+v", got, freshEps)
+		if !EndpointsEqual(got.Endpoints, freshEps) {
+			t.Fatalf("delivered endpoints = %+v, want %+v", got.Endpoints, freshEps)
 		}
 	default:
 		t.Fatal("active child send was not delivered")
@@ -1022,8 +1031,8 @@ func TestBackendWatcher_LabelsOnLateAppearingService(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
-		case ep := <-bw.Changes():
-			if len(ep) == 1 && ep[0].Host == "api.example.com" {
+		case st := <-bw.Changes():
+			if len(st.Endpoints) == 1 && st.Endpoints[0].Host == "api.example.com" {
 				goto gotEndpoints
 			}
 		case <-deadline:
@@ -1209,8 +1218,8 @@ func TestBackendWatcher_AnnotationsOnLateAppearingService(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
-		case ep := <-bw.Changes():
-			if len(ep) == 1 && ep[0].Host == "api.example.com" {
+		case st := <-bw.Changes():
+			if len(st.Endpoints) == 1 && st.Endpoints[0].Host == "api.example.com" {
 				goto gotEndpoints
 			}
 		case <-deadline:
@@ -1655,8 +1664,8 @@ func TestBackendWatcherResendDoesNotDeliverStaleEndpoints(t *testing.T) {
 
 		select {
 		case got := <-bw.ch:
-			if !EndpointsEqual(got, want) {
-				t.Fatalf("iteration %d: channel delivered stale endpoints %v, want %v", i, got, want)
+			if !EndpointsEqual(got.Endpoints, want) {
+				t.Fatalf("iteration %d: channel delivered stale endpoints %v, want %v", i, got.Endpoints, want)
 			}
 		default:
 			t.Fatalf("iteration %d: no value buffered in channel", i)
@@ -1701,12 +1710,12 @@ func TestBackendWatcher_TransitionChurnRace(t *testing.T) {
 			select {
 			case <-ctx.Done():
 				return
-			case eps, ok := <-bw.Changes():
+			case st, ok := <-bw.Changes():
 				if !ok {
 					return
 				}
 				mu.Lock()
-				last = eps
+				last = st.Endpoints
 				mu.Unlock()
 			}
 		}
@@ -1827,6 +1836,66 @@ func TestBackendWatcherMetadataNoTornRead(t *testing.T) {
 			<-done
 			t.Fatalf("torn metadata read: labels gen=%q, annotations gen=%q",
 				labels["gen"], annotations["gen"])
+		}
+	}
+	close(stop)
+	<-done
+}
+
+// TestBackendWatcherChangesSnapshotNoTornRead is the regression guard for the
+// metadata/endpoint snapshot fix: the value delivered on Changes() must pair the
+// endpoints with the labels and annotations from the *same* observation. The
+// writer advances a generation, stamping it into both the endpoint host and the
+// metadata under one lock (mirroring how syncService/sendLocked builds a
+// snapshot), so a consistent reader must never see an endpoint generation that
+// disagrees with its metadata generation.
+//
+// Before the fix, consumers read endpoints from the channel and then fetched
+// metadata with a separate bw.Metadata() call; a writer landing between the two
+// could pair endpoints from generation N with metadata from N+1. Bundling the
+// three into one BackendState built under bw.mu closes that window. Reading
+// endpoints + metadata in two steps would tear here; run under -race.
+func TestBackendWatcherChangesSnapshotNoTornRead(t *testing.T) {
+	t.Parallel()
+	bw := NewBackendWatcher(fake.NewSimpleClientset(), "ns", "svc", "")
+
+	// Two alternating generations: "a"/"b" keep consecutive endpoint sets
+	// unequal so sendLocked's dedup never suppresses a send.
+	gens := []string{"a", "b"}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			v := gens[i%2]
+			bw.mu.Lock()
+			bw.labels = map[string]string{"gen": v}
+			bw.annotations = map[string]string{"gen": v}
+			// Host carries the same generation as the metadata; sendLocked
+			// bundles them into one BackendState under this lock.
+			bw.sendLocked([]Endpoint{{Host: v, Port: 80}})
+			bw.mu.Unlock()
+			i++
+		}
+	}()
+
+	for range 200000 {
+		st := <-bw.Changes()
+		if len(st.Endpoints) == 0 {
+			continue
+		}
+		epGen := st.Endpoints[0].Host
+		if st.Labels["gen"] != epGen || st.Annotations["gen"] != epGen {
+			close(stop)
+			<-done
+			t.Fatalf("torn snapshot: endpoints gen=%q, labels gen=%q, annotations gen=%q",
+				epGen, st.Labels["gen"], st.Annotations["gen"])
 		}
 	}
 	close(stop)

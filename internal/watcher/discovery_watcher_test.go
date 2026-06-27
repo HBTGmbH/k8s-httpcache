@@ -1470,7 +1470,7 @@ func TestDiscoveryWatcher_InitialCollectionSkipsRemovedBackend(t *testing.T) {
 	// Backend "a": healthy — its first endpoint set is already buffered, and
 	// its context is live.
 	bwA := NewBackendWatcher(clientset, "default", "a", "")
-	bwA.ch <- []Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "a-pod-0"}}
+	bwA.ch <- BackendState{Endpoints: []Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "a-pod-0"}}}
 	ctxA, cancelA := context.WithCancel(ctx)
 	defer cancelA()
 	mbA := &managedBackend{watcher: bwA, ctx: ctxA, cancel: cancelA, namespace: "default", name: "a"}
@@ -2673,6 +2673,101 @@ func TestDiscoveryWatcher_CrossWatcherHandoffChurnRace(t *testing.T) {
 	// Clean shutdown: both Run goroutines and both drainers must return.
 	cancel()
 	for _, c := range []<-chan struct{}{drain1, drain2, done1, done2} {
+		select {
+		case <-c:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for goroutine shutdown")
+		}
+	}
+}
+
+// TestDiscoveryWatcher_InitPhaseChurnRace stresses the initial-sync window in
+// Run — the gap between cloning dw.backends for collectInitialState and setting
+// initialized=true / starting the forwarding goroutines. It drives Service
+// create/delete churn concurrently with Run startup, deliberately WITHOUT
+// waiting for Initial() first, so informer-driven syncServices calls race that
+// window (a backend can be added or removed while collectInitialState is mid
+// flight). Run under -race it asserts the window stays panic/deadlock/leak-free,
+// Initial() still closes despite the churn, and the watcher converges to the
+// steady state once churn stops.
+//
+// It complements TestDiscoveryWatcher_ServiceAddedDuringInitPhase (single,
+// deterministic add during init) and TestDiscoveryWatcher_ChurnRace (churn that
+// only starts after Initial() has closed). Steady-state is asserted, not event
+// ordering: the map is keyed by namespace/name, so the survivor's presence is
+// itself proof of single ownership.
+func TestDiscoveryWatcher_InitPhaseChurnRace(t *testing.T) {
+	t.Parallel()
+
+	lbls := map[string]string{"app": "web"}
+	svc := makeDiscoverableService("default", "web", lbls)
+	slice := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
+	// Seed the Service present so the initial reconcile discovers it and the
+	// init-window code path actually runs before the churn deletes it.
+	clientset := fake.NewClientset(svc, slice)
+
+	sel := labels.SelectorFromSet(labels.Set{"app": "web"})
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+	dw.SetNameRegistry(NewNameRegistry())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// Drain updates for the whole test: the cap-16 updateCh removal sends block
+	// if nobody consumes. Contents are not asserted, only that draining stays
+	// race-free under churn.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-dw.Changes():
+				if !ok {
+					return
+				}
+			}
+		}
+	}()
+
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); _ = dw.Run(ctx) }()
+
+	// Churn create/delete concurrently with Run startup — deliberately without
+	// waiting for Initial(), so the events overlap the initial-sync window.
+	// Errors are ignored: rapid recreate of the same object can conflict on the
+	// fake clientset, which is fine for a stress exercise.
+	churnDone := make(chan struct{})
+	go func() {
+		defer close(churnDone)
+		for range 50 {
+			_, _ = clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
+			_, _ = clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
+			_ = clientset.CoreV1().Services("default").Delete(ctx, "web", metav1.DeleteOptions{})
+			_ = clientset.DiscoveryV1().EndpointSlices("default").Delete(ctx, "web-abc", metav1.DeleteOptions{})
+		}
+	}()
+	<-churnDone
+
+	// Initial() must still close despite the startup churn — a window deadlock
+	// (e.g. collectInitialState blocking on a removed backend) would hang here.
+	waitForInitial(t, dw)
+	// Let the informer register its watch so the settle events below are not
+	// dropped in the cache-sync→watch-registration gap.
+	waitForWatch()
+
+	// Settle: recreate "web" and require the watcher to converge to managing it.
+	// The backends map is keyed by namespace/name, so presence of "default/web"
+	// is itself proof of exactly-once ownership (no duplicate key possible).
+	_, _ = clientset.CoreV1().Services("default").Create(ctx, svc, metav1.CreateOptions{})
+	_, _ = clientset.DiscoveryV1().EndpointSlices("default").Create(ctx, slice, metav1.CreateOptions{})
+	waitForCond(t, 30*time.Second, "watcher adopts recreated 'web' after init-phase churn",
+		func() bool { return backendExists(dw, "default/web") })
+
+	// Clean shutdown: both the Run goroutine and the drainer must return.
+	cancel()
+	for _, c := range []<-chan struct{}{runDone, drained} {
 		select {
 		case <-c:
 		case <-time.After(10 * time.Second):

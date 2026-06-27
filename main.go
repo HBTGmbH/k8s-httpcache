@@ -973,13 +973,13 @@ func run() int {
 		}
 		data.frontends = <-w.Changes()
 		for i, bw := range bwWatchers {
-			eps := <-bw.Changes()
-			// Read labels+annotations as one consistent snapshot (see Metadata).
-			svcLabels, svcAnnotations := bw.Metadata()
+			// The snapshot carries endpoints and metadata from one consistent
+			// observation (see watcher.BackendState).
+			st := <-bw.Changes()
 			data.backends[bwNames[i]] = renderer.BackendGroup{
-				Endpoints:   eps,
-				Labels:      svcLabels,
-				Annotations: svcAnnotations,
+				Endpoints:   st.Endpoints,
+				Labels:      st.Labels,
+				Annotations: st.Annotations,
 			}
 		}
 		for _, dw := range discoveryWatchers {
@@ -1147,23 +1147,47 @@ func run() int {
 		for i, bw := range bwWatchers {
 			name := bwNames[i]
 			go func() {
-				for eps := range bw.Changes() {
-					// Read labels+annotations as one consistent snapshot (see Metadata).
-					svcLabels, svcAnnotations := bw.Metadata()
-					backendCh <- backendChange{name: name, endpoints: eps, labels: svcLabels, annotations: svcAnnotations}
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case st, ok := <-bw.Changes():
+						if !ok {
+							return
+						}
+						// st pairs endpoints with metadata from one consistent
+						// observation (see watcher.BackendState).
+						select {
+						case backendCh <- backendChange{name: name, endpoints: st.Endpoints, labels: st.Labels, annotations: st.Annotations}:
+						case <-ctx.Done():
+							return
+						}
+					}
 				}
 			}()
 		}
 		for _, dw := range discoveryWatchers {
 			go func() {
-				for update := range dw.Changes() {
-					backendCh <- backendChange{
-						name:        update.Name,
-						endpoints:   update.Endpoints,
-						labels:      update.Labels,
-						annotations: update.Annotations,
-						removed:     update.Endpoints == nil,
-						gen:         update.Gen,
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case update, ok := <-dw.Changes():
+						if !ok {
+							return
+						}
+						select {
+						case backendCh <- backendChange{
+							name:        update.Name,
+							endpoints:   update.Endpoints,
+							labels:      update.Labels,
+							annotations: update.Annotations,
+							removed:     update.Endpoints == nil,
+							gen:         update.Gen,
+						}:
+						case <-ctx.Done():
+							return
+						}
 					}
 				}
 			}()
@@ -1172,7 +1196,7 @@ func run() int {
 
 	// Fan-in --values (ConfigMap) and --values-dir updates to a single channel
 	// (the latter only when --values-dir-watch is enabled).
-	valuesCh := wireValuesFanIn(cfg, vwWatchers, vwNames, fvwWatchers, fvwNames)
+	valuesCh := wireValuesFanIn(ctx, cfg, vwWatchers, vwNames, fvwWatchers, fvwNames)
 
 	// Fan-in SecretWatcher updates to a single channel.
 	var secretsCh chan secretsChange
@@ -1181,8 +1205,20 @@ func run() int {
 		for i, sw := range swWatchers {
 			name := swNames[i]
 			go func() {
-				for data := range sw.Changes() {
-					secretsCh <- secretsChange{name: name, data: data}
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case data, ok := <-sw.Changes():
+						if !ok {
+							return
+						}
+						select {
+						case secretsCh <- secretsChange{name: name, data: data}:
+						case <-ctx.Done():
+							return
+						}
+					}
 				}
 			}()
 		}
@@ -1195,8 +1231,20 @@ func run() int {
 		for i, tw := range twWatchers {
 			name := twNames[i]
 			go func() {
-				for data := range tw.Changes() {
-					tlsCertCh <- tlsCertChange{name: name, data: data}
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case data, ok := <-tw.Changes():
+						if !ok {
+							return
+						}
+						select {
+						case tlsCertCh <- tlsCertChange{name: name, data: data}:
+						case <-ctx.Done():
+							return
+						}
+					}
 				}
 			}()
 		}
@@ -2162,7 +2210,7 @@ func startValuesDirWatchers(ctx context.Context, cfg *config.Config) ([]*watcher
 // updates into one channel. The --values-dir goroutines are wired only when
 // --values-dir-watch is enabled. Returns nil (and starts no goroutine) when there
 // is nothing to fan in.
-func wireValuesFanIn(cfg *config.Config, vwWatchers []*watcher.ConfigMapWatcher, vwNames []string, fvwWatchers []*watcher.FileValuesWatcher, fvwNames []string) chan valuesChange {
+func wireValuesFanIn(ctx context.Context, cfg *config.Config, vwWatchers []*watcher.ConfigMapWatcher, vwNames []string, fvwWatchers []*watcher.FileValuesWatcher, fvwNames []string) chan valuesChange {
 	fvwCount := len(fvwWatchers)
 	if !cfg.ValuesDirWatch {
 		fvwCount = 0
@@ -2172,22 +2220,29 @@ func wireValuesFanIn(cfg *config.Config, vwWatchers []*watcher.ConfigMapWatcher,
 	}
 
 	valuesCh := make(chan valuesChange, len(vwWatchers)+fvwCount)
-	for i, vw := range vwWatchers {
-		name := vwNames[i]
-		go func() {
-			for data := range vw.Changes() {
-				valuesCh <- valuesChange{name: name, data: data}
+	fanIn := func(changes <-chan map[string]any, name string) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case data, ok := <-changes:
+				if !ok {
+					return
+				}
+				select {
+				case valuesCh <- valuesChange{name: name, data: data}:
+				case <-ctx.Done():
+					return
+				}
 			}
-		}()
+		}
+	}
+	for i, vw := range vwWatchers {
+		go fanIn(vw.Changes(), vwNames[i])
 	}
 	if cfg.ValuesDirWatch {
 		for i, fvw := range fvwWatchers {
-			name := fvwNames[i]
-			go func() {
-				for data := range fvw.Changes() {
-					valuesCh <- valuesChange{name: name, data: data}
-				}
-			}()
+			go fanIn(fvw.Changes(), fvwNames[i])
 		}
 	}
 
