@@ -165,6 +165,14 @@ jobs:
       uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee  # v9.2.1
       with:
         version: v2.12.2
+    - name: Verify go.mod is tidy
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.go == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      run: |
+        go mod tidy -diff
+        go mod verify
     - name: Restore analysis tools
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
