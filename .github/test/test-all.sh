@@ -12,6 +12,7 @@ tests=(
   values-update-test.sh
   values-dir-update-test.sh
   vcl-update-test.sh
+  static-files-test.sh
   file-watch-disable-test.sh
   drain-sessions-test.sh
   drain-test.sh
