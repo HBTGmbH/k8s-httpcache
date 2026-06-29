@@ -1,6 +1,9 @@
 package renderer
 
-import "testing"
+import (
+	"testing"
+	"text/template"
+)
 
 // FuzzInjectDrainVCL ensures the drain-injection string surgery never panics on
 // arbitrary VCL. injectDrainVCL runs inside Render on the event-loop goroutine,
@@ -33,5 +36,41 @@ func FuzzInjectDrainVCL(f *testing.F) {
 	f.Fuzz(func(_ *testing.T, vcl string) {
 		// Must never panic on any input.
 		_, _ = injectDrainVCL(vcl, "k8s_httpcache_drain")
+	})
+}
+
+// FuzzRender feeds arbitrary template text through the same parse+execute path
+// as production rendering (buildFuncMap + sprig, << >> delimiters), executed
+// against representative Values/Secrets. Render runs on the controller's
+// event-loop goroutine where a panic is unrecovered, so any template that parses
+// must execute without panicking. Parse errors are expected (rejected at load
+// time in production) and ignored.
+func FuzzRender(f *testing.F) {
+	funcMap := buildFuncMap("")
+	values := map[string]map[string]any{
+		"cfg": {"name": "web", "replicas": 3, "list": []any{"a", "b"}},
+	}
+	secrets := map[string]map[string]any{"creds": {"token": "s3cr3t-value"}}
+
+	seeds := []string{
+		"<< .Values | toJson >>",
+		"<< range $k, $v := .Values.cfg >><< $k >>=<< $v >>\n<< end >>",
+		"<< .Secrets.creds.token >>",
+		"<< .Values.cfg.replicas | int >>",
+		"plain text, no actions",
+		"",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(_ *testing.T, tmplText string) {
+		tmpl, err := template.New("vcl").Delims("<<", ">>").Funcs(funcMap).Parse(tmplText)
+		if err != nil {
+			return
+		}
+
+		r := &Renderer{tmpl: tmpl}
+		_, _ = r.Render(nil, nil, values, secrets)
 	})
 }

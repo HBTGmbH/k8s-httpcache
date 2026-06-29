@@ -35,8 +35,18 @@ jobs:
             func: FuzzParseNamespacedService
           - pkg: internal/renderer
             func: FuzzInjectDrainVCL
+          - pkg: internal/renderer
+            func: FuzzRender
           - pkg: internal/varnish
             func: FuzzSanitizeCertFileNameNoTraversal
+          - pkg: internal/varnish
+            func: FuzzCombinePEM
+          - pkg: internal/varnish
+            func: FuzzPrefixWriter
+          - pkg: internal/redact
+            func: FuzzRedact
+          - pkg: internal/redact
+            func: FuzzRedactNestedSecrets
           - pkg: internal/telemetry
             func: FuzzParseVarnishstat
           - pkg: internal/telemetry

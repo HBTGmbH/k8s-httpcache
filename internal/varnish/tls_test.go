@@ -41,12 +41,13 @@ func readMetric(t *testing.T, m prometheus.Metric) float64 {
 }
 
 // genTestCert returns a freshly-generated self-signed certificate and key in PEM
-// form (cert, key), suitable for combinePEM/X509KeyPair validation.
-func genTestCert(t *testing.T) ([]byte, []byte) {
-	t.Helper()
+// form (cert, key), suitable for combinePEM/X509KeyPair validation. It accepts a
+// [testing.TB] so both the unit tests and the fuzz harness can seed a valid pair.
+func genTestCert(tb testing.TB) ([]byte, []byte) {
+	tb.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generating key: %v", err)
+		tb.Fatalf("generating key: %v", err)
 	}
 	tmpl := x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -57,12 +58,12 @@ func genTestCert(t *testing.T) ([]byte, []byte) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatalf("creating cert: %v", err)
+		tb.Fatalf("creating cert: %v", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		t.Fatalf("marshaling key: %v", err)
+		tb.Fatalf("marshaling key: %v", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 

@@ -1,6 +1,7 @@
 package varnish
 
 import (
+	"crypto/tls"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +43,37 @@ func FuzzSanitizeCertFileNameNoTraversal(f *testing.F) {
 		}
 		if !strings.HasPrefix(full, dir+string(filepath.Separator)) {
 			t.Fatalf("sanitized %q produced a path outside dir: %q", name, full)
+		}
+	})
+}
+
+// FuzzCombinePEM feeds arbitrary cert/key/ca bytes through combinePEM, which
+// validates the pair with [tls.X509KeyPair] (crypto/x509 + encoding/pem) before
+// concatenating. The bytes originate from a Kubernetes Secret, so the crypto
+// parsers must tolerate any input without panicking. When combinePEM accepts the
+// material, the concatenated blob must itself be a usable key pair.
+func FuzzCombinePEM(f *testing.F) {
+	cert, key := genTestCert(f)
+	// A valid pair (with and without a CA), then mismatched/garbage/empty/
+	// truncated material so both the accept and reject paths are reached.
+	f.Add(cert, key, []byte(nil))
+	f.Add(cert, key, cert)
+	f.Add(cert, []byte("not a key"), []byte(nil))
+	f.Add([]byte("garbage"), []byte("garbage"), []byte(nil))
+	f.Add([]byte(nil), []byte(nil), []byte(nil))
+	f.Add([]byte("-----BEGIN CERTIFICATE-----\ntruncated"), key, []byte(nil))
+
+	f.Fuzz(func(t *testing.T, cert, key, ca []byte) {
+		out, err := combinePEM(cert, key, ca)
+		if err != nil {
+			return
+		}
+		// combinePEM only returns nil error after X509KeyPair validated the pair,
+		// so the combined hitch-style blob (key + cert + ca) must re-parse as a
+		// usable pair.
+		_, err = tls.X509KeyPair(out, out)
+		if err != nil {
+			t.Fatalf("combinePEM produced an unusable blob: %v", err)
 		}
 	})
 }
