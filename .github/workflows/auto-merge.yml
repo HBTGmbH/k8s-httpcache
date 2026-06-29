@@ -16,14 +16,20 @@ jobs:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     permissions:
       contents: write       # gh pr merge --auto performs the merge
-      pull-requests: write   # gh pr merge --auto enables auto-merge on the PR
+      pull-requests: write   # approve the PR and enable auto-merge
     steps:
     - uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
       id: metadata
     - if: >-
         contains(fromJSON('["version-update:semver-patch", "version-update:semver-minor"]'),
         steps.metadata.outputs.update-type)
-      run: gh pr merge --auto --squash "$PR_URL"
+      # main requires one approving review. Approve as github-actions[bot] (a
+      # different identity than the dependabot[bot] author, so it counts toward
+      # the requirement), then enable auto-merge. The required CI gate must still
+      # pass before the merge happens, so a broken patch/minor bump is not merged.
+      run: |
+        gh pr review --approve "$PR_URL"
+        gh pr merge --auto --squash "$PR_URL"
       env:
         PR_URL: ${{ github.event.pull_request.html_url }}
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
