@@ -101,7 +101,7 @@ template delimiters), not to Helm:
 | clusterDomain | string | `"cluster.local"` | Cluster DNS domain, used to build the in-cluster Service FQDN (e.g. for Istio resources) |
 | commonAnnotations | object | `{}` | Annotations to add to all resources |
 | commonLabels | object | `{}` | Labels to add to all resources |
-| container.httpBroadcastPort | int | `8088` | Boardcast port exposed by the k8s-httpcache container |
+| container.httpBroadcastPort | int | `8088` | Broadcast port exposed by the k8s-httpcache container |
 | container.httpMetricsPort | int | `9101` | Metrics port exposed by the k8s-httpcache container |
 | container.httpPort | int | `8080` | HTTP port exposed by the varnishd process |
 | container.httpsPort | int | `8443` | HTTPS port exposed by the varnishd process (only when tlsCerts is set). |
@@ -244,7 +244,7 @@ template delimiters), not to Helm:
 | selectorLabels | object | `{}` | Extra labels added to selector matchLabels (and thus to pod labels and all label selectors). WARNING: changing these on an existing release will cause a new Deployment to be created and the old ReplicaSet to be orphaned. |
 | service.annotations | object | `{}` | Annotations for the Service |
 | service.externalTrafficPolicy | string | `""` | External traffic policy: Cluster or Local (for type LoadBalancer/NodePort; empty = omit) |
-| service.httpBroadcastPort | int | `8088` | Boardcast port exposed by the Service |
+| service.httpBroadcastPort | int | `8088` | Broadcast port exposed by the Service |
 | service.httpMetricsPort | int | `9101` | Metrics port exposed by the Service |
 | service.httpPort | int | `80` | HTTP port exposed by the Service |
 | service.httpsPort | int | `443` | HTTPS port exposed by the Service (only when tlsCerts is set). |

@@ -19,15 +19,15 @@ kubectl port-forward "$pod" 9102:9101 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:9102/metrics > /dev/null 2>&1 && break
+  curl -sf http://localhost:9102/metrics >/dev/null 2>&1 && break
   sleep 1
 done
 
 # --- Helpers -----------------------------------------------------------------
 
 metric_value() {
-  curl -sf http://localhost:9102/metrics \
-    | awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
+  curl -sf http://localhost:9102/metrics |
+    awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
 }
 
 assert_gt() {
@@ -125,7 +125,7 @@ echo "Before: max_enforcements=$before_max"
 # Rapid ConfigMap patches: 16 × 0.5s = 8s of sustained activity (> 5s max).
 for i in $(seq 1 16); do
   kubectl patch configmap k8s-httpcache-values-test \
-    --type merge -p "{\"data\":{\"debounce-test\":\"$i\"}}" > /dev/null
+    --type merge -p "{\"data\":{\"debounce-test\":\"$i\"}}" >/dev/null
   sleep 0.5
 done
 
@@ -147,7 +147,7 @@ echo "PASS: debounce_max_enforcements_total increased (delta=$max_delta)"
 echo ""
 echo "--- Cleanup ---"
 kubectl patch configmap k8s-httpcache-values-test \
-  --type json -p '[{"op":"remove","path":"/data/debounce-test"}]' > /dev/null
+  --type json -p '[{"op":"remove","path":"/data/debounce-test"}]' >/dev/null
 kubectl scale deployment/backend --replicas=3
 kubectl rollout status deployment/backend --timeout=60s
 echo "PASS: cleanup complete"

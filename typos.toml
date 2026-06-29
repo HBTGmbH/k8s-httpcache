@@ -1,0 +1,18 @@
+# typos spell-checker configuration — https://github.com/crate-ci/typos
+# Repo-wide spell check (golangci-lint's misspell only covers .go files).
+
+[files]
+# typos already honours .gitignore; these are generated/vendored trees that
+# are checked in or worth excluding explicitly.
+extend-exclude = [
+  "CHANGELOG.md",
+  ".github/markdownlint/node_modules/",
+]
+
+[default.extend-words]
+# Varnish/varnishstat counter abbreviation, e.g. MAIN.n_wrk = worker threads.
+wrk = "wrk"
+# Accepted variant of "unparsable" used in code comments and test names.
+unparseable = "unparseable"
+# Intentional fragmented-write test fixture ("hel" + "lo world").
+hel = "hel"

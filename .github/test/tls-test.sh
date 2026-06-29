@@ -106,8 +106,8 @@ done
 # --- Helpers -----------------------------------------------------------------
 
 metric_value() {
-  curl -sf "http://127.0.0.1:$METRICS_PORT/metrics" \
-    | awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
+  curl -sf "http://127.0.0.1:$METRICS_PORT/metrics" |
+    awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
 }
 
 # served_serial returns the serial of the certificate Varnish presents, sending
@@ -116,8 +116,8 @@ metric_value() {
 served_serial() {
   local out=""
   for _ in $(seq 1 5); do
-    out=$(echo | openssl s_client -connect "127.0.0.1:$HTTPS_PORT" -servername tls.local 2>/dev/null \
-      | openssl x509 -noout -serial 2>/dev/null | cut -d= -f2)
+    out=$(echo | openssl s_client -connect "127.0.0.1:$HTTPS_PORT" -servername tls.local 2>/dev/null |
+      openssl x509 -noout -serial 2>/dev/null | cut -d= -f2)
     [ -n "$out" ] && break
     sleep 1
   done
@@ -137,18 +137,30 @@ https_code() {
 echo "--- Test 1: initial certificate ---"
 ok=false
 for _ in $(seq 1 30); do
-  [ "$(https_code)" = "200" ] && { ok=true; break; }
+  [ "$(https_code)" = "200" ] && {
+    ok=true
+    break
+  }
   sleep 1
 done
-[ "$ok" = "true" ] || { echo "FAIL: HTTPS /backend/ never returned 200"; exit 1; }
+[ "$ok" = "true" ] || {
+  echo "FAIL: HTTPS /backend/ never returned 200"
+  exit 1
+}
 echo "PASS: HTTPS /backend/ -> 200"
 
 serial=$(served_serial)
-[ "$serial" = "$cert1_serial" ] || { echo "FAIL: served serial=$serial want cert1=$cert1_serial"; exit 1; }
+[ "$serial" = "$cert1_serial" ] || {
+  echo "FAIL: served serial=$serial want cert1=$cert1_serial"
+  exit 1
+}
 echo "PASS: serving initial certificate (serial=$serial)"
 
 active=$(metric_value 'k8s_httpcache_tls_certs_active')
-[ "$active" -ge 1 ] || { echo "FAIL: tls_certs_active=$active want >=1"; exit 1; }
+[ "$active" -ge 1 ] || {
+  echo "FAIL: tls_certs_active=$active want >=1"
+  exit 1
+}
 echo "PASS: tls_certs_active=$active"
 
 # --- Test 2: certificate rotation --------------------------------------------
@@ -170,13 +182,25 @@ for i in $(seq 1 30); do
   fi
   sleep 1
 done
-[ "$rotated" = "true" ] || { echo "FAIL: rotated certificate not served within 30s"; exit 1; }
-[ "$(https_code)" = "200" ] || { echo "FAIL: HTTPS broken after rotation"; exit 1; }
+[ "$rotated" = "true" ] || {
+  echo "FAIL: rotated certificate not served within 30s"
+  exit 1
+}
+[ "$(https_code)" = "200" ] || {
+  echo "FAIL: HTTPS broken after rotation"
+  exit 1
+}
 
 after_ok=$(metric_value 'k8s_httpcache_tls_cert_reloads_total{cert="frontend",result="success"}')
 after_upd=$(metric_value 'k8s_httpcache_tls_cert_updates_total{cert="frontend"}')
-[ "$((after_ok - before_ok))" -ge 1 ] || { echo "FAIL: tls_cert_reloads_total{result=success} did not increase"; exit 1; }
-[ "$((after_upd - before_upd))" -ge 1 ] || { echo "FAIL: tls_cert_updates_total did not increase"; exit 1; }
+[ "$((after_ok - before_ok))" -ge 1 ] || {
+  echo "FAIL: tls_cert_reloads_total{result=success} did not increase"
+  exit 1
+}
+[ "$((after_upd - before_upd))" -ge 1 ] || {
+  echo "FAIL: tls_cert_updates_total did not increase"
+  exit 1
+}
 echo "PASS: rotation metrics increased (success +$((after_ok - before_ok)), updates +$((after_upd - before_upd)))"
 
 # --- Test 3: erroneous certificate -> fallback to active certificate ---------
@@ -188,7 +212,7 @@ before_err=$(metric_value 'k8s_httpcache_tls_cert_reloads_total{cert="frontend",
 # client-side cert/key pairing validation that `kubectl create secret tls` does;
 # the apiserver only checks presence, the controller rejects it at load time.
 broken_crt=$(printf -- '-----BEGIN CERTIFICATE-----\nbroken\n-----END CERTIFICATE-----\n' | base64 | tr -d '\n')
-good_key=$(base64 < "$certdir/cert2.key" | tr -d '\n')
+good_key=$(base64 <"$certdir/cert2.key" | tr -d '\n')
 cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: v1
 kind: Secret
@@ -210,13 +234,22 @@ for _ in $(seq 1 30); do
   fi
   sleep 1
 done
-[ "$errored" = "true" ] || { echo "FAIL: tls_cert_reloads_total{result=error} did not increase"; exit 1; }
+[ "$errored" = "true" ] || {
+  echo "FAIL: tls_cert_reloads_total{result=error} did not increase"
+  exit 1
+}
 echo "PASS: erroneous certificate rejected (error +$((after_err - before_err)))"
 
 # The previously active certificate (cert2) must still be served.
 serial=$(served_serial)
-[ "$serial" = "$cert2_serial" ] || { echo "FAIL: expected fallback to cert2 ($cert2_serial), served '$serial'"; exit 1; }
-[ "$(https_code)" = "200" ] || { echo "FAIL: HTTPS broken after bad cert load"; exit 1; }
+[ "$serial" = "$cert2_serial" ] || {
+  echo "FAIL: expected fallback to cert2 ($cert2_serial), served '$serial'"
+  exit 1
+}
+[ "$(https_code)" = "200" ] || {
+  echo "FAIL: HTTPS broken after bad cert load"
+  exit 1
+}
 echo "PASS: still serving previous certificate after bad load (serial=$serial)"
 
 echo "All TLS tests passed."

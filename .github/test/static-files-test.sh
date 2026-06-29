@@ -20,7 +20,7 @@ pf_pids="$pf_pids $!"
 
 # Wait for the frontend to answer.
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:8086/backend/ > /dev/null 2>&1 && break
+  curl -sf http://localhost:8086/backend/ >/dev/null 2>&1 && break
   sleep 1
 done
 
@@ -47,7 +47,10 @@ fi
 
 case "$ctype" in
   text/plain*) echo "PASS: Content-Type text/plain" ;;
-  *) echo "FAIL: expected text/plain Content-Type, got '$ctype'"; fail=1 ;;
+  *)
+    echo "FAIL: expected text/plain Content-Type, got '$ctype'"
+    fail=1
+    ;;
 esac
 
 if printf '%s' "$body" | grep -q 'static-file-marker-e2e'; then

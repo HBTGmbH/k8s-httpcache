@@ -1,0 +1,22 @@
+# Trivy configuration — https://trivy.dev/latest/docs/references/configuration/config-file/
+# Scanners, format, and output are set in .github/workflows/trivy.yml; this file
+# tunes what gets reported. Suppress individual findings in .trivyignore.
+
+# Only surface actionable findings. Dependency licenses today are all permissive
+# (MIT/Apache-2.0/BSD), which Trivy rates LOW; skipping LOW keeps code-scanning
+# alerts meaningful while still catching copyleft (reciprocal/restricted =
+# MEDIUM/HIGH), forbidden (CRITICAL), and undetectable (UNKNOWN) licenses.
+severity:
+  - UNKNOWN
+  - MEDIUM
+  - HIGH
+  - CRITICAL
+
+pkg:
+  types:
+    - os
+    - library
+
+license:
+  # Classify dependency-package licenses (fast); skip slow full-text file scanning.
+  full: false

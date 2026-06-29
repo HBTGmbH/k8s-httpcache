@@ -16,12 +16,12 @@ for attempt in $(seq 1 5); do
   declare -A zone_pods=()
   while IFS=$'\t' read -r pod zone; do
     zone_pods["$zone"]="${zone_pods[$zone]:-} $pod"
-  done < <(kubectl get pods -l app=backend -o json \
-    | jq -r '.items[] | select(.status.phase == "Running") | [.metadata.name, (.spec.nodeName // "")] | @tsv' \
-    | while IFS=$'\t' read -r pod node; do
-        zone=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
-        printf '%s\t%s\n' "$pod" "$zone"
-      done)
+  done < <(kubectl get pods -l app=backend -o json |
+    jq -r '.items[] | select(.status.phase == "Running") | [.metadata.name, (.spec.nodeName // "")] | @tsv' |
+    while IFS=$'\t' read -r pod node; do
+      zone=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
+      printf '%s\t%s\n' "$pod" "$zone"
+    done)
 
   # Check if all expected zones have at least one backend.
   missing=()
@@ -70,12 +70,12 @@ sleep 8
 declare -A backend_zone
 while IFS=$'\t' read -r pod zone; do
   backend_zone["$pod"]="$zone"
-done < <(kubectl get pods -l app=backend -o json \
-  | jq -r '.items[] | select(.status.phase == "Running") | [.metadata.name, (.spec.nodeName // "")] | @tsv' \
-  | while IFS=$'\t' read -r pod node; do
-      zone=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
-      printf '%s\t%s\n' "$pod" "$zone"
-    done)
+done < <(kubectl get pods -l app=backend -o json |
+  jq -r '.items[] | select(.status.phase == "Running") | [.metadata.name, (.spec.nodeName // "")] | @tsv' |
+  while IFS=$'\t' read -r pod node; do
+    zone=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
+    printf '%s\t%s\n' "$pod" "$zone"
+  done)
 
 echo "Backend pod zones:"
 for pod in "${!backend_zone[@]}"; do
@@ -86,12 +86,12 @@ done
 declare -A varnish_zone
 while IFS=$'\t' read -r pod zone; do
   varnish_zone["$pod"]="$zone"
-done < <(kubectl get pods -l app=k8s-httpcache -o json \
-  | jq -r '.items[] | select(.status.phase == "Running" and .metadata.deletionTimestamp == null) | [.metadata.name, (.spec.nodeName // "")] | @tsv' \
-  | while IFS=$'\t' read -r pod node; do
-      zone=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
-      printf '%s\t%s\n' "$pod" "$zone"
-    done)
+done < <(kubectl get pods -l app=k8s-httpcache -o json |
+  jq -r '.items[] | select(.status.phase == "Running" and .metadata.deletionTimestamp == null) | [.metadata.name, (.spec.nodeName // "")] | @tsv' |
+  while IFS=$'\t' read -r pod node; do
+    zone=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}')
+    printf '%s\t%s\n' "$pod" "$zone"
+  done)
 
 echo "Varnish pod zones:"
 for pod in "${!varnish_zone[@]}"; do
@@ -115,7 +115,7 @@ for vpod in "${!varnish_zone[@]}"; do
 
   # Wait for the port-forward to be ready.
   for _ in $(seq 1 30); do
-    curl -sf "http://localhost:18080/ready" > /dev/null 2>&1 && break
+    curl -sf "http://localhost:18080/ready" >/dev/null 2>&1 && break
     sleep 1
   done
 

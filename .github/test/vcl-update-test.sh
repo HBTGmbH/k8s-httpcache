@@ -25,26 +25,26 @@ kubectl port-forward "$pod" 9104:9101 8084:8080 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:9104/metrics > /dev/null 2>&1 && break
+  curl -sf http://localhost:9104/metrics >/dev/null 2>&1 && break
   sleep 1
 done
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:8084/backend/ > /dev/null 2>&1 && break
+  curl -sf http://localhost:8084/backend/ >/dev/null 2>&1 && break
   sleep 1
 done
 
 # --- Helpers -----------------------------------------------------------------
 
 metric_value() {
-  curl -sf http://localhost:9104/metrics \
-    | awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
+  curl -sf http://localhost:9104/metrics |
+    awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
 }
 
 # --- Save original VCL ConfigMap ---------------------------------------------
 
 echo "--- Saving original VCL template ---"
-kubectl get configmap k8s-httpcache-vcl -o jsonpath='{.data.vcl\.tmpl}' > /tmp/vcl-original.tmpl
+kubectl get configmap k8s-httpcache-vcl -o jsonpath='{.data.vcl\.tmpl}' >/tmp/vcl-original.tmpl
 
 # =============================================================================
 # Part 1: Live reload (valid template change)
@@ -65,12 +65,12 @@ echo "Before: template_changes=$before_changes reloads=$before_reloads"
 # Patch VCL to add a custom header in vcl_deliver.
 # Note: [{] is a PCRE character class for literal {; jq does not support \{.
 echo "--- Patching VCL ConfigMap (adding X-Vcl-Updated header) ---"
-kubectl get configmap k8s-httpcache-vcl -o json \
-  | jq --arg marker "$marker" '.data["vcl.tmpl"] |= gsub(
+kubectl get configmap k8s-httpcache-vcl -o json |
+  jq --arg marker "$marker" '.data["vcl.tmpl"] |= gsub(
       "sub vcl_deliver [{]";
       "sub vcl_deliver {\n      set resp.http.X-Vcl-Updated = \"\($marker)\";"
-    )' \
-  | kubectl apply -f -
+    )' |
+  kubectl apply -f -
 
 # Wait for kubelet to sync the ConfigMap volume, the file watcher to detect
 # the change, the debounced reload to complete, AND the header to appear in
@@ -80,11 +80,11 @@ found=false
 for i in $(seq 1 120); do
   current_changes=$(metric_value 'k8s_httpcache_vcl_template_changes_total ')
   current_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
-  header=$(curl -s -D- -o /dev/null http://localhost:8084/backend/ 2>/dev/null \
-    | grep -i '^x-vcl-updated:' | tr -d '\r' | awk '{print $2}' || true)
-  if [ "$current_changes" -gt "$before_changes" ] \
-    && [ "$current_reloads" -gt "$before_reloads" ] \
-    && [ "$header" = "$marker" ]; then
+  header=$(curl -s -D- -o /dev/null http://localhost:8084/backend/ 2>/dev/null |
+    grep -i '^x-vcl-updated:' | tr -d '\r' | awk '{print $2}' || true)
+  if [ "$current_changes" -gt "$before_changes" ] &&
+    [ "$current_reloads" -gt "$before_reloads" ] &&
+    [ "$header" = "$marker" ]; then
     echo "Template changed, reloaded, and header verified after ${i}s (changes=$current_changes reloads=$current_reloads)"
     found=true
     break

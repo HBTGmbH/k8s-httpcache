@@ -3,6 +3,8 @@ extends: default
 # Helm templates contain Go template syntax ({{ }}) which is not valid YAML.
 ignore:
   - "charts/*/templates/"
+  # Vendored npm dependencies (markdownlint-cli) ship their own YAML; not ours to lint.
+  - "**/node_modules/"
 
 rules:
   line-length:

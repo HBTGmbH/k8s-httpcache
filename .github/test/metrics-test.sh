@@ -14,20 +14,20 @@ trap cleanup EXIT
 # Both ports are forwarded from the same pod so that broadcast requests
 # and metric scrapes are always consistent (the broadcast_fanout_targets
 # gauge is only set on the pod that handles the broadcast request).
-if ! curl -sf http://localhost:9101/metrics > /dev/null 2>&1 \
-  || ! curl -sf http://localhost:8088/backend/ > /dev/null 2>&1; then
+if ! curl -sf http://localhost:9101/metrics >/dev/null 2>&1 ||
+  ! curl -sf http://localhost:8088/backend/ >/dev/null 2>&1; then
   pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
   kubectl port-forward "$pod" 9101:9101 8088:8088 >/dev/null &
   pf_pids="$pf_pids $!"
 fi
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:9101/metrics > /dev/null 2>&1 && break
+  curl -sf http://localhost:9101/metrics >/dev/null 2>&1 && break
   sleep 1
 done
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:8088/backend/ > /dev/null 2>&1 && break
+  curl -sf http://localhost:8088/backend/ >/dev/null 2>&1 && break
   sleep 1
 done
 
@@ -39,8 +39,8 @@ hurl --test .github/test/metrics.hurl .github/test/broadcast.hurl
 
 # Extract the summed value of a Prometheus metric by fixed-string prefix.
 metric_value() {
-  curl -sf http://localhost:9101/metrics \
-    | awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
+  curl -sf http://localhost:9101/metrics |
+    awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
 }
 
 assert_eq() {
@@ -79,7 +79,7 @@ assert_eq 'k8s_httpcache_vcl_rollbacks_total ' 0
 
 # Counter increment: broadcast_requests_total must increase after a request.
 before=$(metric_value 'k8s_httpcache_broadcast_requests_total{')
-curl -sf http://localhost:8088/backend/ > /dev/null
+curl -sf http://localhost:8088/backend/ >/dev/null
 after=$(metric_value 'k8s_httpcache_broadcast_requests_total{')
 echo "broadcast_requests_total: before=$before after=$after"
 if [ "$after" -le "$before" ]; then

@@ -23,28 +23,28 @@ kubectl port-forward "$pod" 9105:9101 8085:8080 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:9105/metrics > /dev/null 2>&1 && break
+  curl -sf http://localhost:9105/metrics >/dev/null 2>&1 && break
   sleep 1
 done
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:8085/backend/ > /dev/null 2>&1 && break
+  curl -sf http://localhost:8085/backend/ >/dev/null 2>&1 && break
   sleep 1
 done
 
 # --- Helpers -----------------------------------------------------------------
 
 metric_value() {
-  curl -sf http://localhost:9105/metrics \
-    | awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
+  curl -sf http://localhost:9105/metrics |
+    awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
 }
 
 # --- Verify current header value ---------------------------------------------
 
 echo "--- Verifying current X-ValuesDir-Test header ---"
 
-header=$(curl -sf -D- -o /dev/null http://localhost:8085/backend/ 2>/dev/null \
-  | grep -i '^x-valuesdir-test:' | tr -d '\r' | awk '{print $2}')
+header=$(curl -sf -D- -o /dev/null http://localhost:8085/backend/ 2>/dev/null |
+  grep -i '^x-valuesdir-test:' | tr -d '\r' | awk '{print $2}')
 
 if [ "$header" != "hello-from-dir" ]; then
   echo "FAIL: expected X-ValuesDir-Test=hello-from-dir, got '$header'"
@@ -72,8 +72,8 @@ found=false
 for i in $(seq 1 120); do
   current_values=$(metric_value 'k8s_httpcache_values_updates_total{configmap="dirtest"}')
   current_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
-  if [ "$current_values" -gt "$before_values" ] \
-    && [ "$current_reloads" -gt "$before_reloads" ]; then
+  if [ "$current_values" -gt "$before_values" ] &&
+    [ "$current_reloads" -gt "$before_reloads" ]; then
     echo "Values-dir update detected and reloaded after ${i}s (updates=$current_values reloads=$current_reloads)"
     found=true
     break
@@ -103,8 +103,8 @@ echo "PASS: vcl_reloads_total{result=success} increased (delta=$reloads_delta)"
 
 # --- Verify header changed ---------------------------------------------------
 
-header=$(curl -sf -D- -o /dev/null http://localhost:8085/backend/ 2>/dev/null \
-  | grep -i '^x-valuesdir-test:' | tr -d '\r' | awk '{print $2}' || true)
+header=$(curl -sf -D- -o /dev/null http://localhost:8085/backend/ 2>/dev/null |
+  grep -i '^x-valuesdir-test:' | tr -d '\r' | awk '{print $2}' || true)
 if [ "$header" != "updated-dir-value" ]; then
   echo "FAIL: X-ValuesDir-Test = '$header' (expected 'updated-dir-value')"
   exit 1

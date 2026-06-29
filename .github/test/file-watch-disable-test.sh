@@ -30,9 +30,9 @@ trap cleanup EXIT
 # --- Patch deployment to add --file-watch=false ------------------------------
 
 echo "=== Setup: patching deployment with --file-watch=false ==="
-kubectl get deployment k8s-httpcache -o json \
-  | jq '.spec.template.spec.containers[0].args |= map(if . == "--file-watch" then "--file-watch=false" else . end)' \
-  | kubectl apply -f -
+kubectl get deployment k8s-httpcache -o json |
+  jq '.spec.template.spec.containers[0].args |= map(if . == "--file-watch" then "--file-watch=false" else . end)' |
+  kubectl apply -f -
 
 echo "--- Waiting for rollout ---"
 kubectl rollout status deployment/k8s-httpcache --timeout=120s
@@ -44,21 +44,21 @@ kubectl port-forward "$pod" 9106:9101 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:9106/metrics > /dev/null 2>&1 && break
+  curl -sf http://localhost:9106/metrics >/dev/null 2>&1 && break
   sleep 1
 done
 
 # --- Helpers -----------------------------------------------------------------
 
 metric_value() {
-  curl -sf http://localhost:9106/metrics \
-    | awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
+  curl -sf http://localhost:9106/metrics |
+    awk -v prefix="$1" 'index($0, prefix) == 1 {s+=$2} END{printf "%d\n", s}'
 }
 
 # --- Save original VCL ConfigMap ---------------------------------------------
 
 echo "--- Saving original VCL template ---"
-kubectl get configmap k8s-httpcache-vcl -o jsonpath='{.data.vcl\.tmpl}' > /tmp/vcl-original-fwd.tmpl
+kubectl get configmap k8s-httpcache-vcl -o jsonpath='{.data.vcl\.tmpl}' >/tmp/vcl-original-fwd.tmpl
 
 # =============================================================================
 # Part 1: Negative — file-based changes NOT detected
@@ -75,12 +75,12 @@ echo "Before: vcl_template_changes=$before_vcl_changes values_updates(dirtest)=$
 # vcl-update-test).
 marker="fwd-test-$(date +%s)"
 echo "--- Patching VCL ConfigMap (marker: $marker) ---"
-kubectl get configmap k8s-httpcache-vcl -o json \
-  | jq --arg marker "$marker" '.data["vcl.tmpl"] |= gsub(
+kubectl get configmap k8s-httpcache-vcl -o json |
+  jq --arg marker "$marker" '.data["vcl.tmpl"] |= gsub(
       "sub vcl_deliver [{]";
       "sub vcl_deliver {\n      set resp.http.X-Fwd-Disabled = \"\($marker)\";"
-    )' \
-  | kubectl apply -f -
+    )' |
+  kubectl apply -f -
 
 # Patch values-dir ConfigMap.
 echo "--- Patching values-dir ConfigMap ---"
@@ -133,8 +133,8 @@ echo "Before: values_updates(test)=$before_api_updates reloads=$before_reloads"
 
 # Verify current header value via ingress.
 echo "--- Verifying current X-Values-Test header ---"
-header=$(curl -sf -D- -o /dev/null http://localhost:8080/backend/ 2>/dev/null \
-  | grep -i '^x-values-test:' | tr -d '\r' | awk '{print $2}')
+header=$(curl -sf -D- -o /dev/null http://localhost:8080/backend/ 2>/dev/null |
+  grep -i '^x-values-test:' | tr -d '\r' | awk '{print $2}')
 if [ "$header" != "hello-from-values" ]; then
   echo "FAIL: expected X-Values-Test=hello-from-values, got '$header'"
   exit 1
@@ -150,8 +150,8 @@ kubectl patch configmap k8s-httpcache-values-test --type merge \
 echo "--- Waiting for updated header (up to 15s) ---"
 found=false
 for i in $(seq 1 15); do
-  header=$(curl -sf -D- -o /dev/null http://localhost:8080/backend/ 2>/dev/null \
-    | grep -i '^x-values-test:' | tr -d '\r' | awk '{print $2}' || true)
+  header=$(curl -sf -D- -o /dev/null http://localhost:8080/backend/ 2>/dev/null |
+    grep -i '^x-values-test:' | tr -d '\r' | awk '{print $2}' || true)
   if [ "$header" = "file-watch-test-value" ]; then
     echo "PASS: X-Values-Test = file-watch-test-value (attempt $i)"
     found=true
@@ -205,8 +205,8 @@ kubectl patch configmap k8s-httpcache-values-test --type merge \
 
 echo "--- Waiting for restored header (up to 15s) ---"
 for i in $(seq 1 15); do
-  header=$(curl -sf -D- -o /dev/null http://localhost:8080/backend/ 2>/dev/null \
-    | grep -i '^x-values-test:' | tr -d '\r' | awk '{print $2}' || true)
+  header=$(curl -sf -D- -o /dev/null http://localhost:8080/backend/ 2>/dev/null |
+    grep -i '^x-values-test:' | tr -d '\r' | awk '{print $2}' || true)
   if [ "$header" = "hello-from-values" ]; then
     echo "PASS: X-Values-Test restored to hello-from-values (attempt $i)"
     break

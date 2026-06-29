@@ -13,6 +13,8 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [kube-linter](https://docs.kubelinter.io/) for linting the rendered chart manifests
 - [pint](https://cloudflare.github.io/pint/) for linting the chart's Prometheus alert rules
 - [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning
+- [shfmt](https://github.com/mvdan/sh) for shell script formatting
+- [typos](https://github.com/crate-ci/typos) for spell checking across all file types
 - [hurl](https://hurl.dev/) for E2E test assertions
 - A Kubernetes cluster for E2E testing (the CI uses [kind](https://kind.sigs.k8s.io/))
 - [curl](https://curl.se/) for HTTP assertions in E2E tests
@@ -64,11 +66,13 @@ The project uses [golangci-lint](https://golangci-lint.run/) with an extensive r
 golangci-lint run
 ```
 
-YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config in [`.yamllint.yml`](.yamllint.yml)), shell scripts with [ShellCheck](https://www.shellcheck.net/), and Markdown files with [markdownlint-cli](https://github.com/igorshubovych/markdownlint-cli) (rules in [`.markdownlint.yaml`](.markdownlint.yaml), ignores in [`.markdownlintignore`](.markdownlintignore)):
+YAML files are linted with [yamllint](https://yamllint.readthedocs.io/) (config in [`.yamllint.yml`](.yamllint.yml)), shell scripts with [ShellCheck](https://www.shellcheck.net/) and formatted with [shfmt](https://github.com/mvdan/sh), and Markdown files with [markdownlint-cli](https://github.com/igorshubovych/markdownlint-cli) (rules in [`.markdownlint.yaml`](.markdownlint.yaml), ignores in [`.markdownlintignore`](.markdownlintignore)). All files are spell-checked with [typos](https://github.com/crate-ci/typos) (jargon allowlist in [`typos.toml`](typos.toml)); `golangci-lint`'s `misspell` only covers `.go` files:
 
 ```bash
 yamllint --strict .
 shellcheck .github/test/*.sh
+shfmt -d -i 2 -ci .github/test/*.sh
+typos
 npx --yes markdownlint-cli --config .markdownlint.yaml "**/*.md"
 ```
 
@@ -98,6 +102,13 @@ govulncheck ./...
 
 go install golang.org/x/tools/cmd/deadcode@latest
 deadcode -test ./...
+```
+
+A separate [Trivy](https://trivy.dev/) workflow scans the repository for dependency vulnerabilities (defense-in-depth alongside govulncheck) and dependency-license compliance, reporting findings to GitHub code scanning (config in [`trivy.yaml`](trivy.yaml), suppressions in [`.trivyignore`](.trivyignore)):
+
+```bash
+# install: https://trivy.dev/latest/getting-started/installation/
+trivy fs --scanners vuln,license --config trivy.yaml .
 ```
 
 When modifying GitHub Actions workflows, run [actionlint](https://github.com/rhysd/actionlint) locally before pushing:

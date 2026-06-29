@@ -5,7 +5,7 @@ set -eu
 
 wait_for() {
   for _ in $(seq 1 30); do
-    curl -sf "http://localhost:8080$1" > /dev/null 2>&1 && return 0
+    curl -sf "http://localhost:8080$1" >/dev/null 2>&1 && return 0
     sleep 2
   done
 }

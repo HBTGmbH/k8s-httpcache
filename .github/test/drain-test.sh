@@ -16,14 +16,14 @@ kubectl port-forward "$pod" 8081:8080 >/dev/null &
 pf_pids="$pf_pids $!"
 
 for _ in $(seq 1 30); do
-  curl -sf http://localhost:8081/backend/ > /dev/null 2>&1 && break
+  curl -sf http://localhost:8081/backend/ >/dev/null 2>&1 && break
   sleep 1
 done
 
 # --- Verify Connection: close is NOT present during normal operation ---------
 
-conn=$(curl -sf -D- -o /dev/null http://localhost:8081/backend/ 2>/dev/null \
-  | grep -i '^connection:' | tr -d '\r' | awk '{print tolower($2)}' || true)
+conn=$(curl -sf -D- -o /dev/null http://localhost:8081/backend/ 2>/dev/null |
+  grep -i '^connection:' | tr -d '\r' | awk '{print tolower($2)}' || true)
 
 if [ "$conn" = "close" ]; then
   echo "FAIL: Connection: close present before drain (got '$conn')"
@@ -40,8 +40,8 @@ sleep 2
 
 found=false
 for i in $(seq 1 10); do
-  conn=$(curl -sf -D- -o /dev/null http://localhost:8081/backend/ 2>/dev/null \
-    | grep -i '^connection:' | tr -d '\r' | awk '{print tolower($2)}' || true)
+  conn=$(curl -sf -D- -o /dev/null http://localhost:8081/backend/ 2>/dev/null |
+    grep -i '^connection:' | tr -d '\r' | awk '{print tolower($2)}' || true)
   if [ "$conn" = "close" ]; then
     echo "PASS: Connection: close detected on attempt $i"
     found=true

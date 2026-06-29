@@ -1,0 +1,7 @@
+# Suppress individual Trivy findings here, one entry per line.
+# A finding is a vulnerability ID or a license name; see
+# https://trivy.dev/latest/docs/configuration/filtering/
+#
+# Examples (keep a short justification comment with each real entry):
+#   CVE-2024-12345   # not reachable from our code; tracked in #NN
+#   GPL-3.0-only     # vendored tool, build-time only

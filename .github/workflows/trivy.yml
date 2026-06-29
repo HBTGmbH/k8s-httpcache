@@ -1,0 +1,49 @@
+name: Trivy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * 1"  # weekly, Monday 07:00 UTC (offset from CodeQL 06:00 / Scorecard 06:30)
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write  # upload SARIF to code scanning
+      contents: read          # checkout the sources to scan
+    steps:
+    - name: Checkout
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      with:
+        persist-credentials: false
+    # Dependency vulnerabilities (defense-in-depth alongside govulncheck, which
+    # is reachability-scoped) plus dependency-license compliance. Reporting only:
+    # findings surface as code-scanning alerts, the job does not fail (exit-code 0).
+    # Tuning (severity floor, package types) lives in trivy.yaml; suppressions in
+    # .trivyignore.
+    - name: Run Trivy (vuln + license)
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        scan-type: fs
+        scan-ref: .
+        scanners: vuln,license
+        trivy-config: trivy.yaml
+        format: sarif
+        output: trivy.sarif
+        exit-code: "0"
+    - name: Upload to code scanning
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
+      with:
+        sarif_file: trivy.sarif
+        category: trivy
