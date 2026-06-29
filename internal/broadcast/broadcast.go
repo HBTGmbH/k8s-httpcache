@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"k8s-httpcache/internal/telemetry"
-	"k8s-httpcache/internal/watcher"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +15,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/HBTGmbH/k8s-httpcache/internal/telemetry"
+	"github.com/HBTGmbH/k8s-httpcache/internal/watcher"
 )
 
 // maxBodySize is the maximum response body size read from each pod.

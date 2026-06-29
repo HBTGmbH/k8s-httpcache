@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"k8s-httpcache/internal/redact"
-	"k8s-httpcache/internal/telemetry"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -17,6 +15,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/HBTGmbH/k8s-httpcache/internal/redact"
+	"github.com/HBTGmbH/k8s-httpcache/internal/telemetry"
 
 	"github.com/prometheus/client_golang/prometheus"
 )

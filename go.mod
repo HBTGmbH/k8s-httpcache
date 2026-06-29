@@ -1,4 +1,4 @@
-module k8s-httpcache
+module github.com/HBTGmbH/k8s-httpcache
 
 go 1.26.4
 

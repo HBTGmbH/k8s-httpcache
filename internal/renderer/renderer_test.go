@@ -2,12 +2,13 @@ package renderer
 
 import (
 	"bytes"
-	"k8s-httpcache/internal/watcher"
 	"log/slog"
 	"os"
 	"strings"
 	"testing"
 	"text/template"
+
+	"github.com/HBTGmbH/k8s-httpcache/internal/watcher"
 
 	"github.com/Masterminds/sprig/v3"
 )

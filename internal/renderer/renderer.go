@@ -4,13 +4,14 @@ package renderer
 import (
 	"bytes"
 	"fmt"
-	"k8s-httpcache/internal/watcher"
 	"log/slog"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
 	"text/template"
+
+	"github.com/HBTGmbH/k8s-httpcache/internal/watcher"
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/go-sprout/sprout"

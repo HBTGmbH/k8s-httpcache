@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"k8s-httpcache/internal/telemetry"
-	"k8s-httpcache/internal/watcher"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/HBTGmbH/k8s-httpcache/internal/telemetry"
+	"github.com/HBTGmbH/k8s-httpcache/internal/watcher"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
