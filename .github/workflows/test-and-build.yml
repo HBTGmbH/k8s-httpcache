@@ -745,6 +745,24 @@ jobs:
         kubectl logs -l app=backend --tail=50
         kubectl logs -n test-ns -l app=backend-xns --tail=50
 
+  ci-gate:
+    name: CI gate
+    # Single always-running status check for the branch ruleset. The jobs above
+    # are path-filtered and skipped on unrelated changes; a skipped required
+    # check would block PRs forever, so the ruleset requires this job instead.
+    # It fails only when a job it depends on actually failed or was cancelled;
+    # legitimately skipped jobs are treated as passing.
+    needs: [changes, unit-test, lint, go-build, test]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+    - name: Require all CI jobs to pass or be skipped
+      if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      run: |
+        echo "::error::One or more required CI jobs failed or were cancelled."
+        exit 1
+
   build:
     name: Build image
     needs: [changes, test]
