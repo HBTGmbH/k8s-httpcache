@@ -35,4 +35,14 @@ echo "=== kube-linter ==="
 helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
   | kube-linter lint --config .kube-linter.yaml -
 
+echo "=== pint (Prometheus rules) ==="
+pr="$(mktemp)"
+helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
+  --set prometheusRule.enabled=true --show-only templates/prometheusrule.yaml > "$pr"
+pint --offline lint "$pr"
+rm -f "$pr"
+
+echo "=== gitleaks ==="
+gitleaks dir . --redact --no-banner
+
 echo "All linting checks passed."

@@ -11,6 +11,8 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [hadolint](https://github.com/hadolint/hadolint) for Dockerfile linting
 - [Helm](https://helm.sh/docs/intro/install/) for chart linting
 - [kube-linter](https://docs.kubelinter.io/) for linting the rendered chart manifests
+- [pint](https://cloudflare.github.io/pint/) for linting the chart's Prometheus alert rules
+- [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning
 - [hurl](https://hurl.dev/) for E2E test assertions
 - A Kubernetes cluster for E2E testing (the CI uses [kind](https://kind.sigs.k8s.io/))
 - [curl](https://curl.se/) for HTTP assertions in E2E tests
@@ -77,6 +79,15 @@ hadolint .github/build/Dockerfile .github/test/*/Dockerfile
 helm lint --strict charts/k8s-httpcache
 helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
   | kube-linter lint --config .kube-linter.yaml -
+```
+
+The chart's Prometheus alerting rules are linted with [pint](https://cloudflare.github.io/pint/) (config in [`.pint.hcl`](.pint.hcl)), and the repository is scanned for committed secrets with [gitleaks](https://github.com/gitleaks/gitleaks) (false-positive allowlist in [`.gitleaks.toml`](.gitleaks.toml)):
+
+```bash
+helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
+  --set prometheusRule.enabled=true --show-only templates/prometheusrule.yaml > /tmp/pr.yaml
+pint --offline lint /tmp/pr.yaml
+gitleaks dir .
 ```
 
 The CI also runs [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) and [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode) detection:

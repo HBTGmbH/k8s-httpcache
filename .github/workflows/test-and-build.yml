@@ -443,6 +443,51 @@ jobs:
         set -o pipefail
         helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
           | ~/tools/kube-linter lint --config .kube-linter.yaml -
+    - name: Restore pint
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      id: pint
+      with:
+        path: ~/tools/pint
+        key: pint-0.86.0-linux-amd64
+    - name: Install pint
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.pint.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/tools
+        curl -sfL https://github.com/cloudflare/pint/releases/download/v0.86.0/pint-0.86.0-linux-amd64.tar.gz \
+          | tar -xz -C ~/tools pint-linux-amd64
+        mv ~/tools/pint-linux-amd64 ~/tools/pint
+        chmod +x ~/tools/pint
+    - name: Save pint
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.pint.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/tools/pint
+        key: pint-0.86.0-linux-amd64
+    - name: Pint (Prometheus rules)
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      # Render the chart's PrometheusRule and lint its PromQL offline (no
+      # Prometheus queried); pint's relaxed parser is set in .pint.hcl.
+      run: |
+        set -o pipefail
+        helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
+          --set prometheusRule.enabled=true --show-only templates/prometheusrule.yaml \
+          > "${RUNNER_TEMP}/prometheusrule.yaml"
+        ~/tools/pint --offline lint "${RUNNER_TEMP}/prometheusrule.yaml"
     - name: Restore helm-docs
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -485,6 +530,29 @@ jobs:
           echo "::error::charts/k8s-httpcache/README.md is out of date; run helm-docs and commit it."
           exit 1
         fi
+    - name: Restore gitleaks
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      id: gitleaks
+      with:
+        path: ~/tools/gitleaks
+        key: gitleaks-8.30.1-linux-amd64
+    - name: Install gitleaks
+      if: steps.gitleaks.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/tools
+        curl -sfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+          | tar -xz -C ~/tools gitleaks
+        chmod +x ~/tools/gitleaks
+    - name: Save gitleaks
+      if: steps.gitleaks.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/tools/gitleaks
+        key: gitleaks-8.30.1-linux-amd64
+    - name: Gitleaks (secret scan)
+      # Scan the working tree for committed secrets on every change; documented
+      # false positives are allowlisted in .gitleaks.toml.
+      run: ~/tools/gitleaks dir . --redact --no-banner
 
 
   go-build:

@@ -1,0 +1,16 @@
+# gitleaks configuration. Docs: https://github.com/gitleaks/gitleaks
+#
+# Start from the built-in ruleset and only carve out documented false positives.
+[extend]
+useDefault = true
+
+# The redaction unit tests deliberately embed a fake "secret" to verify that
+# secret values emitted by varnishd are masked before they reach logs/callers
+# (internal/varnish/manager_test.go, TestReloadLoadErrorRedactsSecrets). It is
+# not a real credential. Scope the allowlist to that exact literal in that file
+# (matchCondition = "AND") so any other secret stays flagged.
+[[allowlists]]
+description = "Fake secret fixture in the varnish redaction unit tests"
+matchCondition = "AND"
+paths = ['''internal/varnish/manager_test\.go''']
+regexes = ['''s3cret-api-key-12345''']
