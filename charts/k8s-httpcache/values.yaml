@@ -945,3 +945,16 @@ referenceGrant:
   #    namespace: other-namespace
   # -- Targets the grant permits references to (empty = this chart's Service)
   to: []
+
+# ===========================================================================
+# Helm test hooks (`helm test`)
+# ===========================================================================
+tests:
+  # -- Image (pinned, not :latest) for the curl-based `helm test` pods
+  # (connection / metrics / varnishstat). Pinned so the rendered manifests pass
+  # kube-linter's latest-tag check; override to point at a mirror.
+  curlImage: curlimages/curl:8.21.0
+  # -- Image (pinned, not :latest) for the kubectl-based RBAC `helm test` pod.
+  # Uses a shell-capable image with pinnable tags (registry.k8s.io/kubectl is
+  # distroless with no shell; bitnami/kubectl no longer publishes version tags).
+  kubectlImage: alpine/kubectl:1.36.2

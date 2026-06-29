@@ -14,7 +14,16 @@ spec:
   serviceAccountName: {{ include "k8s-httpcache.serviceAccountName" . }}
   containers:
     - name: auth-check
-      image: bitnami/kubectl:latest
+      image: {{ .Values.tests.kubectlImage }}
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # HOME points at a writable emptyDir so kubectl's cache works under
+      # readOnlyRootFilesystem.
+      env:
+        - name: HOME
+          value: /tmp
       command: ["sh", "-c"]
       args:
         - |
@@ -26,4 +35,10 @@ spec:
           echo "Testing: can get pods..."
           kubectl auth can-i get pods --namespace {{ .Release.Namespace }}
           echo "RBAC checks passed."
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir: {}
 {{- end }}

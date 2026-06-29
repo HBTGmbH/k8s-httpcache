@@ -403,6 +403,46 @@ jobs:
           | ~/tools/kubeconform -strict -summary -ignore-missing-schemas
         ~/tools/kubeconform -strict -summary -ignore-missing-schemas \
           .github/test/manifest.yaml .github/test/manifest-tls.yaml
+    - name: Restore kube-linter
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      id: kube-linter
+      with:
+        path: ~/tools/kube-linter
+        key: kube-linter-0.8.3-linux-amd64
+    - name: Install kube-linter
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.kube-linter.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/tools
+        curl -sfL https://github.com/stackrox/kube-linter/releases/download/v0.8.3/kube-linter-linux.tar.gz \
+          | tar -xz -C ~/tools kube-linter
+        chmod +x ~/tools/kube-linter
+    - name: Save kube-linter
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.kube-linter.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/tools/kube-linter
+        key: kube-linter-0.8.3-linux-amd64
+    - name: Kube-linter
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.helm == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      run: |
+        set -o pipefail
+        helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
+          | ~/tools/kube-linter lint --config .kube-linter.yaml -
     - name: Restore helm-docs
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
