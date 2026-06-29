@@ -644,11 +644,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dockerfile:
-          - varnish6/Dockerfile
-          - varnish7/Dockerfile
-          - varnish8/Dockerfile
-          - varnish9/Dockerfile
+        include:
+          - dockerfile: varnish6/Dockerfile
+          - dockerfile: varnish7/Dockerfile
+          - dockerfile: varnish8/Dockerfile
+          - dockerfile: varnish9/Dockerfile
+          # Race-detector leg: builds a cgo -race binary (multi-stage, matching
+          # glibc) and runs the full E2E suite under the race detector.
+          - dockerfile: varnish9-race/Dockerfile
+            race: true
     steps:
     - name: Checkout
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -684,12 +688,18 @@ jobs:
     - name: Build test image
       env:
         DOCKERFILE: ${{ matrix.dockerfile }}
+        RACE: ${{ matrix.race }}
       run: |
-        mkdir .docker-context
-        cp k8s-httpcache-linux-amd64 .docker-context/
-        docker build -f ".github/test/$DOCKERFILE" \
-          --build-arg BINARY=k8s-httpcache-linux-amd64 \
-          -t localhost/k8s-httpcache:test .docker-context
+        if [ "$RACE" = "true" ]; then
+          # Multi-stage: compiles the cgo -race binary from source in matching glibc.
+          docker build -f ".github/test/$DOCKERFILE" -t localhost/k8s-httpcache:test .
+        else
+          mkdir .docker-context
+          cp k8s-httpcache-linux-amd64 .docker-context/
+          docker build -f ".github/test/$DOCKERFILE" \
+            --build-arg BINARY=k8s-httpcache-linux-amd64 \
+            -t localhost/k8s-httpcache:test .docker-context
+        fi
     - name: Create kind cluster
       uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1.14.0
       with:
@@ -748,8 +758,22 @@ jobs:
     - name: Zero-downtime rollout restart
       run: .github/test/rollout-test.sh
     - name: TLS certificate test (Varnish 9)
-      if: matrix.dockerfile == 'varnish9/Dockerfile'
+      if: matrix.dockerfile == 'varnish9/Dockerfile' || matrix.race
       run: .github/test/tls-test.sh
+    - name: Assert no data races
+      # Race leg only: the -race binary logs "WARNING: DATA RACE" to the pod but
+      # keeps running (default GORACE), so scan all controller logs after the
+      # suite and fail if the detector fired. Runs even if an E2E step failed.
+      if: ${{ always() && matrix.race }}
+      run: |
+        logs=$(kubectl logs --tail=-1 --all-containers --prefix \
+          -l 'app in (k8s-httpcache, k8s-httpcache-tls)' 2>/dev/null || true)
+        if printf '%s' "$logs" | grep -q 'WARNING: DATA RACE'; then
+          echo "::error::race detector reported data race(s) during E2E"
+          printf '%s\n' "$logs" | grep -A 40 'WARNING: DATA RACE'
+          exit 1
+        fi
+        echo "No data races detected during E2E."
     - name: Upload E2E test results
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       if: always()

@@ -16,6 +16,7 @@ linters:
     - contextcheck
     - copyloopvar
     - decorder
+    - depguard
     - dogsled
     - dupl
     - dupword
@@ -91,6 +92,75 @@ linters:
     - whitespace
     - wrapcheck
   settings:
+    depguard:
+      rules:
+        # Ban discouraged packages everywhere. The repo imports none of these today;
+        # this only prevents regressions. math/rand is intentionally NOT banned here:
+        # depguard prefix-matching would also flag the legitimate math/rand/v2, and
+        # weak-randomness misuse is already covered by gosec G404.
+        discouraged:
+          deny:
+            - pkg: io/ioutil
+              desc: deprecated; use io and os
+            - pkg: github.com/pkg/errors
+              desc: use the stdlib errors package with %w
+            - pkg: gopkg.in/yaml.v2
+              desc: use sigs.k8s.io/yaml
+            - pkg: github.com/gogo/protobuf
+              desc: unmaintained; use google.golang.org/protobuf
+        # Lock the internal/* dependency DAG: a new cross-package edge must be a
+        # conscious edit here, not silent architectural drift. Leaf packages
+        # (config, redact, telemetry, watcher) import no sibling internal package.
+        leaf-packages:
+          files:
+            - '**/internal/config/**'
+            - '**/internal/redact/**'
+            - '**/internal/telemetry/**'
+            - '**/internal/watcher/**'
+          deny:
+            - pkg: k8s-httpcache/internal
+              desc: leaf packages must not import sibling internal packages
+        # renderer may import only internal/watcher.
+        renderer:
+          files:
+            - '**/internal/renderer/**'
+          deny:
+            - pkg: k8s-httpcache/internal/broadcast
+              desc: renderer may import only internal/watcher
+            - pkg: k8s-httpcache/internal/config
+              desc: renderer may import only internal/watcher
+            - pkg: k8s-httpcache/internal/redact
+              desc: renderer may import only internal/watcher
+            - pkg: k8s-httpcache/internal/telemetry
+              desc: renderer may import only internal/watcher
+            - pkg: k8s-httpcache/internal/varnish
+              desc: renderer may import only internal/watcher
+        # varnish may import only internal/redact and internal/telemetry.
+        varnish:
+          files:
+            - '**/internal/varnish/**'
+          deny:
+            - pkg: k8s-httpcache/internal/broadcast
+              desc: varnish may import only internal/redact and internal/telemetry
+            - pkg: k8s-httpcache/internal/config
+              desc: varnish may import only internal/redact and internal/telemetry
+            - pkg: k8s-httpcache/internal/renderer
+              desc: varnish may import only internal/redact and internal/telemetry
+            - pkg: k8s-httpcache/internal/watcher
+              desc: varnish may import only internal/redact and internal/telemetry
+        # broadcast may import only internal/telemetry and internal/watcher.
+        broadcast:
+          files:
+            - '**/internal/broadcast/**'
+          deny:
+            - pkg: k8s-httpcache/internal/config
+              desc: broadcast may import only internal/telemetry and internal/watcher
+            - pkg: k8s-httpcache/internal/redact
+              desc: broadcast may import only internal/telemetry and internal/watcher
+            - pkg: k8s-httpcache/internal/renderer
+              desc: broadcast may import only internal/telemetry and internal/watcher
+            - pkg: k8s-httpcache/internal/varnish
+              desc: broadcast may import only internal/telemetry and internal/watcher
     govet:
       enable-all: true
       disable:

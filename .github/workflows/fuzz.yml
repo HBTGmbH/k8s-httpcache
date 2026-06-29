@@ -1,0 +1,70 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # nightly, 03:00 UTC (off the codeql/scorecard/trivy slots)
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: Duration to fuzz each target (e.g. 3m, 30m, 2h)
+        type: string
+        default: 3m
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    # Go fuzzing runs one target per invocation, so fan out over every Fuzz*
+    # function. Keep this list in sync when adding fuzz tests.
+    name: Fuzz ${{ matrix.func }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: internal/config
+            func: FuzzListenAddrSet
+          - pkg: internal/config
+            func: FuzzBackendSet
+          - pkg: internal/config
+            func: FuzzParseNamespacedService
+          - pkg: internal/renderer
+            func: FuzzInjectDrainVCL
+          - pkg: internal/varnish
+            func: FuzzSanitizeCertFileNameNoTraversal
+          - pkg: internal/telemetry
+            func: FuzzParseVarnishstat
+          - pkg: internal/telemetry
+            func: FuzzCollect
+    steps:
+    - name: Checkout
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      with:
+        persist-credentials: false
+    - name: Setup Go
+      # zizmor: ignore[cache-poisoning]
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
+      with:
+        go-version-file: go.mod
+    - name: Fuzz
+      # Matrix values pass through env (not interpolated into the shell) so the
+      # run block has no ${{ }} expansion. FUZZTIME falls back to 3m on schedule.
+      env:
+        PKG: ${{ matrix.pkg }}
+        FUNC: ${{ matrix.func }}
+        FUZZTIME: ${{ inputs.fuzztime || '3m' }}
+      run: go test -run='^$' -fuzz="^${FUNC}\$" -fuzztime="$FUZZTIME" "./${PKG}/"
+    - name: Upload crashers
+      # On a crash, Go writes the failing input under testdata/fuzz/<Func>/; keep
+      # it so the reproducer can be committed to the seed corpus.
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: fuzz-crashers-${{ matrix.func }}
+        path: ${{ matrix.pkg }}/testdata/fuzz/${{ matrix.func }}/
+        if-no-files-found: ignore
