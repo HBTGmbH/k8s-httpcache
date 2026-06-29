@@ -1,0 +1,24 @@
+# Hash-pinned yamllint and its full transitive dependency tree for the Lint job.
+# Required by OpenSSF Scorecard's pinned-dependencies check (pip must install by
+# hash). Installed with: pip install --require-hashes -r this-file
+#
+# To bump: pick the new versions and run, for each package+version,
+#   curl -sS https://pypi.org/pypi/<pkg>/<version>/json \
+#     | jq -r '.urls[] | "\(.digests.sha256)  \(.filename)"'
+# then replace the versions and hashes below. PyYAML ships per-Python binary
+# wheels, so keep the manylinux x86_64 wheels for the Python versions the
+# ubuntu-latest runner may use, plus the sdist as a fallback.
+yamllint==1.38.0 \
+    --hash=sha256:fc394a5b3be980a4062607b8fdddc0843f4fa394152b6da21722f5d59013c220 \
+    --hash=sha256:09e5f29531daab93366bb061e76019d5e91691ef0a40328f04c927387d1d364d
+pathspec==0.12.1 \
+    --hash=sha256:a0d503e138a4c123b27490a4f7beda6a01c6f288df0e4a8b79c7eb0dc7b4cc08 \
+    --hash=sha256:a482d51503a1ab33b1c67a6c3813a26953dbdc71c31dacaef9a838c4e29f5712
+PyYAML==6.0.2 \
+    --hash=sha256:9056c1ecd25795207ad294bcf39f2db3d845767be0ea6e6a34d856f006006083 \
+    --hash=sha256:3b1fdb9dc17f5a7677423d508ab4f243a726dea51fa5e70992e59a7411c89d19 \
+    --hash=sha256:ec031d5d2feb36d1d1a24380e4db6d43695f3748343d99434e6f5f9156aaa2ed \
+    --hash=sha256:3ad2a3decf9aaba3d29c8f537ac4b243e36bef957511b4766cb0057d32b0be85 \
+    --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 \
+    --hash=sha256:70b189594dbe54f75ab3a1acec5f1e3faa7e8cf2f1e08d9b561cb41b845f69d5 \
+    --hash=sha256:d584d9ec91ad65861cc08d42e834324ef890a082e591037abe114850ff7bbc3e

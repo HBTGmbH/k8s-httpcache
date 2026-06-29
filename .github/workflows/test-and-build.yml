@@ -278,7 +278,9 @@ jobs:
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.ci == 'true'
-      run: python3 -m pip install --user yamllint==1.38.0
+      # Hash-pinned (incl. transitive pathspec/PyYAML) for OpenSSF Scorecard's
+      # pinned-dependencies check; bump versions and hashes together in the file.
+      run: python3 -m pip install --user --require-hashes -r .github/yamllint-requirements.txt
     - name: YAML lint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
