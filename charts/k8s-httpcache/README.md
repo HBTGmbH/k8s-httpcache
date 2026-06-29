@@ -276,6 +276,8 @@ template delimiters), not to Helm:
 | template.funcs | string | `""` | Template function library: "sprig" (default) or "sprout" (empty = app default sprig) |
 | template.zone | string | `""` | Topology zone override (empty = auto-detect from NODE_NAME) |
 | terminationGracePeriodSeconds | int | `90` | Termination grace period in seconds |
+| tests.curlImage | string | `"curlimages/curl:8.21.0"` | Image (pinned, not :latest) for the curl-based `helm test` pods (connection / metrics / varnishstat). Pinned so the rendered manifests pass kube-linter's latest-tag check; override to point at a mirror. |
+| tests.kubectlImage | string | `"alpine/kubectl:1.36.2"` | Image (pinned, not :latest) for the kubectl-based RBAC `helm test` pod. Uses a shell-capable image with pinnable tags (registry.k8s.io/kubectl is distroless with no shell; bitnami/kubectl no longer publishes version tags). |
 | timing.kubeApiTimeout | string | `""` | Timeout for one-shot Kubernetes API calls at startup (empty = app default 30s) |
 | timing.startupTimeout | string | `""` | Max time to wait for the initial endpoint snapshot at startup (empty = app default 3m, 0 = no limit) |
 | tlsCerts | list | `[]` | kubernetes.io/tls Secrets to install as frontend TLS certificates (Varnish 9+, repeatable). Each entry: { name, secret } where secret references a Secret with tls.crt/tls.key (e.g. produced by cert-manager). Generates --tls-cert=name:secret. Requires an https listener in listenAddrs (e.g. "https=:8443,https"). Certificates are hot-reloaded on rotation without restarting Varnish; multiple entries are selected by SNI. The 'name' is a logical/SNI label. |

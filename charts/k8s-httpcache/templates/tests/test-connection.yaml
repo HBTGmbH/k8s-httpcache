@@ -12,7 +12,11 @@ spec:
   restartPolicy: Never
   containers:
     - name: curl
-      image: curlimages/curl:latest
+      image: {{ .Values.tests.curlImage }}
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       command: ["curl"]
       args:
         - --silent

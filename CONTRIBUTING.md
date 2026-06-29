@@ -10,10 +10,12 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [golangci-lint](https://golangci-lint.run/welcome/install/)
 - [hadolint](https://github.com/hadolint/hadolint) for Dockerfile linting
 - [Helm](https://helm.sh/docs/intro/install/) for chart linting
+- [kube-linter](https://docs.kubelinter.io/) for linting the rendered chart manifests
 - [hurl](https://hurl.dev/) for E2E test assertions
 - A Kubernetes cluster for E2E testing (the CI uses [kind](https://kind.sigs.k8s.io/))
 - [curl](https://curl.se/) for HTTP assertions in E2E tests
 - [jq](https://jqlang.github.io/jq/) for JSON assertions in E2E tests
+- [OpenSSL](https://www.openssl.org/) for certificate generation in the TLS E2E test
 - [oha](https://github.com/hatoo/oha) (optional, only needed for the zero-downtime rollout test)
 
 ## Local development setup
@@ -68,11 +70,13 @@ shellcheck .github/test/*.sh
 npx --yes markdownlint-cli --config .markdownlint.yaml "**/*.md"
 ```
 
-Dockerfiles are linted with [hadolint](https://github.com/hadolint/hadolint) and the Helm chart with `helm lint`:
+Dockerfiles are linted with [hadolint](https://github.com/hadolint/hadolint) and the Helm chart with `helm lint`. The rendered manifests are additionally checked for security/reliability best practices with [kube-linter](https://docs.kubelinter.io/) (config in [`.kube-linter.yaml`](.kube-linter.yaml)):
 
 ```bash
 hadolint .github/build/Dockerfile .github/test/*/Dockerfile
 helm lint --strict charts/k8s-httpcache
+helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache \
+  | kube-linter lint --config .kube-linter.yaml -
 ```
 
 The CI also runs [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) and [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode) detection:
@@ -137,11 +141,13 @@ The CI runs E2E tests against a kind cluster. To run them locally:
    .github/test/values-update-test.sh       # ConfigMap values live update
    .github/test/values-dir-update-test.sh   # values-dir (mounted volume) live update
    .github/test/vcl-update-test.sh          # VCL template live reload, retry & rollback
+   .github/test/static-files-test.sh        # static file serving via std.fileread
    .github/test/file-watch-disable-test.sh  # file-watch disable verification
    .github/test/drain-sessions-test.sh      # drain timing verification
    .github/test/drain-test.sh               # connection draining
    .github/test/topology-test.sh            # topology-aware routing
    .github/test/rollout-test.sh             # zero-downtime rollout (requires oha)
+   .github/test/tls-test.sh                 # native Varnish 9 TLS: serve, rotate, fallback (Varnish 9 only)
    ```
 
    `metrics-test.sh` automatically sets up `kubectl port-forward` for the

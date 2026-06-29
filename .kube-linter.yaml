@@ -1,0 +1,19 @@
+# kube-linter configuration. Docs: https://docs.kubelinter.io/
+#
+# kube-linter checks the *rendered* Helm output for security/reliability best
+# practices (runAsNonRoot, readOnlyRootFilesystem, dropped capabilities, image
+# tags, probes, ...), complementing kubeconform, which only validates schema.
+#
+# Scope: CI lints the full `helm template` output (see test-and-build.yml),
+# including the `helm test` hook pods, which are hardened to pass these checks.
+#
+# Starts from kube-linter's default check set; only the exclusions below are
+# carved out, each with a rationale.
+checks:
+  exclude:
+    # CPU requests and memory limits are intentionally left to the operator via
+    # `.Values.resources` (empty by default), so they can size the cache for
+    # their own traffic. A redistributable chart must not bake in arbitrary
+    # values, so these two checks would be false positives here.
+    - "unset-cpu-requirements"
+    - "unset-memory-requirements"

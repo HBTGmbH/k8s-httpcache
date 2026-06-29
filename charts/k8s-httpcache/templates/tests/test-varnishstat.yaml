@@ -13,7 +13,11 @@ spec:
   restartPolicy: Never
   containers:
     - name: varnishstat
-      image: curlimages/curl:latest
+      image: {{ .Values.tests.curlImage }}
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       command: ["sh", "-c"]
       args:
         - |
