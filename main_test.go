@@ -2018,7 +2018,7 @@ func TestRunLoop_DrainMarkSickError(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(100 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
@@ -2106,7 +2106,7 @@ func TestRunLoop_DrainTimeoutExpires(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(2 * time.Second)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
@@ -2204,11 +2204,14 @@ func TestRunLoop_DrainSecondSignalDuringPolling(t *testing.T) {
 	}()
 
 	sigCh <- syscall.SIGTERM
-	// Wait past drainDelay + first 1s ticker tick so polling has happened.
-	time.Sleep(1200 * time.Millisecond)
+	// Wait until at least one drain poll has happened (drainDelay + first 1s
+	// ticker tick) before the second signal, so it genuinely interrupts an
+	// in-progress poll loop. Polling instead of a fixed 1.2s sleep keeps this
+	// robust on a loaded runner where the 1s ticker can land late.
+	waitFor(t, func() bool { return h.mgr.getSessionsCalls() > 0 }, "ActiveSessions polled before second signal")
 	// Second signal during polling should abort the drain loop.
 	sigCh <- syscall.SIGINT
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
@@ -2292,7 +2295,7 @@ func TestRunLoop_DrainTimeoutZeroSkipsPolling(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(100 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
@@ -2575,14 +2578,15 @@ func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 
-	// debounce fires at ~150ms; check at 500ms with generous margin.
-	time.Sleep(500 * time.Millisecond)
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected 1 reload, got %d", h.mgr.getReloadCount())
+	// debounce fires at ~150ms; poll for it so a loaded runner that lands the
+	// timer late doesn't flake. Only one fire is possible (single event).
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after single event")
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected 1 reload, got %d", got)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -2613,15 +2617,15 @@ func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 	}
 
-	// Last event at ~120ms + 200ms debounce = ~320ms.
-	// Check at 600ms - well after expected fire.
-	time.Sleep(500 * time.Millisecond)
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected 1 coalesced reload after burst, got %d", h.mgr.getReloadCount())
+	// Last event at ~120ms + 200ms debounce = ~320ms. Poll for the single
+	// coalesced reload instead of sleeping a fixed margin.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "coalesced reload after burst")
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected 1 coalesced reload after burst, got %d", got)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -2646,24 +2650,23 @@ func TestRunLoop_DebounceMaxSlowEvents(t *testing.T) {
 		close(done)
 	}()
 
-	// Event #1 at t=0. Timer fires at ~150ms.
+	// Event #1 at t=0. Timer fires at ~150ms; poll for it.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(400 * time.Millisecond) // well past 150ms
-
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected 1 reload after first event, got %d", h.mgr.getReloadCount())
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after first event")
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected 1 reload after first event, got %d", got)
 	}
 
-	// Event #2 at t=400ms. Timer fires at ~550ms.
+	// Event #2 arrives after #1 already fired, so it triggers its own reload
+	// (~150ms later) rather than coalescing.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.2", Port: 80, Name: "pod-2"}}
-	time.Sleep(400 * time.Millisecond)
-
-	if h.mgr.getReloadCount() != 2 {
-		t.Fatalf("expected 2 reloads after second event, got %d", h.mgr.getReloadCount())
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after second event")
+	if got := h.mgr.getReloadCount(); got != 2 {
+		t.Fatalf("expected 2 reloads after second event, got %d", got)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -2701,16 +2704,19 @@ func testDebounceMaxForced(t *testing.T, frontendDebounce, frontendDebounceMax, 
 		}
 	}()
 
-	time.Sleep(1200 * time.Millisecond)
+	// debounceMax forces reloads at its cap (~250ms) while events keep arriving
+	// every 20ms. Poll for the target instead of a fixed window so a loaded
+	// runner that paces the forced reloads slowly doesn't flake; the event
+	// generator keeps running until the target is reached.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 3 }, "at least 3 forced reloads")
 	close(stop)
 
-	reloads := h.mgr.getReloadCount()
-	if reloads < 3 {
+	if reloads := h.mgr.getReloadCount(); reloads < 3 {
 		t.Fatalf("expected at least 3 forced reloads, got %d", reloads)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -2751,12 +2757,10 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 		h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 		time.Sleep(20 * time.Millisecond)
 	}
-	time.Sleep(300 * time.Millisecond) // let pending timer fire
-
+	// debounceMax (~250ms) forces at least one reload during the 600ms burst;
+	// poll for it rather than relying on a fixed settle window.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after first burst")
 	firstReloads := h.mgr.getReloadCount()
-	if firstReloads < 1 {
-		t.Fatal("expected at least 1 reload after first burst")
-	}
 
 	// Quiet gap - let the loop fully quiesce. No extra reload fires from
 	// the first burst's trailing timer during this gap (it already fired
@@ -2767,15 +2771,16 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 		h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.2", Port: 80, Name: "pod-2"}}
 		time.Sleep(20 * time.Millisecond)
 	}
-	time.Sleep(300 * time.Millisecond)
+	// The second burst opens a fresh debounceMax window and forces more
+	// reloads; poll until the count climbs past the first burst's total.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() > firstReloads }, "additional reloads after second burst")
 
-	secondReloads := h.mgr.getReloadCount()
-	if secondReloads <= firstReloads {
+	if secondReloads := h.mgr.getReloadCount(); secondReloads <= firstReloads {
 		t.Fatalf("expected additional reloads after second burst, got %d total (was %d after first)", secondReloads, firstReloads)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -2823,15 +2828,17 @@ func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 		t.Fatalf("expected 0 reloads during continuous events (debounceMax disabled), got %d", h.mgr.getReloadCount())
 	}
 
-	// After events stop, the last 800ms timer fires.
-	// Last event at ~600ms + 800ms debounce = ~1400ms. Wait 1s from now (t≈1600ms).
-	time.Sleep(1000 * time.Millisecond)
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected 1 reload after events stop, got %d", h.mgr.getReloadCount())
+	// After events stop, the last 800ms timer fires (last event ~600ms +
+	// 800ms = ~1400ms). Poll for it instead of a fixed margin so a loaded
+	// runner that lands the timer late doesn't flake; only one fire is
+	// possible (debounceMax disabled, no further events).
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after events stop")
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected 1 reload after events stop, got %d", got)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -2899,15 +2906,13 @@ func TestRunLoop_DebounceMaxAllEventTypes(t *testing.T) {
 				}
 			}()
 
-			time.Sleep(600 * time.Millisecond)
+			// debounceMax (250ms) forces a reload while events keep arriving;
+			// poll for it, keeping the generator running until it lands.
+			waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload from "+tc.name+" events with debounceMax")
 			close(stop)
 
-			if h.mgr.getReloadCount() < 1 {
-				t.Fatalf("expected at least 1 reload from %s events with debounceMax", tc.name)
-			}
-
 			h.sigCh <- syscall.SIGTERM
-			time.Sleep(50 * time.Millisecond)
+			waitForForwardedSignal(t, h.mgr)
 			close(h.mgr.done)
 			<-done
 		})
@@ -2957,15 +2962,13 @@ func TestRunLoop_DebounceMaxMixedEvents(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(600 * time.Millisecond)
+	// debounceMax (250ms) forces a reload while mixed events keep arriving;
+	// poll for it, keeping the generator running until it lands.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload from mixed events with debounceMax")
 	close(stop)
 
-	if h.mgr.getReloadCount() < 1 {
-		t.Fatal("expected at least 1 reload from mixed events with debounceMax")
-	}
-
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -2988,34 +2991,39 @@ func TestRunLoop_FrontendDebounceIndependentFromBackend(t *testing.T) {
 		close(done)
 	}()
 
-	// Send frontend event → should reload at ~50ms.
+	// Send frontend event → should reload at ~50ms. Poll for it rather than
+	// sleeping a fixed margin: on a loaded CI runner the timer fire and reload
+	// can land later than the nominal deadline.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload after frontend event")
 
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected 1 reload after frontend event, got %d", h.mgr.getReloadCount())
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected 1 reload after frontend event, got %d", got)
 	}
 
-	// Send backend event → should NOT reload at ~200ms (only at ~500ms).
+	// Send backend event → should NOT reload at the frontend cadence (only at
+	// ~500ms). Sleeping well past the 50ms frontend debounce is timing-safe
+	// here: a Go timer never fires before its duration, so a count of 1 proves
+	// the backend group debounces independently regardless of runner load.
 	h.backendCh <- backendChange{
 		name:      "api",
 		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 	time.Sleep(200 * time.Millisecond)
 
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected still 1 reload (backend timer not yet fired), got %d", h.mgr.getReloadCount())
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected still 1 reload (backend timer not yet fired), got %d", got)
 	}
 
-	// Wait for backend timer to fire.
-	time.Sleep(400 * time.Millisecond)
+	// Wait for the backend timer (~500ms) to fire.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "second reload after backend timer fires")
 
-	if h.mgr.getReloadCount() != 2 {
-		t.Fatalf("expected 2 reloads after backend timer fires, got %d", h.mgr.getReloadCount())
+	if got := h.mgr.getReloadCount(); got != 2 {
+		t.Fatalf("expected 2 reloads after backend timer fires, got %d", got)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3043,16 +3051,20 @@ func TestRunLoop_CrossGroupClearOnReload(t *testing.T) {
 		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
 
-	// Frontend timer fires first (50ms), which clears the backend timer too.
-	// Wait long enough for both timers to have fired if they were independent.
-	time.Sleep(600 * time.Millisecond)
+	// Frontend timer fires first (~50ms) and clears the backend timer too.
+	// Poll for that reload (lower bound), then wait past the backend's
+	// would-be 300ms fire and confirm it never fired on its own. The trailing
+	// wait is a negative check — a Go timer cannot fire early, so it is
+	// load-safe.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "frontend reload")
+	time.Sleep(400 * time.Millisecond)
 
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected exactly 1 reload (cross-group clear), got %d", h.mgr.getReloadCount())
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected exactly 1 reload (cross-group clear), got %d", got)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3107,8 +3119,9 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 		t.Fatalf("expected 0 reloads during frontend-only events (debounceMax disabled), got %d", feReloads)
 	}
 
-	// Wait for the final frontend timer to fire.
-	time.Sleep(1000 * time.Millisecond)
+	// Wait for the final frontend timer (800ms) to fire. Poll instead of a
+	// fixed margin so a late timer on a loaded runner doesn't flake.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after frontend events stop")
 	afterFE := h.mgr.getReloadCount()
 	if afterFE != 1 {
 		t.Fatalf("expected 1 reload after frontend events stop, got %d", afterFE)
@@ -3131,16 +3144,17 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(700 * time.Millisecond)
+	// backendDebounceMax=300ms forces a reload even though backend events keep
+	// arriving every 20ms; poll for it rather than relying on a fixed window.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() > afterFE }, "forced backend reload with debounceMax")
 	close(stopBE)
 
-	beReloads := h.mgr.getReloadCount()
-	if beReloads <= afterFE {
+	if beReloads := h.mgr.getReloadCount(); beReloads <= afterFE {
 		t.Fatalf("expected forced reloads from backend events with debounceMax=300ms, got %d total (was %d after frontend)", beReloads, afterFE)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3161,34 +3175,39 @@ func TestRunLoop_BackendDebounceIndependentFromFrontend(t *testing.T) {
 		close(done)
 	}()
 
-	// Send backend event → should reload at ~50ms.
+	// Send backend event → should reload at ~50ms. Poll for it rather than
+	// sleeping a fixed margin: on a loaded CI runner the timer fire and reload
+	// can land later than the nominal deadline.
 	h.backendCh <- backendChange{
 		name:      "api",
 		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
 	}
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "first reload after backend event")
 
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected 1 reload after backend event, got %d", h.mgr.getReloadCount())
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected 1 reload after backend event, got %d", got)
 	}
 
-	// Send frontend event → should NOT reload at ~200ms (only at ~500ms).
+	// Send frontend event → should NOT reload at the backend cadence (only at
+	// ~500ms). Sleeping well past the 50ms backend debounce is timing-safe
+	// here: a Go timer never fires before its duration, so a count of 1 proves
+	// the frontend group debounces independently regardless of runner load.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	time.Sleep(200 * time.Millisecond)
 
-	if h.mgr.getReloadCount() != 1 {
-		t.Fatalf("expected still 1 reload (frontend timer not yet fired), got %d", h.mgr.getReloadCount())
+	if got := h.mgr.getReloadCount(); got != 1 {
+		t.Fatalf("expected still 1 reload (frontend timer not yet fired), got %d", got)
 	}
 
-	// Wait for frontend timer to fire.
-	time.Sleep(400 * time.Millisecond)
+	// Wait for the frontend timer (~500ms) to fire.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "second reload after frontend timer fires")
 
-	if h.mgr.getReloadCount() != 2 {
-		t.Fatalf("expected 2 reloads after frontend timer fires, got %d", h.mgr.getReloadCount())
+	if got := h.mgr.getReloadCount(); got != 2 {
+		t.Fatalf("expected 2 reloads after frontend timer fires, got %d", got)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3236,8 +3255,9 @@ func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 		t.Fatalf("expected 0 reloads during backend-only events (debounceMax disabled), got %d", beReloads)
 	}
 
-	// Wait for the final backend timer to fire.
-	time.Sleep(1000 * time.Millisecond)
+	// Wait for the final backend timer (800ms) to fire. Poll instead of a
+	// fixed margin so a late timer on a loaded runner doesn't flake.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after backend events stop")
 	afterBE := h.mgr.getReloadCount()
 	if afterBE != 1 {
 		t.Fatalf("expected 1 reload after backend events stop, got %d", afterBE)
@@ -3257,16 +3277,17 @@ func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(700 * time.Millisecond)
+	// frontendDebounceMax=300ms forces a reload even though frontend events keep
+	// arriving every 20ms; poll for it rather than relying on a fixed window.
+	waitFor(t, func() bool { return h.mgr.getReloadCount() > afterBE }, "forced frontend reload with debounceMax")
 	close(stopFE)
 
-	feReloads := h.mgr.getReloadCount()
-	if feReloads <= afterBE {
+	if feReloads := h.mgr.getReloadCount(); feReloads <= afterBE {
 		t.Fatalf("expected forced reloads from frontend events with debounceMax=300ms, got %d total (was %d after backend)", feReloads, afterBE)
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3398,15 +3419,22 @@ func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 		close(done)
 	}()
 
-	// Send 3 frontend events and 2 backend events.
+	// Send 3 frontend events and 2 backend events. Poll until each group's
+	// debounce has fired (50ms) rather than sleeping a fixed margin. Events are
+	// counted on receipt — before the fire — so once fires>=1 the events-delta
+	// checks below are already satisfied.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.2", Port: 80, Name: "pod-2"}}
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.3", Port: 80, Name: "pod-3"}}
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool {
+		return getCounterValue(t, "frontend", h.metrics.DebounceFiresTotal)-feFiresBefore >= 1
+	}, "frontend debounce fired")
 
 	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}}}
 	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{Host: "10.0.1.2", Port: 8080, Name: "api-1"}}}
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool {
+		return getCounterValue(t, "backend", h.metrics.DebounceFiresTotal)-beFiresBefore >= 1
+	}, "backend debounce fired")
 
 	feEventsAfter := getCounterValue(t, "frontend", h.metrics.DebounceEventsTotal)
 	beEventsAfter := getCounterValue(t, "backend", h.metrics.DebounceEventsTotal)
@@ -3427,7 +3455,7 @@ func TestRunLoop_DebounceMetrics_EventsAndFires(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3466,9 +3494,12 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(600 * time.Millisecond)
+	// debounceMax=250ms forces (and counts) an enforcement while events keep
+	// arriving; poll for it, keeping the generator running until it lands.
+	waitFor(t, func() bool {
+		return getCounterValue(t, "frontend", h.metrics.DebounceMaxEnforcementsTotal)-enforceBefore >= 1
+	}, "frontend debounce-max enforcement")
 	close(stop)
-	time.Sleep(300 * time.Millisecond) // let final timer fire
 
 	enforceAfter := getCounterValue(t, "frontend", h.metrics.DebounceMaxEnforcementsTotal)
 	if enforceDelta := enforceAfter - enforceBefore; enforceDelta < 1 {
@@ -3476,7 +3507,7 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3499,7 +3530,10 @@ func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 	}()
 
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
-	time.Sleep(200 * time.Millisecond)
+	// Poll until the debounce fired and recorded a latency sample (~50ms).
+	waitFor(t, func() bool {
+		return getHistogramSampleCount(t, "frontend", h.metrics.DebounceLatencySeconds)-samplesBefore >= 1
+	}, "frontend debounce latency sample")
 
 	samplesAfter := getHistogramSampleCount(t, "frontend", h.metrics.DebounceLatencySeconds)
 	if samplesDelta := samplesAfter - samplesBefore; samplesDelta < 1 {
@@ -3507,7 +3541,7 @@ func TestRunLoop_DebounceMetrics_Latency(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3544,9 +3578,12 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(600 * time.Millisecond)
+	// debounceMax=250ms forces (and counts) an enforcement while events keep
+	// arriving; poll for it, keeping the generator running until it lands.
+	waitFor(t, func() bool {
+		return getCounterValue(t, "backend", h.metrics.DebounceMaxEnforcementsTotal)-enforceBefore >= 1
+	}, "backend debounce-max enforcement")
 	close(stop)
-	time.Sleep(300 * time.Millisecond) // let final timer fire
 
 	enforceAfter := getCounterValue(t, "backend", h.metrics.DebounceMaxEnforcementsTotal)
 	if enforceDelta := enforceAfter - enforceBefore; enforceDelta < 1 {
@@ -3554,7 +3591,7 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -3577,7 +3614,10 @@ func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
 	}()
 
 	h.backendCh <- backendChange{name: "api", endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}}}
-	time.Sleep(200 * time.Millisecond)
+	// Poll until the debounce fired and recorded a latency sample (~50ms).
+	waitFor(t, func() bool {
+		return getHistogramSampleCount(t, "backend", h.metrics.DebounceLatencySeconds)-samplesBefore >= 1
+	}, "backend debounce latency sample")
 
 	samplesAfter := getHistogramSampleCount(t, "backend", h.metrics.DebounceLatencySeconds)
 	if samplesDelta := samplesAfter - samplesBefore; samplesDelta < 1 {
@@ -3585,7 +3625,7 @@ func TestRunLoop_DebounceMetrics_BackendLatency(t *testing.T) {
 	}
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }
@@ -4452,7 +4492,7 @@ func TestRunLoop_EventDrainTimeout(t *testing.T) {
 	}()
 
 	h.sigCh <- syscall.SIGTERM
-	time.Sleep(2 * time.Second)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 
@@ -4516,7 +4556,7 @@ func TestRunLoop_DrainSecondSignalDuringDelay(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	// Second signal during drainDelay - should interrupt and skip the wait.
 	sigCh <- syscall.SIGINT
-	time.Sleep(50 * time.Millisecond)
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 

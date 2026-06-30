@@ -4856,8 +4856,17 @@ func TestStartNCSA_RestartLoopRacesSignalAndStop(t *testing.T) {
 		})
 	}
 
-	// Let the restart loop spin and overlap with the signalers.
-	time.Sleep(50 * time.Millisecond)
+	// Let the restart loop spin (overlapping the signalers) until it has
+	// demonstrably restarted at least twice. Poll instead of a fixed sleep so a
+	// loaded runner that schedules the loop slowly doesn't flake.
+	deadline := time.After(2 * time.Second)
+	for startCount.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("restart loop did not spin: startCount=%d, want >= 2", startCount.Load())
+		case <-time.After(time.Millisecond):
+		}
+	}
 	close(stop)
 	wg.Wait()
 
@@ -4868,9 +4877,5 @@ func TestStartNCSA_RestartLoopRacesSignalAndStop(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("StopNCSA did not return; restart loop may be wedged")
-	}
-
-	if n := startCount.Load(); n < 2 {
-		t.Errorf("restart loop did not spin: startCount=%d, want >= 2", n)
 	}
 }
