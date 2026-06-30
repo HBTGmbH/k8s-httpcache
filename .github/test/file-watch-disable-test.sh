@@ -61,7 +61,7 @@ echo "--- Saving original VCL template ---"
 kubectl get configmap k8s-httpcache-vcl -o jsonpath='{.data.vcl\.tmpl}' >/tmp/vcl-original-fwd.tmpl
 
 # =============================================================================
-# Part 1: Negative — file-based changes NOT detected
+# Part 1: Negative - file-based changes NOT detected
 # =============================================================================
 
 echo ""
@@ -87,7 +87,7 @@ echo "--- Patching values-dir ConfigMap ---"
 kubectl patch configmap k8s-httpcache-values-dir-test --type merge \
   -p '{"data":{"greeting.yaml":"file-watch-disabled"}}'
 
-# Wait 30s (3x normal detection time) — changes should NOT be picked up.
+# Wait 30s (3x normal detection time) - changes should NOT be picked up.
 echo "--- Waiting 30s (negative assertion window) ---"
 for i in $(seq 1 30); do
   if [ $((i % 10)) -eq 0 ]; then
@@ -121,7 +121,7 @@ kubectl patch configmap k8s-httpcache-values-dir-test --type merge \
   -p '{"data":{"greeting.yaml":"hello-from-dir"}}'
 
 # =============================================================================
-# Part 2: Positive — K8s API ConfigMap values STILL work
+# Part 2: Positive - K8s API ConfigMap values STILL work
 # =============================================================================
 
 echo ""

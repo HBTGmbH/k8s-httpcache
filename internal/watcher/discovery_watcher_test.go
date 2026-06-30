@@ -82,7 +82,7 @@ func readDiscoveryRemoval(t *testing.T, dw *BackendDiscoveryWatcher, name string
 			if u.Endpoints == nil {
 				return // removal observed
 			}
-			// Redundant endpoints refresh before removal — keep waiting.
+			// Redundant endpoints refresh before removal - keep waiting.
 		case <-deadline:
 			t.Fatalf("timeout waiting for removal of %q", name)
 		}
@@ -833,7 +833,7 @@ func TestDiscoveryWatcher_DuplicateNameAcrossNamespaces(t *testing.T) {
 
 	// Both services have the same Name "web", and InitialState is keyed by
 	// service name. The first discovered Service wins; the same-named
-	// Service in the other namespace is skipped — only one entry.
+	// Service in the other namespace is skipped - only one entry.
 	state := dw.InitialState()
 	eps, ok := state["web"]
 	if !ok {
@@ -854,7 +854,7 @@ func TestDiscoveryWatcher_DuplicateNameAcrossNamespaces(t *testing.T) {
 // over that backend. Because there is no informer resync (period 0), the
 // deletion is the only event that fires; the survivor produces none. The add
 // pass runs before the remove pass, so within that single reconcile the winner
-// is still present and suppresses the survivor — the reconcile must therefore
+// is still present and suppresses the survivor - the reconcile must therefore
 // re-evaluate adds after the removal frees the name, or the backend is orphaned
 // forever.
 func TestDiscoveryWatcher_SurvivingSameNameAdoptedAfterWinnerDeleted(t *testing.T) {
@@ -901,7 +901,7 @@ func TestDiscoveryWatcher_SurvivingSameNameAdoptedAfterWinnerDeleted(t *testing.
 		select {
 		case u := <-dw.Changes():
 			if u.Name == "web" && len(u.Endpoints) == 1 && u.Endpoints[0].Host == survivorIP {
-				return // survivor adopted — correct behavior
+				return // survivor adopted - correct behavior
 			}
 		case <-deadline:
 			t.Fatalf("surviving Service (IP %s) was never adopted after the winner in %s was deleted; "+
@@ -1065,7 +1065,7 @@ removed:
 		select {
 		case u := <-dw.Changes():
 			if u.Name == "web" && len(u.Endpoints) > 0 {
-				return // success — service was re-discovered
+				return // success - service was re-discovered
 			}
 		case <-deadline:
 			t.Fatal("timeout waiting for re-added backend")
@@ -1395,7 +1395,7 @@ func TestDiscoveryWatcher_RapidLabelFlap(t *testing.T) {
 			timer.Stop()
 
 			if lastUpdate.Endpoints == nil {
-				t.Fatal("final state after rapid flap is removal — expected endpoints")
+				t.Fatal("final state after rapid flap is removal - expected endpoints")
 			}
 
 			return // success
@@ -1407,7 +1407,7 @@ func TestDiscoveryWatcher_RapidLabelFlap(t *testing.T) {
 
 func TestDiscoveryWatcher_ServiceAddedDuringInitPhase(t *testing.T) {
 	t.Parallel()
-	// Two services exist at startup — both should appear in InitialState.
+	// Two services exist at startup - both should appear in InitialState.
 	svc1 := makeDiscoverableService("default", "web", map[string]string{"tier": "frontend"})
 	slice1 := makeDiscoverableEndpointSlice("default", "web", "web-abc", "10.0.0.1", 8080)
 	svc2 := makeDiscoverableService("default", "api", map[string]string{"tier": "frontend"})
@@ -1467,7 +1467,7 @@ func TestDiscoveryWatcher_InitialCollectionSkipsRemovedBackend(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	// Backend "a": healthy — its first endpoint set is already buffered, and
+	// Backend "a": healthy - its first endpoint set is already buffered, and
 	// its context is live.
 	bwA := NewBackendWatcher(clientset, "default", "a", "")
 	bwA.ch <- BackendState{Endpoints: []Endpoint{{Host: "10.0.0.1", Port: 8080, Name: "a-pod-0"}}}
@@ -1475,7 +1475,7 @@ func TestDiscoveryWatcher_InitialCollectionSkipsRemovedBackend(t *testing.T) {
 	defer cancelA()
 	mbA := &managedBackend{watcher: bwA, ctx: ctxA, cancel: cancelA, namespace: "default", name: "a"}
 
-	// Backend "b": its Service was removed mid-startup — the child watcher is
+	// Backend "b": its Service was removed mid-startup - the child watcher is
 	// cancelled and will never deliver on Changes().
 	bwB := NewBackendWatcher(clientset, "default", "b", "")
 	ctxB, cancelB := context.WithCancel(ctx)
@@ -1563,7 +1563,7 @@ func TestDiscoveryWatcher_SyncServicesListerError(t *testing.T) {
 			listerErr := errors.New("simulated API server error")
 			dw.syncServices(t.Context(), &stubServiceLister{err: listerErr})
 
-			// Backend should still be present — lister error causes early return
+			// Backend should still be present - lister error causes early return
 			// without reconciling (no spurious removals).
 			dw.mu.Lock()
 			_, exists := dw.backends["default/web"]
@@ -1604,7 +1604,7 @@ func TestDiscoveryWatcher_RemovalDeliveredWhenChannelFull(t *testing.T) {
 
 	// Call syncServices with an empty lister (no services match). A removed
 	// Service produces no further events, so a dropped removal would leave
-	// the deleted backend in the VCL forever — it must be delivered even
+	// the deleted backend in the VCL forever - it must be delivered even
 	// when the channel is momentarily full.
 	done := make(chan struct{})
 	go func() {
@@ -1779,7 +1779,7 @@ func TestDiscoveryWatcher_NameRegistrySkipsCrossWatcherCollision(t *testing.T) {
 // watchers) and drops any add whose gen is <= the tombstone. So when one watcher
 // removes a name and another watcher (sharing the registry) later re-claims it,
 // the re-claim MUST get a gen strictly greater than the gen the first watcher
-// removed it with — otherwise the consumer silently drops the new owner's
+// removed it with - otherwise the consumer silently drops the new owner's
 // backend for the entire lifetime of its ownership.
 //
 // Per-watcher generation counters violate this: each watcher's sequence starts
@@ -1870,7 +1870,7 @@ func TestDiscoveryWatcher_NameRegistrySameServiceTwoWatchers(t *testing.T) {
 		t.Fatal("watcher A should manage 'ns1/web'")
 	}
 	if backendExists(dwB, "ns1/web") {
-		t.Fatal("watcher B must skip 'ns1/web' — same name already claimed by A")
+		t.Fatal("watcher B must skip 'ns1/web' - same name already claimed by A")
 	}
 }
 
@@ -1893,7 +1893,7 @@ func registryClaimed(r *NameRegistry, name string) bool {
 
 // TestDiscoveryWatcher_ShutdownReleasesClaimsBeforeForwarding pins the early-
 // return cleanup path. Run registers shutdown() with defer so it runs on EVERY
-// return — including the early return from collectInitialState when ctx is
+// return - including the early return from collectInitialState when ctx is
 // cancelled mid-startup, before the forwarding goroutines are started and
 // before the normal <-ctx.Done() exit. In that state a backend is claimed but
 // its fwdCancel is still nil. shutdown() must release the registry claim (and
@@ -1917,7 +1917,7 @@ func TestDiscoveryWatcher_ShutdownReleasesClaimsBeforeForwarding(t *testing.T) {
 	defer cancel()
 
 	// syncServices claims "web" and creates the backend without starting its
-	// forwarding goroutine (initialized is still false) — exactly the state Run
+	// forwarding goroutine (initialized is still false) - exactly the state Run
 	// is in when collectInitialState returns early.
 	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
 	dwA.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{svc}})
@@ -2181,7 +2181,7 @@ func TestDiscoveryWatcher_DuplicateNameInOtherNamespaceSkipped(t *testing.T) {
 
 	// A same-named Service appears in another namespace. Updates are keyed
 	// by bare Service name, so adopting it would make two watchers fight
-	// over the "web" backend group downstream — it must be skipped.
+	// over the "web" backend group downstream - it must be skipped.
 	svc2 := makeDiscoverableService("ns2", "web", map[string]string{"app": "web"})
 	slice2 := makeDiscoverableEndpointSlice("ns2", "web", "web-def", "10.0.0.99", 8080)
 	_, err := clientset.CoreV1().Services("ns2").Create(ctx, svc2, metav1.CreateOptions{})
@@ -2231,7 +2231,7 @@ func TestDiscoveryWatcher_DuplicateNameInOtherNamespaceSkipped(t *testing.T) {
 // is removed, the survivor is promoted in that same reconcile: the add pass is
 // re-run once the removal frees the bare name, so the backend is never orphaned
 // (there is no informer resync to drive a later reconcile). The watcher still
-// never manages two same-named Services at once — the winner is removed before
+// never manages two same-named Services at once - the winner is removed before
 // the survivor is adopted.
 func TestDiscoveryWatcher_SurvivorPromotedInWinnerRemovalReconcile(t *testing.T) {
 	t.Parallel()
@@ -2320,6 +2320,40 @@ func TestDiscoveryWatcher_ContextCancelDuringInitialCollection(t *testing.T) {
 	}
 }
 
+// TestDiscoveryWatcher_InitialCollectionParentCancelWins pins the cancellation
+// semantics of collectInitialState directly, without depending on goroutine
+// timing. mb.ctx is a child of the run ctx, so cancelling the parent makes both
+// the ctx.Done() and mb.ctx.Done() cases ready at once; Go then picks a ready
+// case at random. A parent cancellation must always be reported as
+// [context.Canceled] (shutdown), never silently swallowed by the per-backend
+// "Service removed mid-sync" skip. The loop defeats the random pick: a single
+// pass could choose the right case by chance.
+func TestDiscoveryWatcher_InitialCollectionParentCancelWins(t *testing.T) {
+	t.Parallel()
+
+	clientset := fake.NewClientset()
+	sel, _ := labels.Parse("app=web")
+	dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
+	// Never Run, so its Changes() channel never delivers - collectInitialState
+	// can only exit via one of the two Done() cases.
+	bw := NewBackendWatcher(clientset, "default", "web", "")
+
+	for i := range 100 {
+		parentCtx, parentCancel := context.WithCancel(t.Context())
+		childCtx, childCancel := context.WithCancel(parentCtx)
+		parentCancel() // also cancels childCtx (mb.ctx): both Done() now ready
+
+		pending := map[string]*managedBackend{
+			"default/web": {watcher: bw, ctx: childCtx, cancel: childCancel, namespace: "default", name: "web"},
+		}
+		err := dw.collectInitialState(parentCtx, pending)
+		childCancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("iteration %d: expected context.Canceled, got %v", i, err)
+		}
+	}
+}
+
 func TestDiscoveryWatcher_ExcludeAnnotations(t *testing.T) {
 	t.Parallel()
 
@@ -2360,7 +2394,7 @@ func TestDiscoveryWatcher_ExcludeAnnotations(t *testing.T) {
 
 	waitForWatch()
 
-	// Update annotations — the forwarded update should also be filtered.
+	// Update annotations - the forwarded update should also be filtered.
 	svc2, err := clientset.CoreV1().Services("default").Get(ctx, "web", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("getting Service: %v", err)
@@ -2435,7 +2469,7 @@ func TestDiscoveryWatcher_ExcludeAnnotationsPrefixMatch(t *testing.T) {
 
 	waitForWatch()
 
-	// Update annotations — forwarded update should also be prefix-filtered.
+	// Update annotations - forwarded update should also be prefix-filtered.
 	svc2, err := clientset.CoreV1().Services("default").Get(ctx, "web", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("getting Service: %v", err)
@@ -2471,8 +2505,8 @@ func TestDiscoveryWatcher_ExcludeAnnotationsPrefixMatch(t *testing.T) {
 }
 
 // TestDiscoveryWatcher_ChurnRace stresses the discovery watcher's goroutine
-// lifecycle — child watcher creation, forwarding-goroutine cancellation, and
-// registry claim/release — under rapid create/delete churn of the same Service
+// lifecycle - child watcher creation, forwarding-goroutine cancellation, and
+// registry claim/release - under rapid create/delete churn of the same Service
 // while a consumer concurrently drains updates. Run under -race it asserts that
 // the producer side of the removal/re-add path has no data races, panics, or
 // goroutine deadlocks, and that gens stay strictly monotonic across
@@ -2604,7 +2638,7 @@ func TestDiscoveryWatcher_CrossWatcherHandoffChurnRace(t *testing.T) {
 	waitForWatch()
 
 	// Each watcher's updateCh is cap-16; removal sends block if nobody drains it.
-	// Drain both for the whole test (contents are not asserted — only that
+	// Drain both for the whole test (contents are not asserted - only that
 	// draining stays race-free under churn).
 	startDrain := func(dw *BackendDiscoveryWatcher) <-chan struct{} {
 		stopped := make(chan struct{})
@@ -2645,7 +2679,7 @@ func TestDiscoveryWatcher_CrossWatcherHandoffChurnRace(t *testing.T) {
 		_ = clientset.DiscoveryV1().EndpointSlices("ns2").Delete(ctx, "web-ns2", metav1.DeleteOptions{})
 	}
 
-	// Settle phase 1 — delete "web" everywhere and require the registry to release
+	// Settle phase 1 - delete "web" everywhere and require the registry to release
 	// the bare name. A leaked claim (release-by-wrong-owner, or a missed release)
 	// would wedge "web" forever and time out here.
 	_ = clientset.CoreV1().Services("ns1").Delete(ctx, "web", metav1.DeleteOptions{})
@@ -2659,7 +2693,7 @@ func TestDiscoveryWatcher_CrossWatcherHandoffChurnRace(t *testing.T) {
 				!backendExists(dw2, "ns2/web")
 		})
 
-	// Settle phase 2 — recreate "web" only in ns1. With the registry now free,
+	// Settle phase 2 - recreate "web" only in ns1. With the registry now free,
 	// exactly one watcher (dw1) must adopt it: no drop, no double-ownership.
 	_, _ = clientset.CoreV1().Services("ns1").Create(ctx, svc1, metav1.CreateOptions{})
 	_, _ = clientset.DiscoveryV1().EndpointSlices("ns1").Create(ctx, slice1, metav1.CreateOptions{})
@@ -2682,7 +2716,7 @@ func TestDiscoveryWatcher_CrossWatcherHandoffChurnRace(t *testing.T) {
 }
 
 // TestDiscoveryWatcher_InitPhaseChurnRace stresses the initial-sync window in
-// Run — the gap between cloning dw.backends for collectInitialState and setting
+// Run - the gap between cloning dw.backends for collectInitialState and setting
 // initialized=true / starting the forwarding goroutines. It drives Service
 // create/delete churn concurrently with Run startup, deliberately WITHOUT
 // waiting for Initial() first, so informer-driven syncServices calls race that
@@ -2734,7 +2768,7 @@ func TestDiscoveryWatcher_InitPhaseChurnRace(t *testing.T) {
 	runDone := make(chan struct{})
 	go func() { defer close(runDone); _ = dw.Run(ctx) }()
 
-	// Churn create/delete concurrently with Run startup — deliberately without
+	// Churn create/delete concurrently with Run startup - deliberately without
 	// waiting for Initial(), so the events overlap the initial-sync window.
 	// Errors are ignored: rapid recreate of the same object can conflict on the
 	// fake clientset, which is fine for a stress exercise.
@@ -2750,7 +2784,7 @@ func TestDiscoveryWatcher_InitPhaseChurnRace(t *testing.T) {
 	}()
 	<-churnDone
 
-	// Initial() must still close despite the startup churn — a window deadlock
+	// Initial() must still close despite the startup churn - a window deadlock
 	// (e.g. collectInitialState blocking on a removed backend) would hang here.
 	waitForInitial(t, dw)
 	// Let the informer register its watch so the settle events below are not

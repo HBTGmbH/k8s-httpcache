@@ -1,6 +1,6 @@
 {{- if .Values.verticalPodAutoscaler.enabled -}}
 {{- /* Requires the VerticalPodAutoscaler CRD. Do not combine VPA with the HPA on
-       the same (CPU/memory) resource — they will fight each other. */}}
+       the same (CPU/memory) resource - they will fight each other. */}}
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:

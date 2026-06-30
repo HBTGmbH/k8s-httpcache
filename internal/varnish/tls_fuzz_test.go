@@ -9,8 +9,8 @@ import (
 
 // FuzzSanitizeCertFileNameNoTraversal asserts the security property the
 // sanitizer exists for: a logical --tls-cert name, after sanitization, must
-// always yield a file that lands directly inside the cert directory — never a
-// path separator, never a parent-directory escape — regardless of input.
+// always yield a file that lands directly inside the cert directory - never a
+// path separator, never a parent-directory escape - regardless of input.
 func FuzzSanitizeCertFileNameNoTraversal(f *testing.F) {
 	seeds := []string{
 		"web", "../escape", "../../etc/passwd", "..", ".", "", "....",

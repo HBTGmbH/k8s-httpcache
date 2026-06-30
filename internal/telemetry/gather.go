@@ -9,7 +9,7 @@ import (
 
 // ZeroCounterFilter wraps a prometheus.Gatherer and drops counter metrics
 // whose value is 0. A counter at 0 means "this event never occurred" and
-// carries no information — omitting it reduces scrape size without loss.
+// carries no information - omitting it reduces scrape size without loss.
 // Gauges, histograms, summaries, and untyped metrics are always passed through.
 type ZeroCounterFilter struct {
 	Inner prometheus.Gatherer

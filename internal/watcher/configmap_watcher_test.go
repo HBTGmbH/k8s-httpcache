@@ -31,7 +31,7 @@ func assertNoConfigMapChanges(t *testing.T, w *ConfigMapWatcher, timeout time.Du
 	case data := <-w.Changes():
 		t.Fatalf("unexpected ConfigMap change received: %v", data)
 	case <-time.After(timeout):
-		// OK — no change
+		// OK - no change
 	}
 }
 
@@ -120,7 +120,7 @@ func TestConfigMapWatcherDeduplicatesUnchanged(t *testing.T) {
 	waitForWatch()
 	readConfigMapChanges(t, w)
 
-	// Update an unrelated field (annotation) — data stays the same.
+	// Update an unrelated field (annotation) - data stays the same.
 	cm2, err := clientset.CoreV1().ConfigMaps("default").Get(ctx, "my-cm", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("getting ConfigMap: %v", err)

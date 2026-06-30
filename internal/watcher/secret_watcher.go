@@ -95,7 +95,7 @@ func (w *SecretWatcher) sync(lister corelisters.SecretLister) {
 
 	secret, err := lister.Secrets(w.namespace).Get(w.secretName)
 	if err != nil {
-		// Secret not found — emit empty data.
+		// Secret not found - emit empty data.
 		w.sendLocked(nil)
 
 		return

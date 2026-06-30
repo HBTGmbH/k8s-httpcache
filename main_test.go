@@ -163,7 +163,7 @@ func TestWatchFileDetectsChange(t *testing.T) {
 
 	select {
 	case <-ch:
-		// OK — change detected
+		// OK - change detected
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for file change notification")
 	}
@@ -188,12 +188,12 @@ func TestWatchFileNoChangeNoNotification(t *testing.T) {
 
 	ch := watchFile(ctx, path, 50*time.Millisecond)
 
-	// No modification — should not receive anything.
+	// No modification - should not receive anything.
 	select {
 	case <-ch:
 		t.Fatal("unexpected file change notification")
 	case <-time.After(300 * time.Millisecond):
-		// OK — no notification
+		// OK - no notification
 	}
 }
 
@@ -225,7 +225,7 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 	case <-ch:
 		t.Fatal("unexpected notification after context cancel")
 	case <-time.After(300 * time.Millisecond):
-		// OK — goroutine stopped
+		// OK - goroutine stopped
 	}
 }
 
@@ -262,8 +262,8 @@ func TestWriteInitialVCLFileCleanup(t *testing.T) {
 }
 
 // TestRunExitPatternRunsDeferredCleanup reproduces: a
-// program structured as [os.Exit](run()) — with cleanup registered via defer
-// inside run — removes its temp file before exiting, whereas the previous
+// program structured as [os.Exit](run()) - with cleanup registered via defer
+// inside run - removes its temp file before exiting, whereas the previous
 // [os.Exit](runLoop()) shape (with the cleanups stranded as defers in main)
 // would skip them, leaking the file. Because [os.Exit] terminates the test
 // process and the real run() needs a cluster + varnishd, this is verified in a
@@ -676,7 +676,7 @@ func (h *testHarness) runAndWait(bcast broadcaster) func() int {
 }
 
 // waitForForwardedSignal blocks until runLoop has forwarded a signal to the
-// manager — i.e. it has finished draining and is waiting on mgr.Done(). Tests
+// manager - i.e. it has finished draining and is waiting on mgr.Done(). Tests
 // that simulate varnishd exiting after a normal drain use this instead of a
 // fixed sleep so they cannot race the drain on a slow CI runner (closing
 // mgr.done mid-drain would otherwise correctly abort the drain early and break
@@ -763,7 +763,7 @@ func TestRunLoop_ReloadWithFrontends(t *testing.T) {
 }
 
 // collectorSeriesCount returns the number of metric series a collector currently
-// exports — used to assert per-label series are deleted (cardinality cleanup).
+// exports - used to assert per-label series are deleted (cardinality cleanup).
 func collectorSeriesCount(c prometheus.Collector) int {
 	ch := make(chan prometheus.Metric)
 	go func() {
@@ -1290,7 +1290,7 @@ func TestRunLoop_RollbackRenderError(t *testing.T) {
 		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
 
-	// Loop still alive — send another event and terminate normally.
+	// Loop still alive - send another event and terminate normally.
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
@@ -1321,7 +1321,7 @@ func TestRunLoop_RollbackReloadError(t *testing.T) {
 		t.Errorf("vcl_rollbacks_total delta = %v, want >= 1", delta)
 	}
 
-	// Loop still alive — terminate normally.
+	// Loop still alive - terminate normally.
 	code := wait()
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
@@ -1552,7 +1552,7 @@ func TestRunLoop_ReloadRecoveryDisabledByDefault(t *testing.T) {
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "initial mgr.Reload call")
 
 	// Without recovery, no further retries should happen even though the
-	// reload failed — behavior matches pre-recovery-timer codebase.
+	// reload failed - behavior matches pre-recovery-timer codebase.
 	time.Sleep(100 * time.Millisecond)
 	if got := h.mgr.getReloadCount(); got != 1 {
 		t.Errorf("expected exactly 1 reload call with recovery disabled, got %d", got)
@@ -1638,7 +1638,7 @@ func TestRunLoop_ShutdownTimeout(t *testing.T) {
 		close(done)
 	}()
 
-	// Send SIGTERM but do NOT close mgr.done — varnishd doesn't exit in time.
+	// Send SIGTERM but do NOT close mgr.done - varnishd doesn't exit in time.
 	h.sigCh <- syscall.SIGTERM
 
 	// After the shutdown timeout fires, runLoop escalates to SIGKILL and
@@ -1824,7 +1824,7 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 func TestRunLoop_BroadcastDisabled(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
-	// bcast is nil — should not panic.
+	// bcast is nil - should not panic.
 	ctx, cancel := context.WithCancel(t.Context())
 	var code atomic.Int32
 	code.Store(-1)
@@ -1834,7 +1834,7 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 		close(done)
 	}()
 
-	// Frontend update with nil bcast — no panic.
+	// Frontend update with nil bcast - no panic.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
@@ -1842,7 +1842,7 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 		return rc >= 1
 	}, "RenderToFile called")
 
-	// Signal shutdown with nil bcast — no panic.
+	// Signal shutdown with nil bcast - no panic.
 	h.sigCh <- syscall.SIGTERM
 	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
@@ -1927,7 +1927,7 @@ func TestRunLoop_DrainSkippedWhenDisabled(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	// drainBackend is "" — drain should be skipped.
+	// drainBackend is "" - drain should be skipped.
 
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
@@ -2393,7 +2393,7 @@ func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 	}
 
 	h := newTestHarness()
-	// Do NOT wire fvw.Changes() into valuesCh — simulates --file-watch=false.
+	// Do NOT wire fvw.Changes() into valuesCh - simulates --file-watch=false.
 	// The default valuesCh from newTestHarness is a buffered channel that
 	// nobody sends to, so the select case never fires.
 
@@ -2487,7 +2487,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 		return "vcl 4.1; /* filewatch disabled */", nil
 	}
 
-	// Do NOT wire fvw.Changes() into valuesCh — simulates --file-watch=false.
+	// Do NOT wire fvw.Changes() into valuesCh - simulates --file-watch=false.
 
 	// Set up loop manually to seed latestValues with initial directory state.
 	ctxLoop, cancel := context.WithCancel(t.Context())
@@ -2554,7 +2554,7 @@ func TestDrainBackendForLoop(t *testing.T) {
 // are robust on slow CI runners where goroutine scheduling can lag 50-100ms.
 
 // Scenario 1: Single event, then quiet.
-// debounceMax is set but irrelevant — reload fires at the normal debounce time.
+// debounceMax is set but irrelevant - reload fires at the normal debounce time.
 func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
@@ -2565,7 +2565,7 @@ func TestRunLoop_DebounceMaxSingleEvent(t *testing.T) {
 	lc := h.loopConfig(h.bcast)
 	lc.frontendDebounce = 150 * time.Millisecond
 	lc.backendDebounce = 150 * time.Millisecond
-	lc.frontendDebounceMax = 5 * time.Second // much larger — should not matter
+	lc.frontendDebounceMax = 5 * time.Second // much larger - should not matter
 	lc.backendDebounceMax = 5 * time.Second
 
 	go func() {
@@ -2614,7 +2614,7 @@ func TestRunLoop_DebounceMaxBriefBurst(t *testing.T) {
 	}
 
 	// Last event at ~120ms + 200ms debounce = ~320ms.
-	// Check at 600ms — well after expected fire.
+	// Check at 600ms - well after expected fire.
 	time.Sleep(500 * time.Millisecond)
 	if h.mgr.getReloadCount() != 1 {
 		t.Fatalf("expected 1 coalesced reload after burst, got %d", h.mgr.getReloadCount())
@@ -2715,7 +2715,7 @@ func testDebounceMaxForced(t *testing.T, frontendDebounce, frontendDebounceMax, 
 	<-done
 }
 
-// Scenario 4: Events arriving faster than debounce — the key case.
+// Scenario 4: Events arriving faster than debounce - the key case.
 // Without debounceMax the timer perpetually resets and never fires.
 // With debounceMax the reload is forced periodically.
 func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
@@ -2726,7 +2726,7 @@ func TestRunLoop_DebounceMaxForcesReload(t *testing.T) {
 	)
 }
 
-// Scenario 5: Long stream — deadline resets after each forced reload.
+// Scenario 5: Long stream - deadline resets after each forced reload.
 // Two separate bursts each get their own debounceMax window.
 func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 	t.Parallel()
@@ -2758,7 +2758,7 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 		t.Fatal("expected at least 1 reload after first burst")
 	}
 
-	// Quiet gap — let the loop fully quiesce. No extra reload fires from
+	// Quiet gap - let the loop fully quiesce. No extra reload fires from
 	// the first burst's trailing timer during this gap (it already fired
 	// via debounceMax).
 
@@ -2780,7 +2780,7 @@ func TestRunLoop_DebounceMaxResetsAfterReload(t *testing.T) {
 	<-done
 }
 
-// Scenario 6: debounceMax=0 (disabled) — perpetual timer reset, no forced reload.
+// Scenario 6: debounceMax=0 (disabled) - perpetual timer reset, no forced reload.
 func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
@@ -2799,7 +2799,7 @@ func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 		close(done)
 	}()
 
-	// Send events every 20ms for 600ms — timer keeps resetting.
+	// Send events every 20ms for 600ms - timer keeps resetting.
 	// debounce=800ms, so the timer never fires while events arrive
 	// every 20ms.
 	stop := make(chan struct{})
@@ -2818,7 +2818,7 @@ func TestRunLoop_DebounceMaxDisabled(t *testing.T) {
 	time.Sleep(600 * time.Millisecond)
 	close(stop)
 
-	// No reload during the stream — timer kept resetting.
+	// No reload during the stream - timer kept resetting.
 	if h.mgr.getReloadCount() != 0 {
 		t.Fatalf("expected 0 reloads during continuous events (debounceMax disabled), got %d", h.mgr.getReloadCount())
 	}
@@ -3083,7 +3083,7 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 		close(done)
 	}()
 
-	// Rapid frontend events for 600ms — no forced reload (debounceMax=0).
+	// Rapid frontend events for 600ms - no forced reload (debounceMax=0).
 	stopFE := make(chan struct{})
 	go func() {
 		for {
@@ -3114,7 +3114,7 @@ func TestRunLoop_FrontendDebounceMaxDisabledBackendEnabled(t *testing.T) {
 		t.Fatalf("expected 1 reload after frontend events stop, got %d", afterFE)
 	}
 
-	// Now send rapid backend events — backendDebounceMax=300ms → forced reload.
+	// Now send rapid backend events - backendDebounceMax=300ms → forced reload.
 	stopBE := make(chan struct{})
 	go func() {
 		for {
@@ -3211,7 +3211,7 @@ func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 		close(done)
 	}()
 
-	// Rapid backend events for 600ms — no forced reload (debounceMax=0).
+	// Rapid backend events for 600ms - no forced reload (debounceMax=0).
 	stopBE := make(chan struct{})
 	go func() {
 		for {
@@ -3243,7 +3243,7 @@ func TestRunLoop_BackendDebounceMaxDisabledFrontendEnabled(t *testing.T) {
 		t.Fatalf("expected 1 reload after backend events stop, got %d", afterBE)
 	}
 
-	// Now send rapid frontend events — frontendDebounceMax=300ms → forced reload.
+	// Now send rapid frontend events - frontendDebounceMax=300ms → forced reload.
 	stopFE := make(chan struct{})
 	go func() {
 		for {
@@ -3295,14 +3295,14 @@ func TestResetDebounce_CapsAtDeadline(t *testing.T) {
 	// Set a deadline 50ms from now.
 	s.deadline = time.Now().Add(50 * time.Millisecond)
 
-	// Request a 500ms debounce — should be capped to ~50ms.
+	// Request a 500ms debounce - should be capped to ~50ms.
 	resetDebounce(&s, 500*time.Millisecond, 100*time.Millisecond)
 	defer s.timer.Stop()
 
 	// The timer should fire within ~100ms (50ms deadline + margin).
 	select {
 	case <-s.timer.C:
-		// OK — fired at the deadline
+		// OK - fired at the deadline
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("timer did not fire at deadline")
 	}
@@ -3452,7 +3452,7 @@ func TestRunLoop_DebounceMetrics_MaxEnforcement(t *testing.T) {
 		close(done)
 	}()
 
-	// Rapid frontend events for 600ms — debounceMax=250ms should force reloads.
+	// Rapid frontend events for 600ms - debounceMax=250ms should force reloads.
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -3530,7 +3530,7 @@ func TestRunLoop_DebounceMetrics_BackendMaxEnforcement(t *testing.T) {
 		close(done)
 	}()
 
-	// Rapid backend events for 600ms — debounceMax=250ms should force reloads.
+	// Rapid backend events for 600ms - debounceMax=250ms should force reloads.
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -4483,7 +4483,7 @@ func TestResetDebounce_FloorWhenDeadlineExceeded(t *testing.T) {
 	// Timer should fire almost immediately (d = 1ns).
 	select {
 	case <-s.timer.C:
-		// OK — timer fired immediately
+		// OK - timer fired immediately
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timer did not fire quickly despite expired deadline")
 	}
@@ -4514,7 +4514,7 @@ func TestRunLoop_DrainSecondSignalDuringDelay(t *testing.T) {
 	sigCh <- syscall.SIGTERM
 	// Wait just long enough to enter the drainDelay sleep, not for it to elapse.
 	time.Sleep(50 * time.Millisecond)
-	// Second signal during drainDelay — should interrupt and skip the wait.
+	// Second signal during drainDelay - should interrupt and skip the wait.
 	sigCh <- syscall.SIGINT
 	time.Sleep(50 * time.Millisecond)
 	close(h.mgr.done)
@@ -4560,7 +4560,7 @@ func TestWatchFileContextCancelDuringPoll(t *testing.T) {
 	case <-ch:
 		t.Fatal("unexpected notification after context cancel")
 	default:
-		// OK — goroutine exited via ctx.Done()
+		// OK - goroutine exited via ctx.Done()
 	}
 }
 
@@ -4577,14 +4577,14 @@ func TestWatchFileNonBlockingSendDefault(t *testing.T) {
 
 	ch := watchFile(t.Context(), path, 10*time.Millisecond)
 
-	// First change — fills the channel (buffer size 1).
+	// First change - fills the channel (buffer size 1).
 	err = os.WriteFile(path, []byte("v2"), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	// Second change — channel still has unread notification, triggers default.
+	// Second change - channel still has unread notification, triggers default.
 	err = os.WriteFile(path, []byte("v3"), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -4608,7 +4608,7 @@ func TestWatchFileNonBlockingSendDefault(t *testing.T) {
 	case <-ch:
 		t.Fatal("expected no second notification (non-blocking send default branch)")
 	case <-time.After(100 * time.Millisecond):
-		// OK — the second send hit the default branch
+		// OK - the second send hit the default branch
 	}
 }
 
@@ -4662,7 +4662,7 @@ func TestWatchFileReadError(t *testing.T) {
 		// OK
 	}
 
-	// Re-create the file with new content — should resume detecting changes.
+	// Re-create the file with new content - should resume detecting changes.
 	err = os.WriteFile(path, []byte("new-content"), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -4670,7 +4670,7 @@ func TestWatchFileReadError(t *testing.T) {
 
 	select {
 	case <-ch:
-		// OK — change detected after recovery
+		// OK - change detected after recovery
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("no notification after file re-creation")
 	}
@@ -4713,7 +4713,7 @@ func TestWatchFileNonBlockingSendDefaultStrict(t *testing.T) {
 		t.Fatal("expected at least one notification")
 	}
 
-	// No second notification — all extras were dropped by the default branch.
+	// No second notification - all extras were dropped by the default branch.
 	select {
 	case <-ch:
 		t.Fatal("expected no second notification")
@@ -4787,11 +4787,11 @@ func TestStatusSnapshot(t *testing.T) {
 		t.Errorf("ReloadCount = %d before recordReload, want 0", snap.ReloadCount)
 	}
 
-	// BackendCounts should be a clone — mutating it should not affect the store.
+	// BackendCounts should be a clone - mutating it should not affect the store.
 	snap.BackendCounts["api"] = 999
 	snap2 := store.snapshot()
 	if snap2.BackendCounts["api"] != 2 {
-		t.Error("BackendCounts is not a clone — mutation leaked into the store")
+		t.Error("BackendCounts is not a clone - mutation leaked into the store")
 	}
 
 	// Record a reload and verify.
@@ -4894,7 +4894,7 @@ func TestStatusSnapshotTLS(t *testing.T) {
 	t.Parallel()
 	store := &statusStore{startedAt: time.Now()}
 
-	// Default: TLS absent — disabled, no certs, empty (non-nil) list, null reload.
+	// Default: TLS absent - disabled, no certs, empty (non-nil) list, null reload.
 	snap := store.snapshot()
 	if snap.TLS.Enabled || snap.TLS.ConfiguredCerts != 0 || snap.TLS.ActiveCerts != 0 {
 		t.Errorf("default TLS = %+v, want disabled with zero counts", snap.TLS)
@@ -5737,7 +5737,7 @@ func TestRunLoop_NCSAEventsNilNoPanic(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 
-	// ncsaEvents defaults to nil in loopConfig — verify the loop runs fine.
+	// ncsaEvents defaults to nil in loopConfig - verify the loop runs fine.
 	wait := h.runAndWait(h.bcast)
 
 	// Trigger a normal reload to confirm the loop is operational.
@@ -5870,7 +5870,7 @@ func TestRunLoop_StopNCSANilOnShutdown(t *testing.T) {
 	code.Store(-1)
 	done := make(chan struct{})
 	lc := h.loopConfig(h.bcast)
-	lc.stopNCSA = nil // explicitly nil — should not panic
+	lc.stopNCSA = nil // explicitly nil - should not panic
 	go func() {
 		code.Store(int32(runLoop(ctx, cancel, lc)))
 		close(done)
@@ -6150,7 +6150,7 @@ func TestRunLoop_StaleRemovalDoesNotDeleteReaddedBackend(t *testing.T) {
 }
 
 // TestRunLoop_DebugLogsStaleDrop verifies the event loop emits a DEBUG "decision"
-// log when it drops a stale lower-gen backend removal — the exact silent branch
+// log when it drops a stale lower-gen backend removal - the exact silent branch
 // that hid the stale-removal bug. A capturing logger is injected into the
 // loopConfig (no global [slog.SetDefault], so the test stays parallel-safe). The
 // buffer is read only after the loop goroutine exits, so the single-writer
@@ -6327,9 +6327,9 @@ func TestSweepExpiredTombstones(t *testing.T) {
 	ttl := time.Minute
 
 	tombstones := map[string]backendTombstone{
-		"fresh":   {gen: 7, at: now.Add(-30 * time.Second)}, // within TTL — kept
-		"expired": {gen: 3, at: now.Add(-2 * time.Minute)},  // older than TTL — evicted
-		"exactly": {gen: 5, at: now.Add(-ttl)},              // age == TTL — evicted (>=)
+		"fresh":   {gen: 7, at: now.Add(-30 * time.Second)}, // within TTL - kept
+		"expired": {gen: 3, at: now.Add(-2 * time.Minute)},  // older than TTL - evicted
+		"exactly": {gen: 5, at: now.Add(-ttl)},              // age == TTL - evicted (>=)
 	}
 
 	evicted := sweepExpiredTombstones(tombstones, now, ttl)
@@ -6360,7 +6360,7 @@ func TestSweepExpiredTombstones(t *testing.T) {
 // TestRunLoop_TombstoneSweepBoundsRemovedGen verifies the periodic sweep evicts
 // stale backend tombstones so removedGen cannot grow without bound. Once a
 // tombstone is swept, a later update for that name that the tombstone would have
-// dropped is accepted again — proving the entry was actually removed.
+// dropped is accepted again - proving the entry was actually removed.
 func TestRunLoop_TombstoneSweepBoundsRemovedGen(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
@@ -6620,7 +6620,7 @@ func TestRunLoop_BackendAnnotationsFilteredByWatcher(t *testing.T) {
 
 	// Simulate a backendChange from a watcher with annotation exclusion applied:
 	// kubectl.kubernetes.io/last-applied-configuration was already stripped by
-	// the watcher — it should NOT appear in the renderer's annotations.
+	// the watcher - it should NOT appear in the renderer's annotations.
 	h.backendCh <- backendChange{
 		name:      "api",
 		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
@@ -6726,7 +6726,7 @@ func TestRunLoop_SkipsReloadWhenVCLUnchanged(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 
-	// renderFn always returns the same VCL — simulates a metadata-only change
+	// renderFn always returns the same VCL - simulates a metadata-only change
 	// that doesn't affect the rendered output.
 	const fixedVCL = "vcl 4.1; /* unchanged */"
 	h.rend.renderFn = func(_ []watcher.Frontend, _ map[string]renderer.BackendGroup, _ map[string]map[string]any, _ map[string]map[string]any) (string, error) {
@@ -6747,7 +6747,7 @@ func TestRunLoop_SkipsReloadWhenVCLUnchanged(t *testing.T) {
 		close(done)
 	}()
 
-	// Send a backend change — should render but skip reload.
+	// Send a backend change - should render but skip reload.
 	h.backendCh <- backendChange{
 		name:      "api",
 		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "api-0"}},
@@ -6801,7 +6801,7 @@ func TestRunLoop_BackendGroupReplacementIsIndependent(t *testing.T) {
 	firstLabels := h.rend.lastBackends["api"].Labels
 	h.rend.mu.Unlock()
 
-	// Send second backend change with labels v2 — this replaces the
+	// Send second backend change with labels v2 - this replaces the
 	// entire BackendGroup in latestBackends.
 	h.backendCh <- backendChange{
 		name:      "api",
@@ -6810,7 +6810,7 @@ func TestRunLoop_BackendGroupReplacementIsIndependent(t *testing.T) {
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "second reload")
 
-	// The first labels snapshot must still show v1 — replacing the
+	// The first labels snapshot must still show v1 - replacing the
 	// BackendGroup must not have mutated the old Labels map.
 	if firstLabels["version"] != "v1" {
 		t.Errorf("first labels mutated after replacement: version=%q, want v1", firstLabels["version"])
@@ -6915,7 +6915,7 @@ func TestStatusStoreInitWritesConcurrentWithSnapshot(t *testing.T) {
 // racyShutdownManager mirrors varnish.Manager's synchronization: err is
 // written by a plain goroutine followed by close(done), and Err() reads it
 // without a mutex. The happens-before edge exists only for readers that wait
-// on Done() first — exactly the contract runLoop must respect after SIGKILL.
+// on Done() first - exactly the contract runLoop must respect after SIGKILL.
 type racyShutdownManager struct {
 	done chan struct{}
 	err  error
@@ -7164,7 +7164,7 @@ func TestWireValuesFanIn_DisabledNilNoGoroutine(t *testing.T) { //nolint:paralle
 // TestWireValuesFanIn_FanInGoroutineExitsOnContextCancel verifies the fan-in
 // goroutine returns when ctx is cancelled even though the ConfigMapWatcher's
 // Changes() channel is never closed (informer-backed watchers don't close their
-// channels — closing them would risk a send-on-closed panic). Without the
+// channels - closing them would risk a send-on-closed panic). Without the
 // ctx-aware select (a plain `for range w.Changes()`) the goroutine would block
 // forever on the open channel and goleak would flag the leak.
 func TestWireValuesFanIn_FanInGoroutineExitsOnContextCancel(t *testing.T) { //nolint:paralleltest // goleak must run in isolation
@@ -7487,8 +7487,14 @@ func TestWriteInitialVCLFile_WritesAndCleansUp(t *testing.T) {
 
 func TestWriteInitialVCLFile_CreateError(t *testing.T) {
 	// Point the temp dir at a path that does not exist so os.CreateTemp fails.
+	// os.TempDir() reads a different env var per platform - TMPDIR on
+	// Unix/macOS, TMP/TEMP on Windows (via GetTempPath) - so set all three to
+	// make the temp dir missing on every OS.
 	// t.Setenv forbids t.Parallel, so this test runs serially.
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "does-not-exist"))
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	t.Setenv("TMPDIR", missing)
+	t.Setenv("TMP", missing)
+	t.Setenv("TEMP", missing)
 
 	path, cleanup, err := writeInitialVCLFile("vcl 4.1;")
 	if err == nil {

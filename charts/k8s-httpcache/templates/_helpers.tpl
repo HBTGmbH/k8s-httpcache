@@ -23,7 +23,7 @@ Create chart name and version as used by the chart label.
 Render a value as a Helm template using << >> as the delimiters, so values.yaml can
 carry template expressions without quoting {{ }} (which YAML parses as a mapping).
 Behaviour: if the (stringified) value contains "<<", rewrite << ... >> to {{ ... }} and run
-`tpl`; otherwise return it unchanged — so releases that never use << >> render byte-for-byte
+`tpl`; otherwise return it unchanged - so releases that never use << >> render byte-for-byte
 as before (fully backward compatible). Strings pass straight through; maps/lists are toYaml'd
 first (pipe the call site through nindent).
 

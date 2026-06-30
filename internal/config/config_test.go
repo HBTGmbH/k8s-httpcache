@@ -1089,7 +1089,7 @@ func TestParseDebounceLatencyBucketsDeduplicated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// prometheus.NewHistogram panics unless bucket boundaries are strictly
-	// increasing, so duplicates must not survive parsing — otherwise the
+	// increasing, so duplicates must not survive parsing - otherwise the
 	// process crashes in NewMetrics after validation has already passed.
 	want := []float64{0.1, 1, 5}
 	if !slices.Equal(cfg.DebounceLatencyBuckets, want) {
@@ -1233,7 +1233,7 @@ func TestParseVCLTemplateIsDirectory(t *testing.T) {
 		"--vcl-template=" + dir,
 	})
 	// os.Stat succeeds for directories, but this exercises the path where
-	// the "file" exists. Parse() doesn't distinguish files from dirs —
+	// the "file" exists. Parse() doesn't distinguish files from dirs -
 	// the template parser in renderer.New() would fail later. So Parse()
 	// should succeed here.
 	if err != nil {
@@ -1434,7 +1434,7 @@ func TestResolveBinaryPaths(t *testing.T) {
 			wantNcsa:   "varnishncsa",
 		},
 		{
-			name:       "explicit vinyl flags override varnish defaults — all four",
+			name:       "explicit vinyl flags override varnish defaults - all four",
 			vinyld:     "/opt/vinyld",
 			vinyladm:   "/opt/vinyladm",
 			vinylstat:  "/opt/vinylstat",
@@ -1450,7 +1450,7 @@ func TestResolveBinaryPaths(t *testing.T) {
 			wantNcsa:   "/opt/vinylncsa",
 		},
 		{
-			name:       "partial vinyl — only vinyld-path set, others default to vinyl names",
+			name:       "partial vinyl - only vinyld-path set, others default to vinyl names",
 			vinyld:     "/opt/vinyld",
 			lookPathFn: vinylNotFound,
 			initD:      "varnishd",
@@ -1463,7 +1463,7 @@ func TestResolveBinaryPaths(t *testing.T) {
 			wantNcsa:   "vinylncsa",
 		},
 		{
-			name:       "partial vinyl — only vinyladm-path set",
+			name:       "partial vinyl - only vinyladm-path set",
 			vinyladm:   "/opt/vinyladm",
 			lookPathFn: vinylNotFound,
 			initD:      "varnishd",
@@ -1476,7 +1476,7 @@ func TestResolveBinaryPaths(t *testing.T) {
 			wantNcsa:   "vinylncsa",
 		},
 		{
-			name:       "partial vinyl — only vinylstat-path set",
+			name:       "partial vinyl - only vinylstat-path set",
 			vinylstat:  "/opt/vinylstat",
 			lookPathFn: vinylNotFound,
 			initD:      "varnishd",
@@ -1489,7 +1489,7 @@ func TestResolveBinaryPaths(t *testing.T) {
 			wantNcsa:   "vinylncsa",
 		},
 		{
-			name:       "partial vinyl — only vinylncsa-path set",
+			name:       "partial vinyl - only vinylncsa-path set",
 			vinylncsa:  "/opt/vinylncsa",
 			lookPathFn: vinylNotFound,
 			initD:      "varnishd",
@@ -2941,7 +2941,7 @@ func TestParseBroadcastWriteTimeoutEqualToSum(t *testing.T) {
 		"--vcl-template=" + vcl,
 		"--broadcast-read-timeout=15s",
 		"--broadcast-client-timeout=10s",
-		"--broadcast-write-timeout=25s", // exactly read + client — must still be rejected
+		"--broadcast-write-timeout=25s", // exactly read + client - must still be rejected
 	})
 	if err == nil {
 		t.Fatal("expected error: --broadcast-write-timeout equal to read + client must be rejected")
@@ -2963,7 +2963,7 @@ func TestParseBroadcastWriteTimeoutDisabledExempt(t *testing.T) {
 		"--vcl-template=" + vcl,
 		"--broadcast-read-timeout=15s",
 		"--broadcast-client-timeout=10s",
-		"--broadcast-write-timeout=0", // disabled — no deadline, so no constraint
+		"--broadcast-write-timeout=0", // disabled - no deadline, so no constraint
 	})
 	if err != nil {
 		t.Fatalf("unexpected error for disabled write timeout: %v", err)

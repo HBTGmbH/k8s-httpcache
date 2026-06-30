@@ -101,7 +101,7 @@ func TestZeroCounterFilterRetainsZeroHistogram(t *testing.T) {
 		Buckets: []float64{0.1, 0.5, 1},
 	})
 	reg.MustRegister(h)
-	// no observations — sample count is 0
+	// no observations - sample count is 0
 
 	fams := gatherFamilyMap(t, reg)
 	fam, ok := fams["request_duration_seconds"]

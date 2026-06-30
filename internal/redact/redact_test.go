@@ -305,7 +305,7 @@ func TestRedactWriterInnerErrorCountWithinInput(t *testing.T) {
 
 	errInner := errors.New("disk full")
 	// The inner writer consumed 8 bytes of the redacted (longer) output
-	// before failing — more than the 6 input bytes.
+	// before failing - more than the 6 input bytes.
 	w := r.Writer(&failWriter{err: errInner, n: 8})
 	input := []byte("secret")
 	n, err := w.Write(input)
@@ -418,13 +418,13 @@ func TestRedactWriterCrossWriteBoundary(t *testing.T) {
 	}
 
 	// Split write across boundary: secret spans two Write calls.
-	// This is the documented limitation — the halves are not redacted.
+	// This is the documented limitation - the halves are not redacted.
 	buf.Reset()
 	_, _ = w.Write([]byte("token: my-secret"))
 	_, _ = w.Write([]byte("-token\n"))
 	// We expect the secret to survive because neither half matches.
 	if strings.Contains(buf.String(), "[REDACTED]") {
-		// If this ever passes, it means we added buffered redaction — great!
+		// If this ever passes, it means we added buffered redaction - great!
 		t.Log("cross-boundary redaction now works (buffered writer?)")
 	}
 }
@@ -444,7 +444,7 @@ func (c *captureWriter) Write(p []byte) (int, error) {
 // TestRedactWriterNoTornReadUnderConcurrentUpdate hammers the production Writer
 // path (used on varnishd stdout/stderr) with concurrent writes while Update
 // swaps the replacer pointer, and asserts every write emits either the fully
-// redacted line or the fully verbatim line — never a torn mix of the two. This
+// redacted line or the fully verbatim line - never a torn mix of the two. This
 // adds the correctness invariant TestRedactConcurrent lacks. Run under -race.
 func TestRedactWriterNoTornReadUnderConcurrentUpdate(t *testing.T) {
 	t.Parallel()

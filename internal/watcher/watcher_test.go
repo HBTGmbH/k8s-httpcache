@@ -402,7 +402,7 @@ func assertNoChanges(t *testing.T, w *Watcher, timeout time.Duration) {
 	case eps := <-w.Changes():
 		t.Fatalf("unexpected change received: %v", eps)
 	case <-time.After(timeout):
-		// OK — no change
+		// OK - no change
 	}
 }
 
@@ -495,7 +495,7 @@ func TestRunDetectsAddedEndpointSlice(t *testing.T) {
 
 func TestRunDetectsUpdatedEndpointSlice(t *testing.T) {
 	t.Parallel()
-	// Start empty, then create, then update — avoids timing issues between
+	// Start empty, then create, then update - avoids timing issues between
 	// the informer's initial list+watch and the pre-loaded objects.
 	clientset := fake.NewClientset()
 	w := New(clientset, "default", "svc", "")
@@ -807,7 +807,7 @@ func TestRunExtractsTopologyFields(t *testing.T) {
 				Addresses:  []string{"10.0.0.2"},
 				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 				TargetRef:  &corev1.ObjectReference{Name: "pod-b"},
-				// No zone, nodeName, or hints — fields should be zero-valued.
+				// No zone, nodeName, or hints - fields should be zero-valued.
 			},
 		},
 		[]discoveryv1.EndpointPort{
@@ -871,7 +871,7 @@ func TestRunDeduplicatesUnchangedEndpoints(t *testing.T) {
 	// Consume initial state.
 	readChanges(t, w)
 
-	// Update an unrelated field (annotation) — endpoints stay the same.
+	// Update an unrelated field (annotation) - endpoints stay the same.
 	slice.Annotations = map[string]string{"unrelated": "change"}
 	_, err := clientset.DiscoveryV1().EndpointSlices("default").Update(ctx, slice, metav1.UpdateOptions{})
 	if err != nil {
@@ -982,7 +982,7 @@ func TestRunDeleteOneOfMultipleSlices(t *testing.T) {
 		t.Fatalf("expected 2 endpoints, got %d", len(eps))
 	}
 
-	// Delete the first slice — remaining slice's endpoints should still be delivered.
+	// Delete the first slice - remaining slice's endpoints should still be delivered.
 	err = clientset.DiscoveryV1().EndpointSlices("default").Delete(ctx, "svc-abc", metav1.DeleteOptions{})
 	if err != nil {
 		t.Fatalf("deleting slice1: %v", err)
@@ -1027,7 +1027,7 @@ func TestRunReadyStateTransition(t *testing.T) {
 		t.Fatalf("creating EndpointSlice: %v", err)
 	}
 
-	// Not-ready endpoint should not appear — no change from empty.
+	// Not-ready endpoint should not appear - no change from empty.
 	assertNoChanges(t, w, 500*time.Millisecond)
 
 	// Transition to Ready=true.

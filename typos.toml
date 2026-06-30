@@ -1,4 +1,4 @@
-# typos spell-checker configuration — https://github.com/crate-ci/typos
+# typos spell-checker configuration - https://github.com/crate-ci/typos
 # Repo-wide spell check (golangci-lint's misspell only covers .go files).
 
 [files]

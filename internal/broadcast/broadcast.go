@@ -55,7 +55,7 @@ const (
 
 // classifyOutcome buckets a per-pod fan-out result by its status code. A zero
 // status means forward never obtained an HTTP response (a transport-level
-// failure such as a connection error or timeout — see forward). A body-read
+// failure such as a connection error or timeout - see forward). A body-read
 // error that occurs after a response was received keeps that response's status
 // code, so it is bucketed by that status (ok/http_error), not transport_error:
 // the request did reach the pod and was answered.
@@ -304,7 +304,7 @@ func (s *Server) connState(_ net.Conn, state http.ConnState) {
 			s.signalDrained()
 		}
 	default:
-		// StateActive, StateIdle — no action needed.
+		// StateActive, StateIdle - no action needed.
 	}
 }
 

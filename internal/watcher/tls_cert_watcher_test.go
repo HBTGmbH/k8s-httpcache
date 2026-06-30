@@ -29,7 +29,7 @@ func assertNoTLSCertChanges(t *testing.T, w *TLSCertWatcher, timeout time.Durati
 	case data := <-w.Changes():
 		t.Fatalf("unexpected TLS cert change received: %v", data)
 	case <-time.After(timeout):
-		// OK — no change
+		// OK - no change
 	}
 }
 
@@ -120,7 +120,7 @@ func TestTLSCertWatcherDeduplicatesUnchanged(t *testing.T) {
 	waitForWatch()
 	readTLSCertChanges(t, w)
 
-	// Update an unrelated field (annotation) — cert material stays the same.
+	// Update an unrelated field (annotation) - cert material stays the same.
 	s2, err := clientset.CoreV1().Secrets("default").Get(ctx, "my-tls", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("getting Secret: %v", err)

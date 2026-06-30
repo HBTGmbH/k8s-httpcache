@@ -29,7 +29,7 @@ func assertNoFileValuesChanges(t *testing.T, w *FileValuesWatcher, timeout time.
 	case data := <-w.Changes():
 		t.Fatalf("unexpected file values change received: %v", data)
 	case <-time.After(timeout):
-		// OK — no change
+		// OK - no change
 	}
 }
 
@@ -110,7 +110,7 @@ func TestFileValuesWatcherDeduplicatesUnchanged(t *testing.T) {
 	// Consume initial state.
 	readFileValuesChanges(t, w)
 
-	// No file changes — should NOT deliver a duplicate change.
+	// No file changes - should NOT deliver a duplicate change.
 	assertNoFileValuesChanges(t, w, 300*time.Millisecond)
 }
 
@@ -271,7 +271,7 @@ func TestFileValuesWatcherScanOnceDoesNotPoll(t *testing.T) {
 	writeYAML(t, dir, "k.yaml", "v1")
 
 	w := NewFileValuesWatcher(dir, 20*time.Millisecond)
-	// ScanOnce delivers the initial state WITHOUT starting a polling goroutine —
+	// ScanOnce delivers the initial state WITHOUT starting a polling goroutine -
 	// this is the path used when --values-dir-watch is disabled.
 	w.ScanOnce()
 
@@ -281,7 +281,7 @@ func TestFileValuesWatcherScanOnceDoesNotPoll(t *testing.T) {
 	}
 
 	// Change the file. With no poll loop running (only ScanOnce was called, not
-	// Run), no update must be delivered even after many poll intervals — proving
+	// Run), no update must be delivered even after many poll intervals - proving
 	// no ongoing watcher goroutine exists.
 	writeYAML(t, dir, "k.yaml", "v2")
 	assertNoFileValuesChanges(t, w, 200*time.Millisecond)
@@ -305,7 +305,7 @@ func TestFileValuesWatcherSkipsSubdirectories(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeYAML(t, dir, "config.yaml", "key: value")
-	// Create a subdirectory — should be skipped by scan.
+	// Create a subdirectory - should be skipped by scan.
 	err := os.Mkdir(filepath.Join(dir, "subdir"), 0o750)
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +370,7 @@ func TestFileValuesWatcherReadFileError(t *testing.T) {
 	dir := t.TempDir()
 	writeYAML(t, dir, "good.yaml", "key: value")
 
-	// Create a symlink pointing to a nonexistent target — ReadDir sees it,
+	// Create a symlink pointing to a nonexistent target - ReadDir sees it,
 	// but ReadFile fails.
 	broken := filepath.Join(dir, "broken.yaml")
 	err := os.Symlink(filepath.Join(dir, "nonexistent"), broken)

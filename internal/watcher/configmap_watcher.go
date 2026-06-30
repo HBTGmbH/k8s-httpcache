@@ -95,7 +95,7 @@ func (w *ConfigMapWatcher) sync(lister corelisters.ConfigMapLister) {
 
 	cm, err := lister.ConfigMaps(w.namespace).Get(w.configMapName)
 	if err != nil {
-		// ConfigMap not found — emit empty data.
+		// ConfigMap not found - emit empty data.
 		w.sendLocked(nil)
 
 		return

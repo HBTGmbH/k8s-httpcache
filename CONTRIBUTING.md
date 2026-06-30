@@ -196,9 +196,9 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 
 ## Pull request workflow
 
-1. **Fork and branch** — Create a feature branch from `main`. Use a descriptive name (e.g. `fix-backend-port-resolution`, `add-health-check-endpoint`).
+1. **Fork and branch** - Create a feature branch from `main`. Use a descriptive name (e.g. `fix-backend-port-resolution`, `add-health-check-endpoint`).
 
-2. **Make your changes** — Keep commits focused. Each commit should compile and pass tests.
+2. **Make your changes** - Keep commits focused. Each commit should compile and pass tests.
 
 3. **Run checks locally** before pushing:
 
@@ -209,14 +209,14 @@ The CI runs E2E tests against a kind cluster. To run them locally:
 
 4. **Open a pull request** against `main`. The PR description should explain *what* changed and *why*. Link any related issues.
 
-5. **CI must pass** — The [Test and Build](.github/workflows/test-and-build.yml) workflow runs unit tests, linting, govulncheck, deadcode analysis, a full build, and E2E tests. All checks must be green before merging.
+5. **CI must pass** - The [Test and Build](.github/workflows/test-and-build.yml) workflow runs unit tests, linting, govulncheck, deadcode analysis, a full build, and E2E tests. All checks must be green before merging.
 
-6. **Review** — A maintainer will review your PR. Please address feedback and keep the PR up to date with `main`.
+6. **Review** - A maintainer will review your PR. Please address feedback and keep the PR up to date with `main`.
 
 ## Code style
 
 - Follow standard Go conventions ([Effective Go](https://go.dev/doc/effective_go), [Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)).
-- The `.golangci.yml` enforces the project's style rules — if the linter is happy, the style is fine.
+- The `.golangci.yml` enforces the project's style rules - if the linter is happy, the style is fine.
 - Use `gofmt` for formatting (enforced by CI).
 - VCL templates use `<<` / `>>` delimiters by default (configurable via `--template-delims`).
 
@@ -228,11 +228,11 @@ Releases are automated with [release-please](https://github.com/googleapis/relea
 
 The chart in `charts/k8s-httpcache` is versioned independently of the binary, also via release-please. A conventional commit that changes files **under `charts/k8s-httpcache/**`** (e.g. `feat(chart): ...` or `fix(chart): ...`) makes release-please open a separate *chart* release PR that bumps `version` in `Chart.yaml` and updates `charts/k8s-httpcache/CHANGELOG.md`. Merging that PR tags `k8s-httpcache-v<version>`, cuts a GitHub release, and the `publish-chart` job packages the chart and pushes it to `oci://ghcr.io/hbtgmbh/charts/k8s-httpcache:<version>`.
 
-It is the **changed file path**, not the commit scope, that routes a commit to the chart vs. the binary. `appVersion` is not touched by the automation — bump it by hand when the default image version changes.
+It is the **changed file path**, not the commit scope, that routes a commit to the chart vs. the binary. `appVersion` is not touched by the automation - bump it by hand when the default image version changes.
 
 ### Release automation setup (maintainers)
 
-release-please authenticates with a **GitHub App** token rather than the default `GITHUB_TOKEN`. This is required so the `v*` tag it creates can trigger the `Test and Build` workflow — a `GITHUB_TOKEN` cannot trigger other workflows, which would otherwise leave the binary release tagged but unbuilt.
+release-please authenticates with a **GitHub App** token rather than the default `GITHUB_TOKEN`. This is required so the `v*` tag it creates can trigger the `Test and Build` workflow - a `GITHUB_TOKEN` cannot trigger other workflows, which would otherwise leave the binary release tagged but unbuilt.
 
 One-time setup:
 

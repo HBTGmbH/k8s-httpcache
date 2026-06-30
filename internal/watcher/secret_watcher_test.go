@@ -30,7 +30,7 @@ func assertNoSecretChanges(t *testing.T, w *SecretWatcher, timeout time.Duration
 	case data := <-w.Changes():
 		t.Fatalf("unexpected Secret change received: %v", data)
 	case <-time.After(timeout):
-		// OK — no change
+		// OK - no change
 	}
 }
 
@@ -119,7 +119,7 @@ func TestSecretWatcherDeduplicatesUnchanged(t *testing.T) {
 	waitForWatch()
 	readSecretChanges(t, w)
 
-	// Update an unrelated field (annotation) — data stays the same.
+	// Update an unrelated field (annotation) - data stays the same.
 	s2, err := clientset.CoreV1().Secrets("default").Get(ctx, "my-secret", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("getting Secret: %v", err)

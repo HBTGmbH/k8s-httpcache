@@ -8,7 +8,7 @@ import (
 // FuzzPrefixWriter exercises the hand-rolled line buffering in prefixWriter.Write
 // with arbitrary byte streams delivered in arbitrary-sized chunks (as the
 // varnishncsa subprocess would). It must never panic, must always report the
-// full input byte count, and — for inputs below the overlong-line bound — every
+// full input byte count, and - for inputs below the overlong-line bound - every
 // emitted line carries exactly one prefix, so stripping one prefix per line and
 // re-appending the still-buffered partial reconstructs the original bytes.
 func FuzzPrefixWriter(f *testing.F) {

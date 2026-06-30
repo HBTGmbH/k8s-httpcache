@@ -940,7 +940,7 @@ func TestDiscardOldVCLsListError(t *testing.T) {
 
 	m := newTestManager(r)
 
-	// Should not panic — just return silently on error.
+	// Should not panic - just return silently on error.
 	m.discardOldVCLs("kv_reload_1")
 }
 
@@ -3339,7 +3339,7 @@ func TestRedactorDynamicUpdateWithExecRunner(t *testing.T) {
 //     runs before main.go:496 which calls secretRedactor.Update).
 //   - The output is only parsed for a version number, never returned raw.
 //   - Even if secrets were loaded, the return value is an error wrapping the
-//     raw output — this test verifies that scenario.
+//     raw output - this test verifies that scenario.
 func TestDetectVersionSafeFromSecrets(t *testing.T) {
 	t.Parallel()
 
@@ -3432,7 +3432,7 @@ func TestActiveSessionsSafeFromSecrets(t *testing.T) {
 	mgr := newTestManager(r)
 	mgr.majorVersion = 7
 
-	// ActiveSessions returns (uint64, error) — no raw string exposed.
+	// ActiveSessions returns (uint64, error) - no raw string exposed.
 	total, err := mgr.ActiveSessions()
 	if err != nil {
 		t.Fatalf("ActiveSessions() error: %v", err)
@@ -3697,7 +3697,7 @@ func TestExecRunnerStart(t *testing.T) {
 
 	// stdout/stderr should have received output (the helper writes to both
 	// in "start" mode, but since we didn't set GO_HELPER_VARNISHD the
-	// helper returns immediately — that's fine, we're testing the plumbing).
+	// helper returns immediately - that's fine, we're testing the plumbing).
 }
 
 // TestExecRunnerStartError verifies that Start returns an error for a
@@ -4037,7 +4037,7 @@ func TestSendNCSAEventSuccess(t *testing.T) {
 func TestStartNCSANilRunnerCreatesExecRunner(t *testing.T) {
 	t.Parallel()
 	m := newTestManager(&mockRunner{})
-	// Do not pre-set m.ncsaRun — StartNCSA should create a real execRunner.
+	// Do not pre-set m.ncsaRun - StartNCSA should create a real execRunner.
 	// We cannot actually exec a binary, so just verify the runner was set.
 	// Use a non-existent path; monitorNCSA will fail to start it, but the
 	// runner assignment is what we're testing.
@@ -4573,7 +4573,7 @@ func BenchmarkPrefixWriter_LongLine(b *testing.B) {
 
 // BenchmarkPrefixWriter_PipeBatch benchmarks an ~8 KB batch of mixed-length
 // log lines (short health probes, medium page requests, long API requests)
-// assembled into a single []byte — simulates a realistic pipe buffer delivery.
+// assembled into a single []byte - simulates a realistic pipe buffer delivery.
 // After warm-up this must report 0 allocs/op.
 func BenchmarkPrefixWriter_PipeBatch(b *testing.B) {
 	pw := newPrefixWriter(io.Discard, "[access] ")
@@ -4648,7 +4648,7 @@ func TestStartNCSAStableRunsResetCrashCounter(t *testing.T) {
 	// exiting. Such exits are not a crash loop ("crashed N times
 	// consecutively"): the counter must reset after every stable run, so
 	// the breaker never trips even after more than NCSAMaxCrashes
-	// lifetime exits — otherwise three unrelated exits spread over weeks
+	// lifetime exits - otherwise three unrelated exits spread over weeks
 	// would shut down the whole controller.
 	var startCount atomic.Int32
 	r := &mockRunner{
@@ -4816,8 +4816,8 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 
 // TestStartNCSA_RestartLoopRacesSignalAndStop drives the varnishncsa restart
 // loop (subprocess crashing immediately, breaker disabled so it spins) while
-// concurrent goroutines call ForwardSignal(SIGKILL) — which reads m.ncsaProc
-// under m.ncsaMu — and finally StopNCSA. Run under -race it exercises the
+// concurrent goroutines call ForwardSignal(SIGKILL) - which reads m.ncsaProc
+// under m.ncsaMu - and finally StopNCSA. Run under -race it exercises the
 // ncsaMu/ncsaProc read-write race and the ncsaStop/ncsaDone handshake, and
 // asserts StopNCSA still returns (the loop is not wedged or starved).
 func TestStartNCSA_RestartLoopRacesSignalAndStop(t *testing.T) {

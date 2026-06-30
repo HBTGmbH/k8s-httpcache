@@ -246,13 +246,13 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 
 	// Release child watchers and registry claims on every return path,
 	// including the early return from collectInitialState below (a ctx cancel
-	// during initial sync) — not just the normal post-<-ctx.Done() exit.
+	// during initial sync) - not just the normal post-<-ctx.Done() exit.
 	defer dw.shutdown()
 
 	factory.Start(ctx.Done())
 	factory.WaitForCacheSync(ctx.Done())
 
-	// Initial reconciliation — backends are created without forwarding
+	// Initial reconciliation - backends are created without forwarding
 	// goroutines so we can consume the first value from each Changes()
 	// channel without a race.
 	dw.syncServices(ctx, lister)
@@ -320,6 +320,15 @@ func (dw *BackendDiscoveryWatcher) collectInitialState(ctx context.Context, pend
 		case <-ctx.Done():
 			return ctx.Err() //nolint:wrapcheck // context cancellation
 		case <-mb.ctx.Done():
+			// mb.ctx descends from ctx (see startup in syncServices), so a
+			// parent cancellation fires this case too; when both are ready,
+			// select picks at random. Disambiguate: a cancelled parent is a
+			// shutdown. Propagate it rather than letting the random pick
+			// swallow it as a per-backend skip.
+			err := ctx.Err()
+			if err != nil {
+				return err //nolint:wrapcheck // context cancellation
+			}
 			// This backend's Service was removed during the initial sync
 			// window: its child watcher is cancelled and will never deliver
 			// its first endpoint set. Skip it rather than blocking forever
@@ -542,7 +551,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 // Because syncServices runs its add pass before its remove pass, a departing
 // winner still suppresses a same-named survivor within the same reconcile: the
 // survivor is adopted on the next reconcile that observes the conflict cleared,
-// never two same-named Services at once. This lazy promotion is intentional — we
+// never two same-named Services at once. This lazy promotion is intentional - we
 // don't silently re-point a backend at another namespace mid-reconcile.
 func (dw *BackendDiscoveryWatcher) nameClaimedLocked(name, namespace string) bool {
 	for _, mb := range dw.backends {
@@ -555,8 +564,8 @@ func (dw *BackendDiscoveryWatcher) nameClaimedLocked(name, namespace string) boo
 }
 
 // nextGen returns the next process-wide monotonically increasing generation tag
-// from the shared genSeq counter. Each (re)discovery of a Service — by any
-// watcher — gets a strictly higher gen than every previous incarnation, so the
+// from the shared genSeq counter. Each (re)discovery of a Service - by any
+// watcher - gets a strictly higher gen than every previous incarnation, so the
 // consumer can distinguish a genuine re-add from a stale update emitted by a
 // cancelled forwarding goroutine, including when a name is handed off between
 // watchers with overlapping selectors. Generations start at 1, leaving 0 as a

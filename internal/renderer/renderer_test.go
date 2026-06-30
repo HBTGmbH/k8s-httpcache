@@ -230,7 +230,7 @@ func TestNew_ConfigurableDelimitersReload(t *testing.T) {
 		t.Fatalf("expected BEFORE, got: %s", out)
 	}
 
-	// Update template and reload — delimiters should be preserved.
+	// Update template and reload - delimiters should be preserved.
 	err = os.WriteFile(path, []byte(`AFTER {{ .Frontends }}`), 0o644)
 	if err != nil {
 		t.Fatalf("writing updated template: %v", err)
@@ -701,7 +701,7 @@ func TestRender_BackendLabelsMissingBackend(t *testing.T) {
 		},
 		"static": {
 			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 80, Name: "static-0"}},
-			// No labels — Render() will set Labels to empty map.
+			// No labels - Render() will set Labels to empty map.
 		},
 	}
 
@@ -885,7 +885,7 @@ func TestRender_BackendAnnotationsMissingBackend(t *testing.T) {
 		},
 		"static": {
 			Endpoints: []watcher.Endpoint{{Host: "10.0.0.2", Port: 80, Name: "static-0"}},
-			// No annotations — Render() will set Annotations to empty map.
+			// No annotations - Render() will set Annotations to empty map.
 		},
 	}
 
@@ -1926,7 +1926,7 @@ func TestRender_EmptyValues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// nil values should be normalised to empty map — template should still work.
+	// nil values should be normalised to empty map - template should still work.
 	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
@@ -2060,7 +2060,7 @@ sub vcl_recv {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// No SetDrainBackend call — drain is disabled.
+	// No SetDrainBackend call - drain is disabled.
 
 	out, err := r.Render(nil, nil, nil, nil)
 	if err != nil {
@@ -2319,9 +2319,9 @@ sub vcl_deliver {
 }
 
 // TestRender_DrainVCLDeliverBetweenBackends verifies that when the user declares
-// sub vcl_deliver between two backends — so the historical end-of-backends
+// sub vcl_deliver between two backends - so the historical end-of-backends
 // placement would land the drain sub AFTER the user's, silently breaking
-// draining — the drain sub is prepended before the user's vcl_deliver while the
+// draining - the drain sub is prepended before the user's vcl_deliver while the
 // drain backend stays after the first user backend (never the default) and
 // before the drain sub (Varnish 6 forward-reference safety).
 func TestRender_DrainVCLDeliverBetweenBackends(t *testing.T) {
@@ -3150,7 +3150,7 @@ func TestRender_LocalRemoteBackends_EmptyLocalZone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// localZone not set — both slices should be empty.
+	// localZone not set - both slices should be empty.
 
 	backends := map[string]BackendGroup{
 		"api": {Endpoints: []watcher.Endpoint{
@@ -3312,7 +3312,7 @@ sub vcl_init {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// localZone not set — should fall back to plain round-robin.
+		// localZone not set - should fall back to plain round-robin.
 
 		out, err := r.Render(nil, backends, nil, nil)
 		if err != nil {
@@ -3562,7 +3562,7 @@ func TestRender_DoesNotMutateInputBackendGroup(t *testing.T) {
 	bg := backends["api"]
 
 	// Render() must NOT have mutated the caller's nil Labels/Annotations
-	// to non-nil empty maps — the enrichment should be internal only.
+	// to non-nil empty maps - the enrichment should be internal only.
 	if bg.Labels != nil {
 		t.Errorf("Render() mutated input BackendGroup.Labels from nil to %v", bg.Labels)
 	}
@@ -3571,7 +3571,7 @@ func TestRender_DoesNotMutateInputBackendGroup(t *testing.T) {
 	}
 
 	// Render() must NOT have written LocalEndpoints/RemoteEndpoints back
-	// to the caller's BackendGroup — those are enrichment-only fields.
+	// to the caller's BackendGroup - those are enrichment-only fields.
 	if bg.LocalEndpoints != nil {
 		t.Errorf("Render() leaked LocalEndpoints back to input: %v", bg.LocalEndpoints)
 	}
@@ -3976,7 +3976,7 @@ func TestInjectDrainVCL_LineCommentSlashStarNotMisdetected(t *testing.T) {
 
 // TestInjectDrainVCL_RealBlockCommentImportStillInjected guards the opposite
 // direction: an `import std;` that is genuinely inside a /* */ block comment is
-// NOT active, so the injector must still add its own — proving the new helper
+// NOT active, so the injector must still add its own - proving the new helper
 // keeps detecting real block comments (no over-correction).
 func TestInjectDrainVCL_RealBlockCommentImportStillInjected(t *testing.T) {
 	t.Parallel()

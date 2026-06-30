@@ -1,4 +1,4 @@
-# Trivy configuration — https://trivy.dev/latest/docs/references/configuration/config-file/
+# Trivy configuration - https://trivy.dev/latest/docs/references/configuration/config-file/
 # Scanners, format, and output are set in .github/workflows/trivy.yml; this file
 # tunes what gets reported. Suppress individual findings in .trivyignore.
 

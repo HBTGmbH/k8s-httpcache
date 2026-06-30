@@ -59,8 +59,8 @@ func collectSeriesCount(c prometheus.Collector) int {
 // TestBroadcastRequestsTotalMethodCardinalityBounded verifies that the
 // broadcast request counter's "method" label is bounded regardless of client
 // input. r.Method is client-controllable (net/http accepts any RFC 7230 token),
-// so using it verbatim as a label lets any client grow Prometheus cardinality —
-// and the registry's memory — without bound.
+// so using it verbatim as a label lets any client grow Prometheus cardinality -
+// and the registry's memory - without bound.
 func TestBroadcastRequestsTotalMethodCardinalityBounded(t *testing.T) {
 	t.Parallel()
 	s := newTestServer()
@@ -589,7 +589,7 @@ func TestDrainTimeoutWithHeldConnection(t *testing.T) {
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, _ = conn.Read(buf)
 
-	// Drain with a short timeout — should timeout, not hang.
+	// Drain with a short timeout - should timeout, not hang.
 	drainTimeout := 200 * time.Millisecond
 	start := time.Now()
 	done := make(chan error, 1)
@@ -941,7 +941,7 @@ func TestForwardResponseBodyReadError(t *testing.T) {
 
 	// The response status (200) was received before the body read failed, so
 	// it is preserved in the client-facing result and the outcome is bucketed
-	// by that status — ok, not transport_error. See classifyOutcome.
+	// by that status - ok, not transport_error. See classifyOutcome.
 	if r.Status != http.StatusOK {
 		t.Errorf("read-error result Status = %d, want 200 (status received before the body read failed)", r.Status)
 	}
@@ -1021,7 +1021,7 @@ func TestForwardPreservesHostHeader(t *testing.T) {
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	// PURGE-style request: VCL on each pod matches on req.http.host, so the
-	// client's original Host must reach the pod — not the pod's ip:port.
+	// client's original Host must reach the pod - not the pod's ip:port.
 	// (Go promotes the incoming Host header to Request.Host and removes it
 	// from the Header map, so copying headers alone loses it.)
 	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
@@ -1042,7 +1042,7 @@ func TestForwardPreservesHostHeader(t *testing.T) {
 
 // TestDrainRacesNewConnections races a burst of new client connections against a
 // concurrent Drain. New connections keep arriving while Drain flips the draining
-// flag, samples conns.Load(), and waits on connsDrained — exactly the window
+// flag, samples conns.Load(), and waits on connsDrained - exactly the window
 // guarded by the conns atomic, drainOnce, and the connsDrained channel. Run under
 // -race it asserts Drain still completes (no lost wake-up, no hang) and the
 // connection counter balances back to zero.
@@ -1073,7 +1073,7 @@ func TestDrainRacesNewConnections(t *testing.T) {
 
 	// Fire continuous client requests, each on a fresh connection
 	// (DisableKeepAlives), so the server sees rapid StateNew→StateClosed
-	// transitions racing the drain. Clients ignore errors — Drain's Shutdown
+	// transitions racing the drain. Clients ignore errors - Drain's Shutdown
 	// makes later requests fail, which is expected.
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -1138,7 +1138,7 @@ func TestDrainRacesNewConnections(t *testing.T) {
 // while the churner replaces it under s.mu.Lock. Run under -race it validates the
 // RWMutex and the immutable-snapshot design (SetFrontends replaces, never
 // mutates), and asserts every response is a valid 200 (frontends present) or 503
-// (empty set) — never a panic or corrupt status.
+// (empty set) - never a panic or corrupt status.
 func TestServeHTTPRacesSetFrontends(t *testing.T) {
 	t.Parallel()
 	s := newTestServer()

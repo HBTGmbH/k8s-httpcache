@@ -159,7 +159,7 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 			valueType = prometheus.CounterValue
 		}
 
-		// Skip zero-value counters — they carry no information and reduce scrape size.
+		// Skip zero-value counters - they carry no information and reduce scrape size.
 		// Gauges and bitmaps at 0 remain meaningful (e.g. n_object=0, happy=0).
 		if valueType == prometheus.CounterValue && counter.Value == 0 {
 			continue
@@ -237,7 +237,7 @@ const (
 	metricLockDestroyed  = "varnish_lock_destroyed"
 	metricLockOperations = "varnish_lock_operations"
 
-	// metricSMAGAlloc anchors the SMA "g_alloc" gauge — referenced from both
+	// metricSMAGAlloc anchors the SMA "g_alloc" gauge - referenced from both
 	// labelKeyByMetric and as a key in resolveMetric.
 	metricSMAGAlloc = "varnish_sma_g_alloc"
 
@@ -249,7 +249,7 @@ const (
 // compareReloadTags orders two reload tag suffixes (the part after
 // "VBE.kv_reload_"). The controller names reloads with an unpadded counter
 // (kv_reload_1, … kv_reload_10), so purely numeric tags are compared
-// numerically — lexicographic comparison would rank 9 above 10. Non-numeric
+// numerically - lexicographic comparison would rank 9 above 10. Non-numeric
 // tags (e.g. timestamp-style) fall back to lexicographic ordering.
 func compareReloadTags(a, b string) int {
 	na, errA := strconv.ParseUint(a, 10, 64)
@@ -361,7 +361,7 @@ func normalizeBackendName(raw string) string {
 // identifier string. Handles parenthesized (host,,port) and plain backend
 // name formats.
 func parseBackendIdent(ident string) (string, string) {
-	// Parenthesized: name(ip,,port) — most common format.
+	// Parenthesized: name(ip,,port) - most common format.
 	if paren := strings.LastIndexByte(ident, '('); paren >= 0 &&
 		len(ident) > paren+1 && ident[len(ident)-1] == ')' {
 		addr := strings.Replace(ident[paren+1:len(ident)-1], ",,", ":", 1)
@@ -376,11 +376,11 @@ func parseBackendIdent(ident string) (string, string) {
 // a single metric distinguished by a label. The fq* fields are pre-computed
 // at package init time to avoid repeated string concatenation per counter.
 type counterAggregation struct {
-	fqTotal       string // "varnish_" + totalKey — exact match for the total counter
-	fqMatch       string // "varnish_" + match — prefix to test against
-	fqMatchPrefix string // fqMatch + "_" — pre-computed prefix for HasPrefix checks
-	target        string // "varnish_" + (renamed or match) — output metric name
-	targetTotal   string // target + "_total" — pre-computed total metric name
+	fqTotal       string // "varnish_" + totalKey - exact match for the total counter
+	fqMatch       string // "varnish_" + match - prefix to test against
+	fqMatchPrefix string // fqMatch + "_" - pre-computed prefix for HasPrefix checks
+	target        string // "varnish_" + (renamed or match) - output metric name
+	targetTotal   string // target + "_total" - pre-computed total metric name
 	help          string // shared help text
 	label         string // label key (always populated, defaults to "type")
 }
@@ -461,7 +461,7 @@ func toLowerASCII(s string) string {
 			continue
 		}
 
-		// Found uppercase — build lowered copy.
+		// Found uppercase - build lowered copy.
 		var b strings.Builder
 		b.Grow(len(s))
 		_, _ = b.WriteString(s[:i])

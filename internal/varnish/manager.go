@@ -578,7 +578,7 @@ func (m *Manager) monitorNCSA() {
 			m.sendNCSAEvent("Warning", "VarnishncsaExited",
 				fmt.Sprintf("varnishncsa exited unexpectedly: %v", waitErr))
 			// A run that stayed up long enough is not part of a crash
-			// loop — reset the counter and do not count this exit, so only
+			// loop - reset the counter and do not count this exit, so only
 			// consecutive rapid failures trip the breaker, not unrelated
 			// exits spread over the process lifetime. Counting the stable
 			// exit itself (crashes = 0 then crashes++) would leave crashes

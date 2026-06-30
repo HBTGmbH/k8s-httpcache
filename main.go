@@ -53,7 +53,7 @@ var version = "dev"
 
 const (
 	// drainBackendName is the VCL backend name used internally for graceful
-	// connection draining. Users do not configure this — it is auto-injected
+	// connection draining. Users do not configure this - it is auto-injected
 	// into the rendered VCL when --drain is enabled.
 	drainBackendName = "drain_flag"
 
@@ -427,7 +427,7 @@ func parseTLSCertInfo(name string, certPEM []byte) (tlsCertInfo, error) {
 
 // recordTLSCertInfo parses a leaf certificate and records its metadata in the
 // status store and the cert-expiry gauge. Parse failures are logged but never
-// fatal — the certificate has already been validated and loaded by the manager.
+// fatal - the certificate has already been validated and loaded by the manager.
 //
 // The expiry gauge is keyed by the configured certificate name, of which there
 // is a fixed set (one per --tls-cert flag), so the series count is bounded and
@@ -1737,7 +1737,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		case bc := <-backendChan(lc.backendCh):
 			lc.debug("event", "kind", "backend", "name", bc.name, "gen", bc.gen,
 				"removed", bc.removed, "endpoints", len(bc.endpoints))
-			// Drop any update — ADD or REMOVAL — from a discovery incarnation
+			// Drop any update - ADD or REMOVAL - from a discovery incarnation
 			// older than the one that currently owns this backend name. After a
 			// name is handed between two --backend-selector watchers the new
 			// owner's gen-2 ADD can be processed before the old owner's gen-1
@@ -1754,7 +1754,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// Drop a stale ADD emitted by a cancelled forwarding goroutine for a
 			// discovery incarnation that was already removed (its gen is <= the
 			// gen recorded at removal). Once the backend was deleted its liveGen
-			// entry is gone, so this tombstone — not the check above — catches the
+			// entry is gone, so this tombstone - not the check above - catches the
 			// late ADD that would otherwise resurrect it.
 			if !bc.removed && bc.gen != 0 && bc.gen <= removedGen[bc.name].gen {
 				lc.debug("decision", "action", "drop", "kind", "backend", "reason", "stale-removed-tombstone",

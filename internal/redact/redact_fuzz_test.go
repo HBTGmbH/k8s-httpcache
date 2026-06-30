@@ -43,7 +43,7 @@ func FuzzRedactNestedSecrets(f *testing.F) {
 // To keep the assertion sound, the secret is required to share no byte with the
 // placeholder text ([REDACTED]). That guarantees the inserted placeholder can
 // neither contain a fragment of the secret nor bridge two original fragments
-// into one — so any occurrence of the secret in the output would be a genuine
+// into one - so any occurrence of the secret in the output would be a genuine
 // leak, never an artifact of the replacement. (Without this guard a secret like
 // "000001" "reappears" around "000[REDACTED]001", which is not a real leak.)
 func FuzzRedact(f *testing.F) {

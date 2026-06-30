@@ -1385,9 +1385,9 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				c.BroadcastTargetPort = port
 
 				// The broadcast server's WriteTimeout bounds the whole handler
-				// after the request headers are read — reading the request body
+				// after the request headers are read - reading the request body
 				// (up to --broadcast-read-timeout) and the parallel fan-out to
-				// pods (up to --broadcast-client-timeout) — before the response
+				// pods (up to --broadcast-client-timeout) - before the response
 				// is written. If it does not exceed read + client, a slow
 				// request can trip the write deadline and truncate the fan-out
 				// response, so enforce the constraint documented on the flag.
@@ -1620,8 +1620,8 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 // lookPathFn probes whether a binary name exists on PATH.
 //
 // Priority:
-//  1. Explicit vinyl flag (--vinyld-path, etc.) — always wins.
-//  2. Explicit varnish flag (--varnishd-path, etc.) — honoured; skips auto-detect.
+//  1. Explicit vinyl flag (--vinyld-path, etc.) - always wins.
+//  2. Explicit varnish flag (--varnishd-path, etc.) - honoured; skips auto-detect.
 //  3. Auto-detect: if lookPathFn("vinyld") succeeds, use vinyl defaults; otherwise
 //     keep the varnish defaults.
 func resolveBinaryPaths(c *Config, vinyldPath, vinyladmPath, vinylstatPath, vinylncsaPath string, varnishExplicit bool, lookPathFn func(string) (string, error)) {

@@ -28,7 +28,7 @@ A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) w
 - Uses `<< ... >>` as default template delimiters to not clash with Helm templating (configurable via `--template-delims`)
 - Graceful connection draining on shutdown with active session polling via varnishstat
 - [Broadcast server](#broadcast-server) that fans out requests (e.g. PURGE) to all Varnish frontend pods
-- Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more — plus a built-in [varnishstat exporter](#varnishstat-exporter), so no separate `prometheus-varnish-exporter` sidecar is needed
+- Prometheus metrics for VCL reloads, endpoint counts, broadcast stats, and more - plus a built-in [varnishstat exporter](#varnishstat-exporter), so no separate `prometheus-varnish-exporter` sidecar is needed
 - [ExternalName service](#externalname-services) support for hostname-based backends
   - https://github.com/mittwald/kube-httpcache/issues/39
 - Native [frontend TLS/HTTPS termination](#tls--https) (Varnish 9+) with certificates from `kubernetes.io/tls` Secrets ([`--tls-cert`](#tls--https)), hot-rotated on renewal without restarting Varnish (cache stays warm), with SNI for multiple certificates
@@ -39,7 +39,7 @@ A replacement for [kube-httpcache](https://github.com/mittwald/kube-httpcache) w
   - https://github.com/mittwald/kube-httpcache/issues/53
 - Supports both [Varnish Cache](https://varnish-cache.org/) and [Vinyl Cache](https://vinyl-cache.org/) with [automatic detection](#varnish-cache-vs-vinyl-cache) and configurable binary paths
 - Structured logging with configurable format (text/json) and log level
-- [Kubernetes Events](#kubernetes-events) for VCL reloads, template changes, rollbacks, drain lifecycle, and varnishd crashes — visible via `kubectl describe pod` and `kubectl get events`
+- [Kubernetes Events](#kubernetes-events) for VCL reloads, template changes, rollbacks, drain lifecycle, and varnishd crashes - visible via `kubectl describe pod` and `kubectl get events`
 - [Discarding old VCL objects](#vcl-retention) after reload and keep the most recent `N` object (`--vcl-kept=N`), to avoid unbounded Varnish memory usage with every successive VCL reload
 - [Endpoint change debouncing](#tuning-debounce) to avoid rapid VCL reload cycles, with independent timers for frontend and backend changes (`--frontend-debounce`, `--backend-debounce`)
   - https://github.com/mittwald/kube-httpcache/issues/66
@@ -82,13 +82,13 @@ for the available values.
 
 [`.github/test/manifest.yaml`](.github/test/manifest.yaml) contains a complete working example. It creates the following resources:
 
-- **ServiceAccount** — identity for the k8s-httpcache pod
-- **Role** — permissions to list/watch services and endpointslices
-- **RoleBinding** — binds the Role to the ServiceAccount
-- **ClusterRole** + **ClusterRoleBinding** — permissions to read node objects for [topology zone detection](#topology-aware-routing) (not needed when using `--zone`)
-- **Deployment** — runs k8s-httpcache with Varnish (3 replicas, graceful connection draining)
-- **Service** — exposes HTTP (port 80) and the broadcast server (port 8088)
-- **ConfigMap** — holds the VCL template
+- **ServiceAccount** - identity for the k8s-httpcache pod
+- **Role** - permissions to list/watch services and endpointslices
+- **RoleBinding** - binds the Role to the ServiceAccount
+- **ClusterRole** + **ClusterRoleBinding** - permissions to read node objects for [topology zone detection](#topology-aware-routing) (not needed when using `--zone`)
+- **Deployment** - runs k8s-httpcache with Varnish (3 replicas, graceful connection draining)
+- **Service** - exposes HTTP (port 80) and the broadcast server (port 8088)
+- **ConfigMap** - holds the VCL template
 
 Apply it with:
 
@@ -102,12 +102,12 @@ k8s-httpcache is a near drop-in replacement for [kube-httpcache](https://github.
 
 ### Deployment model
 
-Both projects have the **same basic shape**: a single container whose entrypoint is a Go controller that watches Kubernetes and runs **`varnishd` as a subprocess** (Varnish is never a separate container, and there is no controller sidecar). Migrating is therefore not about collapsing processes — it is about how that controller reaches Varnish, how the image is built, and how the pod is wired. The differences that matter:
+Both projects have the **same basic shape**: a single container whose entrypoint is a Go controller that watches Kubernetes and runs **`varnishd` as a subprocess** (Varnish is never a separate container, and there is no controller sidecar). Migrating is therefore not about collapsing processes - it is about how that controller reaches Varnish, how the image is built, and how the pod is wired. The differences that matter:
 
-- **Varnish CLI / admin secret.** kube-httpcache drives Varnish over its **TCP management interface** (`-admin-addr` / `-admin-port`; the chart binds `0.0.0.0:6083`) authenticated by an **admin secret** (`-varnish-secret-file`), so the pod carries a mounted `Secret` and an open CLI port. k8s-httpcache starts `varnishd` with **no `-T` / `-S`** and reaches the CLI **locally through Varnish's working directory** (`varnishadm -n`), where `varnishd` keeps its own auto-generated secret — so there is **no management port and no admin `Secret`** to create, mount, or rotate.
+- **Varnish CLI / admin secret.** kube-httpcache drives Varnish over its **TCP management interface** (`-admin-addr` / `-admin-port`; the chart binds `0.0.0.0:6083`) authenticated by an **admin secret** (`-varnish-secret-file`), so the pod carries a mounted `Secret` and an open CLI port. k8s-httpcache starts `varnishd` with **no `-T` / `-S`** and reaches the CLI **locally through Varnish's working directory** (`varnishadm -n`), where `varnishd` keeps its own auto-generated secret - so there is **no management port and no admin `Secret`** to create, mount, or rotate.
 - **Container image.** kube-httpcache ships one image that **bundles Varnish and the controller** (`quay.io/mittwald/kube-httpcache`). k8s-httpcache ships a **distroless, binary-only** image that you layer onto the Varnish (or Vinyl) base image of your choice, so you pick the cache version (see [Container image](#container-image)).
 - **Endpoint discovery.** kube-httpcache watches `Endpoints`; k8s-httpcache watches **EndpointSlices** (`discovery.k8s.io/v1`). Update RBAC accordingly (see [RBAC](#rbac)).
-- **Workload kind.** The kube-httpcache chart defaults to a **StatefulSet** (`useStatefulset.enabled: true`); the k8s-httpcache chart ships a plain **Deployment**. Stable pod identities are not required — peers come from the frontend Service's EndpointSlice (`.Frontends`) and the shard director is rebuilt whenever endpoints change.
+- **Workload kind.** The kube-httpcache chart defaults to a **StatefulSet** (`useStatefulset.enabled: true`); the k8s-httpcache chart ships a plain **Deployment**. Stable pod identities are not required - peers come from the frontend Service's EndpointSlice (`.Frontends`) and the shard director is rebuilt whenever endpoints change.
 - **Cache invalidation.** The built-in [broadcast server](#broadcast-server) (port `8088`) replaces kube-httpcache's signaller (`-signaller-enable`, port `8090`); see [Cache invalidation](#cache-invalidation-signaller-8090--broadcast-8088) below.
 
 One operational note: k8s-httpcache writes rendered VCL under `/tmp`, so that path must be writable (an `emptyDir`, ideally `medium: Memory`).
@@ -119,14 +119,14 @@ One operational note: k8s-httpcache writes rendered VCL under `/tmp`, so that pa
 | `-frontend-service` / `-frontend-namespace` | `--service-name`, `-s` `[namespace/]service` (+ `--namespace`, `-n`) | The frontend Service is still required: it is the source of `.Frontends` and the broadcast fan-out targets. |
 | `-frontend-addr` / `-frontend-port` (`8080`) | `--listen-addr`, `-l` (`http=:8080,HTTP`) | Full varnishd `-a` syntax; repeatable. See [Listen address specification](#listen-address-specification). |
 | `-backend-service` / `-backend-namespace` / `-backend-portname` | `--backend`, `-b` `name:[namespace/]service[:port]` (repeatable) | Backends are now **named** and you can have [multiple groups](#backend-specification), or auto-discover them with [`--backend-selector`](#dynamic-backend-discovery). |
-| `-varnish-vcl-template` | `--vcl-template`, `-t` | Template syntax differs — see [VCL template translation](#vcl-template-translation). |
+| `-varnish-vcl-template` | `--vcl-template`, `-t` | Template syntax differs - see [VCL template translation](#vcl-template-translation). |
 | `-varnish-vcl-template-poll` | `--file-watch` (default **true**) | The template is watched and reloaded by default, with [rollback](#runtime-reload-and-rollback) on failure. |
 | `-varnish-storage` / `-varnish-transient-storage` | varnishd args after `--` (e.g. `-- -s file,/var/lib/varnish,1G`) | See [Passing arguments to varnishd](#passing-arguments-to-varnishd). |
 | `-varnish-additional-parameters` / `-varnish-working-dir` | varnishd args after `--` (e.g. `-- -p …` / `-- -n …`) | |
-| `-admin-addr` / `-admin-port` (`6082`) / `-varnish-secret-file` | *(none — admin socket managed internally)* | No admin port to expose, no secret to mount. |
+| `-admin-addr` / `-admin-port` (`6082`) / `-varnish-secret-file` | *(none - admin socket managed internally)* | No admin port to expose, no secret to mount. |
 | `-signaller-enable` | broadcast server is on by default (`--broadcast-addr=none` to disable) | |
 | `-signaller-addr` / `-signaller-port` (`8090`) | `--broadcast-addr` (`:8088`) | Port changes **8090 → 8088**. See [Broadcast server](#broadcast-server). |
-| `-signaller-request-timeout` | `--broadcast-client-timeout` (`3s`) | The signaller worker/retry/queue knobs have no analogue — fan-out is concurrent per request. |
+| `-signaller-request-timeout` | `--broadcast-client-timeout` (`3s`) | The signaller worker/retry/queue knobs have no analogue - fan-out is concurrent per request. |
 | `-readiness-enable` / `-readiness-addr` (`:9102`) | `/readyz` and `/healthz` on the metrics server (`--metrics-addr`, `:9101`) | Port changes **9102 → 9101**; checks are path-based. |
 | `-v[N]` | `--log-level` (`DEBUG`/`INFO`/`WARN`/`ERROR`) + `--log-format` (`text`/`json`) | |
 
@@ -139,7 +139,7 @@ Your VCL logic carries over unchanged. Only two mechanical things differ:
 1. **Delimiters** `{{ … }}` → `<< … >>` (or keep `{{ … }}` by passing `--template-delims="{{ }}"` to minimize the diff).
 2. **`.Backends` is a map** keyed by backend name, not a flat slice. A single `range .Backends` becomes a nested `range $name, $bg := .Backends` then `range $bg.Endpoints`.
 
-**Before** (kube-httpcache — `{{ }}`, `.Backends` slice, `.Host`):
+**Before** (kube-httpcache - `{{ }}`, `.Backends` slice, `.Host`):
 
 ```vcl
 {{ range .Backends }}
@@ -157,7 +157,7 @@ sub vcl_init {
 }
 ```
 
-**After** (k8s-httpcache — `<< >>`, `.Backends` map):
+**After** (k8s-httpcache - `<< >>`, `.Backends` map):
 
 ```vcl
 <<- range $name, $bg := .Backends >>
@@ -179,7 +179,7 @@ sub vcl_init {
 }
 ```
 
-`.Frontends` stays a flat slice, so only the delimiter change applies there. Bump `vcl 4.0;` to `vcl 4.1;` while you are here (recommended; the real constraint is your installed Varnish version). For the full picture — a frontend shard director with self-routing plus PURGE handling — see the [Reference VCL template](#reference-vcl-template) and the [template data model](#data-model).
+`.Frontends` stays a flat slice, so only the delimiter change applies there. Bump `vcl 4.0;` to `vcl 4.1;` while you are here (recommended; the real constraint is your installed Varnish version). For the full picture - a frontend shard director with self-routing plus PURGE handling - see the [Reference VCL template](#reference-vcl-template) and the [template data model](#data-model).
 
 ### Cache invalidation: signaller (`:8090`) → broadcast (`:8088`)
 
@@ -189,11 +189,11 @@ The [broadcast server](#broadcast-server) forwards the request method, path, que
 # kube-httpcache signaller (port 8090)
 curl -X BAN -H "X-Url: /products" -H "X-Host: example.com" http://my-cache:8090/
 
-# k8s-httpcache broadcast server (port 8088) — same method and headers
+# k8s-httpcache broadcast server (port 8088) - same method and headers
 curl -X BAN -H "X-Url: /products" -H "X-Host: example.com" http://my-cache:8088/
 ```
 
-The one behavioral difference: the broadcast server returns an aggregated JSON object — `{"pod-name": {"status": 200, "body": "…"}}` — instead of the signaller's response. Update any tooling that parsed the old shape (see [Response format](#response-format)).
+The one behavioral difference: the broadcast server returns an aggregated JSON object - `{"pod-name": {"status": 200, "body": "…"}}` - instead of the signaller's response. Update any tooling that parsed the old shape (see [Response format](#response-format)).
 
 ### Helm chart
 
@@ -215,7 +215,7 @@ If you deploy kube-httpcache with its Helm chart, the bundled [`charts/k8s-httpc
 
 ### What you gain
 
-Beyond parity, the move unlocks the capabilities listed in [Features](#features): startup and readiness probes that don't wait for a non-empty EndpointSlice, automatic VCL [rollback and reload retries](#runtime-reload-and-rollback), [multiple backend groups](#backend-specification) and [label-based discovery](#dynamic-backend-discovery), [topology-aware routing](#topology-aware-routing), graceful [connection draining](#graceful-shutdown--zero-downtime-deploys), [ConfigMap/Secret template values](#values-specification), and managed [access logging](#access-logging) — plus a built-in [varnishstat exporter](#varnishstat-exporter) that removes the separate `prometheus-varnish-exporter` sidecar a kube-httpcache deployment typically runs.
+Beyond parity, the move unlocks the capabilities listed in [Features](#features): startup and readiness probes that don't wait for a non-empty EndpointSlice, automatic VCL [rollback and reload retries](#runtime-reload-and-rollback), [multiple backend groups](#backend-specification) and [label-based discovery](#dynamic-backend-discovery), [topology-aware routing](#topology-aware-routing), graceful [connection draining](#graceful-shutdown--zero-downtime-deploys), [ConfigMap/Secret template values](#values-specification), and managed [access logging](#access-logging) - plus a built-in [varnishstat exporter](#varnishstat-exporter) that removes the separate `prometheus-varnish-exporter` sidecar a kube-httpcache deployment typically runs.
 
 ## Configuration
 
@@ -288,7 +288,7 @@ These flags control which cache binaries k8s-httpcache uses. See [Varnish Cache 
 | `--varnishstat-export` | `false` | Enable varnishstat Prometheus exporter on `/metrics` |
 | `--varnishstat-export-filter` | *(all)* | Counter groups to export (e.g. `MAIN,SMA,VBE`); empty exports all |
 
-Responses from `/metrics` are gzip-compressed (or zstd, when supported) when the scraper advertises it via `Accept-Encoding` — which Prometheus does by default; otherwise the response is served uncompressed.
+Responses from `/metrics` are gzip-compressed (or zstd, when supported) when the scraper advertises it via `Accept-Encoding` - which Prometheus does by default; otherwise the response is served uncompressed.
 
 The metrics endpoint exposes the standard Go runtime and process metrics (`go_*`, `process_*`) plus the following application metrics, all prefixed with `k8s_httpcache_`:
 
@@ -327,7 +327,7 @@ The `group` label is `frontend` (`--service-name` endpoint changes), `backend` (
 
 #### Varnishstat exporter
 
-k8s-httpcache scrapes `varnishstat`, interprets its counters, and exposes them as Prometheus metrics itself — so you don't need a separate `prometheus-varnish-exporter` sidecar. The exported metric names, labels, and value types match the de-facto [`prometheus-varnish-exporter`](https://github.com/jonnenauha/prometheus_varnish_exporter), so Grafana dashboards and Prometheus alerts built for it keep working unchanged. When `--varnishstat-export` is enabled, native Varnish counters from `varnishstat` are exported as `varnish_*` Prometheus metrics on the same `/metrics` endpoint. Use `--varnishstat-export-filter` to limit which counter groups are exported.
+k8s-httpcache scrapes `varnishstat`, interprets its counters, and exposes them as Prometheus metrics itself - so you don't need a separate `prometheus-varnish-exporter` sidecar. The exported metric names, labels, and value types match the de-facto [`prometheus-varnish-exporter`](https://github.com/jonnenauha/prometheus_varnish_exporter), so Grafana dashboards and Prometheus alerts built for it keep working unchanged. When `--varnishstat-export` is enabled, native Varnish counters from `varnishstat` are exported as `varnish_*` Prometheus metrics on the same `/metrics` endpoint. Use `--varnishstat-export-filter` to limit which counter groups are exported.
 
 The exporter always registers these meta-metrics:
 
@@ -405,7 +405,7 @@ curl -s http://localhost:9101/status | jq .
 }
 ```
 
-`lastReloadAt` is `null` before the first VCL reload. The `tls` object reports TLS state — `enabled`/`supported` flags, configured vs. active certificate counts, the last certificate (re)load time (`null` if none), and per-certificate metadata (subject, DNS SANs, `notAfter` expiry, issuer) parsed from the loaded leaf certificates; `certificates` is empty when TLS is not configured. The endpoint only accepts `GET` requests.
+`lastReloadAt` is `null` before the first VCL reload. The `tls` object reports TLS state - `enabled`/`supported` flags, configured vs. active certificate counts, the last certificate (re)load time (`null` if none), and per-certificate metadata (subject, DNS SANs, `notAfter` expiry, issuer) parsed from the loaded leaf certificates; `certificates` is empty when TLS is not configured. The endpoint only accepts `GET` requests.
 
 #### Health endpoints
 
@@ -530,9 +530,9 @@ Events require RBAC permission to `create` and `patch` the `events` resource (se
 
 ### Tuning debounce
 
-In a typical Kubernetes deployment, endpoint changes arrive in bursts — for example when a `Deployment` scales up/down or a rolling update replaces pods. The `--debounce` and `--debounce-max` flags control how these bursts are batched into VCL reloads.
+In a typical Kubernetes deployment, endpoint changes arrive in bursts - for example when a `Deployment` scales up/down or a rolling update replaces pods. The `--debounce` and `--debounce-max` flags control how these bursts are batched into VCL reloads.
 
-**Why two settings?** `--debounce` alone handles short bursts well: it waits for a quiet period before reloading, so a flurry of near-simultaneous changes produces a single reload. But during a sustained stream of events — e.g. a rolling update replacing pods one at a time every few seconds — there is never a quiet period long enough for the debounce timer to fire. `--debounce-max` solves this by putting an upper bound on how long the system will wait. Together, the two settings give you the best of both worlds: short bursts are coalesced into one reload (thanks to `--debounce`), while prolonged activity still triggers periodic reloads (thanks to `--debounce-max`). Setting both to the same value would effectively disable the coalescing benefit — every burst would trigger a reload after exactly that duration, even if waiting just a little longer would have captured all changes in a single reload.
+**Why two settings?** `--debounce` alone handles short bursts well: it waits for a quiet period before reloading, so a flurry of near-simultaneous changes produces a single reload. But during a sustained stream of events - e.g. a rolling update replacing pods one at a time every few seconds - there is never a quiet period long enough for the debounce timer to fire. `--debounce-max` solves this by putting an upper bound on how long the system will wait. Together, the two settings give you the best of both worlds: short bursts are coalesced into one reload (thanks to `--debounce`), while prolonged activity still triggers periodic reloads (thanks to `--debounce-max`). Setting both to the same value would effectively disable the coalescing benefit - every burst would trigger a reload after exactly that duration, even if waiting just a little longer would have captured all changes in a single reload.
 
 **Recommended starting point:**
 
@@ -551,9 +551,9 @@ In a typical Kubernetes deployment, endpoint changes arrive in bursts — for ex
 | Large clusters or slow rollouts (100+ pods) | Raise `--debounce-max` (e.g. `5s`–`10s`) to batch more changes per reload and reduce VCL churn |
 | Near-instant convergence required | `--debounce=500ms --debounce-max=2s`, at the cost of more frequent reloads                     |
 
-**Caution:** Setting either value too high can cause Varnish to keep routing requests to pods that have already been terminated or are no longer accepting traffic. During a rolling update, Kubernetes removes old pods while adding new ones — if the VCL reload is delayed too long, Varnish's backend list becomes stale and requests to removed pods will fail with backend connection errors. Ideally, keep `--debounce-max` shorter than any `preStop` sleep or graceful shutdown timeout configured on your backend pods — this ensures Varnish updates its backend list before the old pods actually stop accepting connections.
+**Caution:** Setting either value too high can cause Varnish to keep routing requests to pods that have already been terminated or are no longer accepting traffic. During a rolling update, Kubernetes removes old pods while adding new ones - if the VCL reload is delayed too long, Varnish's backend list becomes stale and requests to removed pods will fail with backend connection errors. Ideally, keep `--debounce-max` shorter than any `preStop` sleep or graceful shutdown timeout configured on your backend pods - this ensures Varnish updates its backend list before the old pods actually stop accepting connections.
 
-**Per-source overrides:** By default, all event sources share the same debounce settings. If your frontend and backend update patterns differ — e.g. frontends are stable while backends scale frequently — or the preStop / graceful shutdown timeouts are different between the frontend pods (k8s-httpcache/Varnish) and the backends, you can set independent timers with `--frontend-debounce` / `--frontend-debounce-max` and `--backend-debounce` / `--backend-debounce-max`. The frontend group covers `--service-name` endpoint changes; the backend group covers `--backend`, `--values`, `--values-dir`, and VCL template changes. When either timer fires, VCL reloads atomically with all latest state, clearing both timers. When not set, these flags inherit from `--debounce` / `--debounce-max`.
+**Per-source overrides:** By default, all event sources share the same debounce settings. If your frontend and backend update patterns differ - e.g. frontends are stable while backends scale frequently - or the preStop / graceful shutdown timeouts are different between the frontend pods (k8s-httpcache/Varnish) and the backends, you can set independent timers with `--frontend-debounce` / `--frontend-debounce-max` and `--backend-debounce` / `--backend-debounce-max`. The frontend group covers `--service-name` endpoint changes; the backend group covers `--backend`, `--values`, `--values-dir`, and VCL template changes. When either timer fires, VCL reloads atomically with all latest state, clearing both timers. When not set, these flags inherit from `--debounce` / `--debounce-max`.
 
 ```
 --debounce=2s --debounce-max=10s \
@@ -573,7 +573,7 @@ The `--vcl-kept` flag controls how many old VCL objects are retained after each 
 | `0` (default) | All old available VCL objects are discarded immediately after reload |
 | `N` (e.g. `3`) | The `N` most recent available VCL objects are kept; older ones are discarded |
 
-Cleanup runs in the background after every successful reload and is best-effort — a failed discard is logged as a warning but does not affect the reload itself.
+Cleanup runs in the background after every successful reload and is best-effort - a failed discard is logged as a warning but does not affect the reload itself.
 
 **When to increase `--vcl-kept`:** Keeping one or more old VCL objects allows Varnish to finish processing in-flight requests that reference the previous VCL before it is discarded. In practice the default of `0` works well because Varnish internally holds a reference to any VCL that has active requests, preventing it from being freed until those requests complete. Increasing `--vcl-kept` can be useful for debugging (e.g. inspecting previous VCL versions via `varnishadm vcl.show`) or as extra safety margin in high-traffic environments.
 
@@ -607,11 +607,11 @@ k8s-httpcache supports both [Varnish Cache](https://varnish-cache.org/) (version
 
 **Selection priority:**
 
-1. **Explicit vinyl flags** (`--vinyld-path`, `--vinyladm-path`, `--vinylstat-path`, `--vinylncsa-path`) — always take precedence. When any vinyl flag is set, all unset binaries default to the vinyl names (e.g. setting only `--vinyld-path` also switches admin, stat, and ncsa to `vinyladm`, `vinylstat`, `vinylncsa`).
-2. **Explicit varnish flags** (`--varnishd-path`, `--varnishadm-path`, `--varnishstat-path`, `--varnishncsa-path`) — honoured when no vinyl flags are set. Auto-detection is skipped.
-3. **Auto-detection** — when no path flags are set explicitly, k8s-httpcache checks whether `vinyld` is available on `PATH`. If found, all binaries switch to their vinyl names. Otherwise, the varnish defaults are used.
+1. **Explicit vinyl flags** (`--vinyld-path`, `--vinyladm-path`, `--vinylstat-path`, `--vinylncsa-path`) - always take precedence. When any vinyl flag is set, all unset binaries default to the vinyl names (e.g. setting only `--vinyld-path` also switches admin, stat, and ncsa to `vinyladm`, `vinylstat`, `vinylncsa`).
+2. **Explicit varnish flags** (`--varnishd-path`, `--varnishadm-path`, `--varnishstat-path`, `--varnishncsa-path`) - honoured when no vinyl flags are set. Auto-detection is skipped.
+3. **Auto-detection** - when no path flags are set explicitly, k8s-httpcache checks whether `vinyld` is available on `PATH`. If found, all binaries switch to their vinyl names. Otherwise, the varnish defaults are used.
 
-In most cases, no path flags are needed — auto-detection handles the selection based on your container image. If your image contains both Varnish and Vinyl binaries and you want to force one, set the appropriate flags.
+In most cases, no path flags are needed - auto-detection handles the selection based on your container image. If your image contains both Varnish and Vinyl binaries and you want to force one, set the appropriate flags.
 
 **Vinyl Cache differences to be aware of:**
 
@@ -649,9 +649,9 @@ Format: `name:[namespace/]service[:port]`
 
 ### Port resolution
 
-- **Numeric port** (e.g. `:3000`) — used as-is
-- **Named port** (e.g. `:http`) — looked up in the EndpointSlice
-- **Omitted** — the first port from the EndpointSlice is used
+- **Numeric port** (e.g. `:3000`) - used as-is
+- **Named port** (e.g. `:http`) - looked up in the EndpointSlice
+- **Omitted** - the first port from the EndpointSlice is used
 
 ### Examples
 
@@ -692,7 +692,7 @@ Format: `[namespace//]selector[:port]`
 
 Discovered Services are merged into `.Backends` keyed by their Service name. For example, a Service named `api-v2` matching the selector appears in templates as `.Backends.api-v2`, exactly like an explicit `--backend=api-v2:api-v2` would.
 
-Explicit `--backend` names take priority — if a discovered Service has the same name as an explicit backend, the discovered Service is skipped. This lets you pin specific backends while still discovering the rest dynamically.
+Explicit `--backend` names take priority - if a discovered Service has the same name as an explicit backend, the discovered Service is skipped. This lets you pin specific backends while still discovering the rest dynamically.
 
 Service labels and annotations are available on each `BackendGroup` via `.Labels` and `.Annotations`. This enables conditional VCL logic based on Service metadata:
 
@@ -844,13 +844,13 @@ Secret values are rendered directly into VCL and passed to Varnish, so it is imp
 
 - **Rendered VCL on disk.** The rendered VCL is written to a temporary file that Varnish reads during `vcl.load`. The file is deleted immediately after use. In a Kubernetes deployment, the `/tmp` directory should be an `emptyDir` volume with `medium: Memory` (see [Security context](#security-context)) so that rendered VCL is never written to persistent storage.
 - **Request and response headers.** If your VCL template sets a secret value as an HTTP header (e.g. `bereq.http.Authorization`), that header is visible to backend services and may appear in their access logs. Similarly, secrets placed on response headers (e.g. `resp.http.*`) are visible to clients and any intermediary proxies that log headers. Only set secrets on headers that are strictly necessary, and ensure that both upstream and downstream services treat those headers as sensitive.
-- **Varnish process output and error messages.** When VCL compilation fails, `varnishd` and `varnishadm` may include VCL source lines — containing rendered secrets — in their error output. k8s-httpcache automatically redacts all known secret values (strings of 6 characters or longer) from process output, command responses, log messages, and Kubernetes Events. This protects against accidental exposure in logs, but the redactor only covers values it knows about — secrets must be loaded via `--secrets` to be redacted.
+- **Varnish process output and error messages.** When VCL compilation fails, `varnishd` and `varnishadm` may include VCL source lines - containing rendered secrets - in their error output. k8s-httpcache automatically redacts all known secret values (strings of 6 characters or longer) from process output, command responses, log messages, and Kubernetes Events. This protects against accidental exposure in logs, but the redactor only covers values it knows about - secrets must be loaded via `--secrets` to be redacted.
 - **Varnish shared memory log (VSL).** Varnish logs request and response headers to its shared memory log, accessible via `varnishlog` / `varnishncsa`. If a secret is set on a header, it will appear in VSL. This is outside the control of k8s-httpcache. If you expose VSL tooling, be aware that header values may contain secrets.
 
 ## Serving static files
 
-Varnish can serve small static assets — `robots.txt`, a health/version JSON, a
-maintenance page, a bit of CSS — directly from memory via the `std` VMOD's
+Varnish can serve small static assets - `robots.txt`, a health/version JSON, a
+maintenance page, a bit of CSS - directly from memory via the `std` VMOD's
 [`std.fileread`](https://varnish-cache.org/docs/trunk/reference/vmod_std.html#std-fileread),
 with no backend involved. The Helm chart lets you declare those files in
 `values.yaml`; you add a small snippet to your VCL to route requests to them.
@@ -863,7 +863,7 @@ Varnish container:
 ```yaml
 staticFiles:
   enabled: true
-  # Sibling of /etc/k8s-httpcache (the VCL mount) — must not be nested under it.
+  # Sibling of /etc/k8s-httpcache (the VCL mount) - must not be nested under it.
   mountPath: /etc/k8s-httpcache-static
   files:
     robots.txt: |
@@ -941,7 +941,7 @@ sub vcl_synth {
 ### Caveats
 
 - **Updates require a pod restart.** `std.fileread` reads each file once and caches
-  its content for the **varnishd process lifetime** — the cache is keyed by path and
+  its content for the **varnishd process lifetime** - the cache is keyed by path and
   is **not refreshed by a VCL reload** ([upstream docs](https://varnish-cache.org/docs/trunk/reference/vmod_std.html#std-fileread)),
   so only restarting the varnishd process re-reads the file. The chart therefore rolls
   the pods on a content change: a `checksum/static` pod annotation means a `helm
@@ -951,7 +951,7 @@ sub vcl_synth {
   in the VCL or a custom Varnish image with a re-reading VMOD (e.g. `libvmod-file`).
 - **Text only.** VCL strings are NUL-terminated, so `std.fileread` truncates a
   file at its first `0x00` byte. Binary assets (`favicon.ico`, images) are not
-  supported this way — serve them from a real backend instead.
+  supported this way - serve them from a real backend instead.
 
 ## TLS / HTTPS
 
@@ -962,9 +962,9 @@ Varnish Cache **9.0** introduced native, in-core TLS. k8s-httpcache uses it to t
 ### How it works
 
 1. Declare an HTTPS listener via `--listen-addr` using the `https` protocol token, e.g. `--listen-addr=https=:8443,https`. The listener starts even before any certificate is loaded.
-2. Point `--tls-cert` at a `kubernetes.io/tls` Secret (keys `tls.crt`, `tls.key`, optional `ca.crt`) — typically produced by [cert-manager](https://cert-manager.io/).
+2. Point `--tls-cert` at a `kubernetes.io/tls` Secret (keys `tls.crt`, `tls.key`, optional `ca.crt`) - typically produced by [cert-manager](https://cert-manager.io/).
 3. At startup, k8s-httpcache combines the key and certificate into a single PEM and installs it via `varnishadm tls.cert.load` + `tls.cert.commit` **before the pod becomes Ready**.
-4. When the Secret changes (cert-manager renews the certificate), the new certificate is staged, committed, and the superseded one is discarded — all at runtime, with no varnishd restart and no cold cache. Discarded certificates keep serving in-flight TLS sessions until they finish.
+4. When the Secret changes (cert-manager renews the certificate), the new certificate is staged, committed, and the superseded one is discarded - all at runtime, with no varnishd restart and no cold cache. Discarded certificates keep serving in-flight TLS sessions until they finish.
 
 Format: `name:[namespace/]secret`
 
@@ -1010,7 +1010,7 @@ Use the `namespace/secret` syntax to reference a Secret in another namespace. Th
 
 ### Backend (origin) TLS
 
-Connecting to an origin over HTTPS is a pure VCL concern in Varnish 9 — no controller configuration is needed. Add `.ssl = 1` to the backend definition in your VCL template:
+Connecting to an origin over HTTPS is a pure VCL concern in Varnish 9 - no controller configuration is needed. Add `.ssl = 1` to the backend definition in your VCL template:
 
 ```vcl
 backend secure_origin {
@@ -1041,7 +1041,7 @@ The `--values-dir` flag is an alternative to `--values` for cases where a Config
 **Behavior:**
 
 - Files must have a `.yaml` or `.yml` extension; other files are ignored
-- Dotfiles (names starting with `.`) are skipped — Kubernetes mounts ConfigMaps with `..data` and `..version` symlinks
+- Dotfiles (names starting with `.`) are skipped - Kubernetes mounts ConfigMaps with `..data` and `..version` symlinks
 - The filename without extension becomes the key (e.g. `server.yaml` → key `"server"`)
 - Each file is YAML-parsed into its natural type, identical to `--values` parsing
 - The directory is polled at the `--values-dir-poll-interval` (default `5s`)
@@ -1108,19 +1108,19 @@ A few commonly useful template functions for VCL templates:
 
 | Function | Description |
 |----------|-------------|
-| `replace` | `replace old new src` — e.g. `<< replace "http" "https" .URL >>` |
+| `replace` | `replace old new src` - e.g. `<< replace "http" "https" .URL >>` |
 | `upper` / `lower` | Convert to upper/lower case |
 | `trimPrefix` / `trimSuffix` | Strip a prefix or suffix |
 | `contains` / `hasPrefix` / `hasSuffix` | String predicates for `if` guards |
-| `default` | `default "fallback" .Val` — use a default when a value is empty |
-| `join` | `join ", " .List` — join a list with a separator |
+| `default` | `default "fallback" .Val` - use a default when a value is empty |
+| `join` | `join ", " .List` - join a list with a separator |
 | `quote` / `squote` | Wrap in double/single quotes |
-| `keys` | `keys .Backends` — list of map keys |
-| `hasKey` | `hasKey .Backends "api"` — check if a key exists |
-| `get` | `get .Backends "api"` — get a value by key (`""` if missing) |
-| `values` | `values .Backends` — list of map values |
-| `pick` | `pick .Backends "api" "worker"` — subset of a map by key names |
-| `omit` | `omit .Backends "internal"` — map without the named keys |
+| `keys` | `keys .Backends` - list of map keys |
+| `hasKey` | `hasKey .Backends "api"` - check if a key exists |
+| `get` | `get .Backends "api"` - get a value by key (`""` if missing) |
+| `values` | `values .Backends` - list of map values |
+| `pick` | `pick .Backends "api" "worker"` - subset of a map by key names |
+| `omit` | `omit .Backends "internal"` - map without the named keys |
 
 See the [full Sprig function reference](https://masterminds.github.io/sprig/) or the [Sprout documentation](https://docs.atom.codes/sprout) for the complete list.
 
@@ -1130,7 +1130,7 @@ The VCL template file is watched for changes. When a change is detected, k8s-htt
 
 ### Reference VCL template
 
-The following template (based on [`.github/test/manifest.yaml`](.github/test/manifest.yaml)) demonstrates shard-based routing, multiple backend groups, and PURGE handling. Note that drain VCL is **not** included here — when `--drain` is enabled, k8s-httpcache automatically injects the necessary VCL (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)).
+The following template (based on [`.github/test/manifest.yaml`](.github/test/manifest.yaml)) demonstrates shard-based routing, multiple backend groups, and PURGE handling. Note that drain VCL is **not** included here - when `--drain` is enabled, k8s-httpcache automatically injects the necessary VCL (see [Graceful shutdown](#graceful-shutdown--zero-downtime-deploys)).
 
 ```vcl
 vcl 4.1;
@@ -1236,11 +1236,11 @@ args: ["--zone", "europe-west3-a", ...]
          fieldPath: spec.nodeName
    ```
 
-2. **Grant node read access** — see [Node access for zone auto-detection](#node-access-for-zone-auto-detection) in the RBAC section.
+2. **Grant node read access** - see [Node access for zone auto-detection](#node-access-for-zone-auto-detection) in the RBAC section.
 
 When `--zone` is set, it takes precedence and `NODE_NAME` / node RBAC are not needed. If neither `--zone` nor `NODE_NAME` is set, the ClusterRole is missing, or the node has no `topology.kubernetes.io/zone` label, zone detection fails gracefully: `.LocalZone` will be empty, each `BackendGroup`'s `.LocalEndpoints` and `.RemoteEndpoints` will both be empty, and templates should fall back to `.Endpoints` (see the `if .LocalZone` guard in the [fallback director example](#example-fallback-director-preferring-same-zone-backends)).
 
-   Zone-aware routing also requires that the **backend pods' nodes** have the `topology.kubernetes.io/zone` label. Kubernetes populates `.Zone` on each endpoint from the node hosting that pod. If the backend nodes lack zone labels, all endpoints will have an empty `.Zone` and land in `.RemoteEndpoints` even when `.LocalZone` is correctly detected — the local director will always be empty and the fallback director will only use the remote round-robin.
+   Zone-aware routing also requires that the **backend pods' nodes** have the `topology.kubernetes.io/zone` label. Kubernetes populates `.Zone` on each endpoint from the node hosting that pod. If the backend nodes lack zone labels, all endpoints will have an empty `.Zone` and land in `.RemoteEndpoints` even when `.LocalZone` is correctly detected - the local director will always be empty and the fallback director will only use the remote round-robin.
 
    [ExternalName service](#externalname-services) backends resolve to a DNS hostname rather than pod IPs, so their endpoints have no associated node. As a result, `.Zone`, `.NodeName`, and `.ForZones` will always be empty for ExternalName backends. They are included in `.Backends` as usual, but when zone splitting is active they will always land in `.RemoteEndpoints` (never in `.LocalEndpoints`).
 
@@ -1283,7 +1283,7 @@ This gives backends in the same zone a weight of 10, while remote backends get a
 
 ### Example: fallback director preferring same-zone backends
 
-Each `BackendGroup` has `.LocalEndpoints` and `.RemoteEndpoints` — pre-filtered views of `.Endpoints` split by zone — so you can build separate directors without inline conditionals. An endpoint is considered local if its `.Zone` matches `.LocalZone` or if its `.ForZones` hints include `.LocalZone` (Kubernetes Topology Aware Routing). When `.LocalZone` is empty, both lists are empty and you should fall back to `.Endpoints`.
+Each `BackendGroup` has `.LocalEndpoints` and `.RemoteEndpoints` - pre-filtered views of `.Endpoints` split by zone - so you can build separate directors without inline conditionals. An endpoint is considered local if its `.Zone` matches `.LocalZone` or if its `.ForZones` hints include `.LocalZone` (Kubernetes Topology Aware Routing). When `.LocalZone` is empty, both lists are empty and you should fall back to `.Endpoints`.
 
 The pattern works with any number of `--backend` groups. For each group, a local and remote [round-robin director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) can be created, then combined via a [fallback director](https://varnish-cache.org/docs/trunk/reference/vmod_directors.html) that prefers the local director. The backends are declared from `.Endpoints` (which contains all endpoints regardless of zone), so every pod is reachable; only the director routing favors same-zone pods.
 
@@ -1343,7 +1343,7 @@ sub vcl_recv {
 
 With `--backend api=... --backend web=...` and pods spread across two zones, this creates `local_api`, `remote_api`, `backend_api` (fallback), `local_web`, `remote_web`, `backend_web` (fallback). Each `backend_*` director prefers same-zone pods via round-robin and falls back to the remote round-robin only when all local pods are unhealthy. When `.LocalZone` is empty, it degrades gracefully to a plain round-robin over all endpoints.
 
-> **Note on shard routing:** When [frontend sharding](#reference-vcl-template) is combined with zone-aware backend directors, shard routing can still cause cross-zone traffic. The shard director selects the owning Varnish pod by URL hash — if the selected pod is in a different zone, the request is forwarded there before the backend director runs. The zone-aware fallback director then picks a backend local to *that* pod, not the pod that originally received the request. This is by design (it preserves cache efficiency), but means that cross-zone hops between Varnish pods are not eliminated by zone-aware backend routing alone.
+> **Note on shard routing:** When [frontend sharding](#reference-vcl-template) is combined with zone-aware backend directors, shard routing can still cause cross-zone traffic. The shard director selects the owning Varnish pod by URL hash - if the selected pod is in a different zone, the request is forwarded there before the backend director runs. The zone-aware fallback director then picks a backend local to *that* pod, not the pod that originally received the request. This is by design (it preserves cache efficiency), but means that cross-zone hops between Varnish pods are not eliminated by zone-aware backend routing alone.
 
 ### Kubernetes Topology Aware Routing hints
 
@@ -1398,7 +1398,7 @@ If no frontends are available, the server returns HTTP 503 with:
 
 ## Access logging
 
-k8s-httpcache can run a managed `varnishncsa` / `vinylncsa` subprocess alongside the cache daemon to stream HTTP access logs. This is a convenience option for simple setups. For production deployments, consider running the access log binary as a separate sidecar container instead — this lets log tailers use the container name to distinguish access logs from application output without relying on line prefixes.
+k8s-httpcache can run a managed `varnishncsa` / `vinylncsa` subprocess alongside the cache daemon to stream HTTP access logs. This is a convenience option for simple setups. For production deployments, consider running the access log binary as a separate sidecar container instead - this lets log tailers use the container name to distinguish access logs from application output without relying on line prefixes.
 
 Enable it with `--varnishncsa-enabled`:
 
@@ -1467,9 +1467,9 @@ When `--drain` is enabled, k8s-httpcache automatically injects drain VCL into th
 
 On SIGTERM (e.g. during a rolling update), the shutdown sequence is:
 
-1. **Start draining** — the injected VCL backend is marked sick via `varnishadm`, causing Varnish to send `Connection: close` on all responses.
-2. **Wait for endpoint removal** (`--drain-delay`, default `15s`) — sleep to allow Kubernetes to remove the pod from Service endpoints and load balancers. A second signal skips this wait.
-3. **Shutdown** — SIGTERM is forwarded to varnishd.
+1. **Start draining** - the injected VCL backend is marked sick via `varnishadm`, causing Varnish to send `Connection: close` on all responses.
+2. **Wait for endpoint removal** (`--drain-delay`, default `15s`) - sleep to allow Kubernetes to remove the pod from Service endpoints and load balancers. A second signal skips this wait.
+3. **Shutdown** - SIGTERM is forwarded to varnishd.
 
 ### Waiting for connections to close
 
@@ -1489,7 +1489,7 @@ This adds a step between 2 and 3: poll `varnishstat` for active sessions every s
 
 The drain VCL is injected transparently around your template output:
 
-- A `sub vcl_deliver` is injected **before your `sub vcl_deliver`** so the `Connection: close` header is always set during draining, even if your `vcl_deliver` returns early. This requires at least one backend to be declared before your `vcl_deliver`. If your `vcl_deliver` precedes all of your backends, the injected sub is instead placed after your backends and a warning is logged — in that layout draining may not set `Connection: close` when your `vcl_deliver` returns early, so declare a backend before your `vcl_deliver` to guarantee it.
+- A `sub vcl_deliver` is injected **before your `sub vcl_deliver`** so the `Connection: close` header is always set during draining, even if your `vcl_deliver` returns early. This requires at least one backend to be declared before your `vcl_deliver`. If your `vcl_deliver` precedes all of your backends, the injected sub is instead placed after your backends and a warning is logged - in that layout draining may not set `Connection: close` when your `vcl_deliver` returns early, so declare a backend before your `vcl_deliver` to guarantee it.
 - The drain backend declaration is injected after one of your backends (never first) so it does not become Varnish's default backend, and before the injected `vcl_deliver` that references it (avoiding forward-reference errors on Varnish 6).
 - `import std;` is added automatically if not already present in your template.
 
@@ -1539,7 +1539,7 @@ To enable [Kubernetes Events](#kubernetes-events), add:
   verbs: ["create", "patch"]
 ```
 
-The `pods` `get` permission allows the event recorder to look up the pod UID so that events appear in `kubectl describe pod`. The `events` permissions are needed to actually create the events. Both are optional — if omitted, a single warning is logged and the service continues without event recording.
+The `pods` `get` permission allows the event recorder to look up the pod UID so that events appear in `kubectl describe pod`. The `events` permissions are needed to actually create the events. Both are optional - if omitted, a single warning is logged and the service continues without event recording.
 
 ### Node access for zone auto-detection
 
@@ -1612,7 +1612,7 @@ subjects:
 
 ## Security context
 
-The recommended security context runs as the cache user (UID/GID 1000 — the `varnish` user in the official Varnish Alpine image, or the `vinyl` user in Vinyl Cache images), non-root, with a read-only root filesystem and all capabilities dropped:
+The recommended security context runs as the cache user (UID/GID 1000 - the `varnish` user in the official Varnish Alpine image, or the `vinyl` user in Vinyl Cache images), non-root, with a read-only root filesystem and all capabilities dropped:
 
 ```yaml
 securityContext:

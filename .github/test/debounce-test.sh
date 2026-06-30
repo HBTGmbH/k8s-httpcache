@@ -108,13 +108,13 @@ if [ "$events_delta" -le "$fires_delta" ]; then
   echo "FAIL: events_delta ($events_delta) <= fires_delta ($fires_delta); coalescing not observed"
   exit 1
 fi
-echo "PASS: events ($events_delta) > fires ($fires_delta) — coalescing confirmed"
+echo "PASS: events ($events_delta) > fires ($fires_delta) - coalescing confirmed"
 
 # --- Part 2: Debounce-max enforcement test ----------------------------------
 # To trigger debounce-max we need events that keep arriving for longer than
 # the 5s max deadline without a 2s quiet gap.  ConfigMap patches produce
 # instant watcher events (no pod startup latency), so timing is predictable.
-# We patch the values ConfigMap every 0.5s for 8s — well past the 5s max.
+# We patch the values ConfigMap every 0.5s for 8s - well past the 5s max.
 
 echo ""
 echo "--- Part 2: debounce-max enforcement ---"

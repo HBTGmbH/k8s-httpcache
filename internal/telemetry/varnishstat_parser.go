@@ -432,7 +432,7 @@ func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
 
 			continue
 		default:
-			// Unknown field — skip its value.
+			// Unknown field - skip its value.
 			err = s.skipValue()
 			if err != nil {
 				return c, false

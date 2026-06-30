@@ -84,7 +84,7 @@ func assertNoBackendChanges(t *testing.T, bw *BackendWatcher, timeout time.Durat
 	case eps := <-bw.Changes():
 		t.Fatalf("unexpected backend change received: %v", eps)
 	case <-time.After(timeout):
-		// OK — no change
+		// OK - no change
 	}
 }
 
@@ -575,7 +575,7 @@ func TestBackendWatcherDeduplicatesUnchanged(t *testing.T) {
 	waitForWatch()
 	readBackendChanges(t, bw)
 
-	// Update an unrelated field (finalizer) via Get-then-Update — endpoints stay the same.
+	// Update an unrelated field (finalizer) via Get-then-Update - endpoints stay the same.
 	current := getService(t, ctx, clientset)
 	current.Finalizers = []string{"unrelated/change"}
 	_, err := clientset.CoreV1().Services("default").Update(ctx, current, metav1.UpdateOptions{})
@@ -774,7 +774,7 @@ func TestBackendWatcherWarnEndpointsBecomeEmpty(t *testing.T) {
 	ctx := t.Context()
 	go func() { _ = bw.Run(ctx) }()
 
-	// Initial: 1 endpoint — no empty-endpoint warning expected.
+	// Initial: 1 endpoint - no empty-endpoint warning expected.
 	waitForWatch()
 	eps := readBackendChanges(t, bw)
 	if len(eps) != 1 {
@@ -901,7 +901,7 @@ func TestBackendWatcher_Labels(t *testing.T) {
 
 	waitForWatch()
 
-	// Update Service labels — should trigger a resend even though endpoints haven't changed.
+	// Update Service labels - should trigger a resend even though endpoints haven't changed.
 	svc2 := getService(t, ctx, clientset)
 	svc2.Labels = map[string]string{"version": "v2", "tier": "backend"}
 	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
@@ -1088,7 +1088,7 @@ func TestBackendWatcher_Annotations(t *testing.T) {
 
 	waitForWatch()
 
-	// Update Service annotations — should trigger a resend even though endpoints haven't changed.
+	// Update Service annotations - should trigger a resend even though endpoints haven't changed.
 	svc2 := getService(t, ctx, clientset)
 	svc2.Annotations = map[string]string{"example.com/version": "v2", "example.com/tier": "backend"}
 	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})
@@ -1307,7 +1307,7 @@ func TestBackendWatcherNumericPortOverrideClusterIP(t *testing.T) {
 	)
 
 	clientset := fake.NewClientset(svc, slice)
-	// Numeric port override "3000" — should use 3000 regardless of slice ports.
+	// Numeric port override "3000" - should use 3000 regardless of slice ports.
 	bw := NewBackendWatcher(clientset, "default", "svc", "3000")
 
 	ctx := t.Context()
@@ -1341,7 +1341,7 @@ func TestBackendWatcherNamedPortOverrideClusterIP(t *testing.T) {
 	)
 
 	clientset := fake.NewClientset(svc, slice)
-	// Named port override "metrics" — should resolve to 9090.
+	// Named port override "metrics" - should resolve to 9090.
 	bw := NewBackendWatcher(clientset, "default", "svc", "metrics")
 
 	ctx := t.Context()
@@ -1559,7 +1559,7 @@ func TestBackendWatcher_ExcludedOnlyAnnotationChangeSkipsResend(t *testing.T) {
 
 	waitForWatch()
 
-	// Update ONLY the excluded annotation — the filtered map is unchanged.
+	// Update ONLY the excluded annotation - the filtered map is unchanged.
 	svc2 := getService(t, ctx, clientset)
 	svc2.Annotations["kubectl.kubernetes.io/last-applied-configuration"] = `{"v":2}`
 	_, err := clientset.CoreV1().Services("default").Update(ctx, svc2, metav1.UpdateOptions{})

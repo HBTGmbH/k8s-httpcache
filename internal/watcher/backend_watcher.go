@@ -194,7 +194,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 
 	svc, err := lister.Services(bw.namespace).Get(bw.serviceName)
 	if err != nil {
-		// Service not found or error — emit empty endpoints.
+		// Service not found or error - emit empty endpoints.
 		if !bw.serviceNotFound {
 			bw.serviceNotFound = true
 			bw.log.Warn("backend Service not found, emitting empty endpoints",
@@ -208,7 +208,7 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 		return
 	}
 
-	// Service exists — reset the warning flag so we warn again if it disappears.
+	// Service exists - reset the warning flag so we warn again if it disappears.
 	bw.serviceNotFound = false
 
 	// Track Service labels and annotations; trigger a resend when metadata
@@ -335,7 +335,7 @@ func (bw *BackendWatcher) resend() {
 // resendLocked re-sends the last known endpoints, bypassing the dedup in
 // sendLocked. Callers must hold bw.mu.
 //
-// The send must stay under the mutex so it is atomic with sendLocked() —
+// The send must stay under the mutex so it is atomic with sendLocked() -
 // otherwise a resend racing a newer update can drain the fresh value and
 // deliver the stale one (coalescingSend's drain+send pair only guarantees
 // buffer space when all senders are serialised).
@@ -363,7 +363,7 @@ func (bw *BackendWatcher) snapshotLocked(eps []Endpoint) BackendState {
 // EndpointSlice watcher, but only if that child is still the active one. When a
 // Service transitions away from a backing EndpointSlice (e.g. to ExternalName,
 // or it is deleted), stopEndpointSliceWatcherLocked cancels the child and the
-// parent emits the new endpoints itself — but the cancelled child's forwarding
+// parent emits the new endpoints itself - but the cancelled child's forwarding
 // goroutine can still hold one in-flight update. Without this guard that stale
 // update could race the parent's send() and overwrite the fresh endpoints,
 // leaving the backend pointed at gone pod IPs until the next Service event. The

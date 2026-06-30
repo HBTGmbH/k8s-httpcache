@@ -752,7 +752,7 @@ func TestVarnishstatCollectorSessionGrouping(t *testing.T) {
 // retain a reference to the reused per-scrape label-key buffer. The bug left the
 // first scrape correct but corrupted every metric's label key on the second and
 // later scrapes (collapsing to whichever key the last counter of the previous
-// scrape happened to use — "id", "backend", or "target", depending on map order).
+// scrape happened to use - "id", "backend", or "target", depending on map order).
 func TestVarnishstatCollectorLabelStabilityAcrossScrapes(t *testing.T) {
 	t.Parallel()
 
@@ -2194,7 +2194,7 @@ func TestIsStaleBackendCounterPrefixBoundary(t *testing.T) {
 	t.Parallel()
 
 	// "VBE.kv_reload_2" must not be treated as a prefix match for counters
-	// of reload 25 — that would export two reload generations at once and
+	// of reload 25 - that would export two reload generations at once and
 	// produce duplicate label sets.
 	if got := isStaleBackendCounter("VBE.kv_reload_25.foo.happy", "VBE.kv_reload_2"); !got {
 		t.Error("isStaleBackendCounter(kv_reload_25 counter, latest kv_reload_2) = false, want true")

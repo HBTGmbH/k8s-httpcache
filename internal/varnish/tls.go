@@ -41,7 +41,7 @@ func (m *Manager) TLSSupported() bool {
 // LoadCert installs a frontend TLS certificate from raw PEM material via the
 // varnishadm tls.cert.* staging API. The key and certificate (plus optional CA)
 // are combined into a single hitch-style PEM file, staged with tls.cert.load,
-// activated with tls.cert.commit, and — on rotation — the certificate this
+// activated with tls.cert.commit, and - on rotation - the certificate this
 // logical name previously used is discarded so in-flight sessions on it finish
 // gracefully while new handshakes use the fresh certificate.
 //
@@ -49,7 +49,7 @@ func (m *Manager) TLSSupported() bool {
 // shared staging area. It is independent of VCL reloads and never restarts the
 // cache, so the cache stays warm across certificate rotations.
 //
-// Empty material (cert or key absent — e.g. the Secret is missing or was
+// Empty material (cert or key absent - e.g. the Secret is missing or was
 // deleted) is a no-op that leaves any already-active certificate untouched.
 func (m *Manager) LoadCert(name string, cert, key, ca []byte) error {
 	if !m.TLSSupported() {

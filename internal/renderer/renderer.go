@@ -218,7 +218,7 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 		if couldNotPrepend && !r.drainPlacementWarned {
 			r.drainPlacementWarned = true
 			r.logger().Warn("drain sub vcl_deliver cannot be placed before your vcl_deliver because no backend is declared before it; "+
-				"graceful draining may not set \"Connection: close\" if your vcl_deliver returns early — declare at least one backend before your vcl_deliver",
+				"graceful draining may not set \"Connection: close\" if your vcl_deliver returns early - declare at least one backend before your vcl_deliver",
 				"drain_backend", r.drainBackend)
 		}
 	}
@@ -354,7 +354,7 @@ func importStdPositions(vcl string) [][2]int {
 	var result [][2]int
 	for _, loc := range locs {
 		if inBlockComment(vcl, loc[0]) {
-			continue // inside a block comment — keep it
+			continue // inside a block comment - keep it
 		}
 		result = append(result, [2]int{loc[0], loc[1]})
 	}
@@ -372,7 +372,7 @@ func commentOutImportStdFrom(vcl string, from int) string {
 	prev := 0
 	for _, pos := range positions {
 		if pos[0] < from {
-			continue // before threshold — leave it
+			continue // before threshold - leave it
 		}
 		_, _ = b.WriteString(vcl[prev:pos[0]])
 		matched := vcl[pos[0]:pos[1]]
@@ -529,7 +529,7 @@ sub vcl_deliver {
 // injectDrainVCL injects the drain backend and drain sub vcl_deliver into the
 // rendered VCL. It returns the augmented VCL and a bool that is true only when
 // the drain sub could not be placed before a user vcl_deliver that precedes
-// every backend — in that case the historical placement is kept and the caller
+// every backend - in that case the historical placement is kept and the caller
 // should warn that draining may not set Connection: close if the user's
 // vcl_deliver returns early.
 //
@@ -601,7 +601,7 @@ func injectDrainVCLLegacy(vcl, backendName string) string {
 	drainVCL := drainBackendBlock(backendName) + drainDeliverSub(backendName)
 
 	if backendsEnd > 0 {
-		// Has user backends — drain VCL goes after the last backend.
+		// Has user backends - drain VCL goes after the last backend.
 		hasEarlyImport := false
 		for _, pos := range imports {
 			if pos[0] < backendsEnd {
@@ -611,7 +611,7 @@ func injectDrainVCLLegacy(vcl, backendName string) string {
 			}
 		}
 
-		// Comment out any "import std;" at or after backendsEnd — those
+		// Comment out any "import std;" at or after backendsEnd - those
 		// would appear after our vcl_deliver.
 		vcl = commentOutImportStdFrom(vcl, backendsEnd)
 
@@ -620,7 +620,7 @@ func injectDrainVCLLegacy(vcl, backendName string) string {
 			return vcl[:backendsEnd] + drainVCL + vcl[backendsEnd:]
 		}
 
-		// No early import — inject ours right after the version line.
+		// No early import - inject ours right after the version line.
 		importStd := drainImportStd
 		result := vcl[:versionEnd] + importStd + vcl[versionEnd:]
 		// backendsEnd shifted by the inserted text.
@@ -628,7 +628,7 @@ func injectDrainVCLLegacy(vcl, backendName string) string {
 	}
 
 	// No user backends. Look for the first user "import std;" after the
-	// version line — if present, insert drain VCL right after it so the
+	// version line - if present, insert drain VCL right after it so the
 	// user's import is preserved and appears before our vcl_deliver.
 	for _, pos := range imports {
 		if pos[0] >= versionEnd {
@@ -639,7 +639,7 @@ func injectDrainVCLLegacy(vcl, backendName string) string {
 		}
 	}
 
-	// No user import std at all — inject ours + drain VCL after the
+	// No user import std at all - inject ours + drain VCL after the
 	// version line.
 	importStd := "\n// Begin k8s-httpcache connection draining.\nimport std;\n// End k8s-httpcache connection draining.\n"
 	result := vcl[:versionEnd] + importStd + vcl[versionEnd:]

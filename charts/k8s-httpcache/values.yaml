@@ -100,7 +100,7 @@ tlsCerts: []
 #   secret: my-tls          # cross-namespace: certs/my-tls
 
 # -- Directories to poll for YAML template values (repeatable).
-# Each entry: { name, path, configMap (optional — creates a volume from this ConfigMap) }
+# Each entry: { name, path, configMap (optional - creates a volume from this ConfigMap) }
 # Generates --values-dir=name:path
 valuesDirs: []
 # - name: mydir
@@ -114,7 +114,7 @@ valuesDirPollInterval: ""
 # -- Watch the values-dir directories for changes and reload VCL on change,
 # INDEPENDENT of vcl.fileWatch (which governs the VCL template). Off by default.
 # Set true to auto-reload on values-dir changes; empty inherits vcl.fileWatch.
-# When off, values-dir changes are not auto-applied — restart pods to pick them up
+# When off, values-dir changes are not auto-applied - restart pods to pick them up
 # (the values-dir ConfigMap is externally referenced, so there is no checksum
 # annotation to roll pods automatically, unlike VCL/static files).
 valuesDirWatch: false
@@ -415,7 +415,7 @@ vclTemplateContent: |
 # from Varnish via std.fileread. When enabled, `staticFiles.files` are rendered
 # into a ConfigMap and mounted read-only at `staticFiles.mountPath`; add a small
 # vcl_recv/vcl_synth snippet to vclTemplateContent to serve them (see README).
-# Text content only — binary files (favicon.ico, images) are not supported
+# Text content only - binary files (favicon.ico, images) are not supported
 # because std.fileread truncates at the first NUL byte. A content change rolls
 # the pods (`checksum/static`), because std.fileread caches file content for the
 # varnishd process lifetime and is NOT refreshed by a VCL reload.
@@ -438,7 +438,7 @@ staticFiles:
   #    {"status":"ok"}
   # -- Mount this pre-existing ConfigMap instead of generating one from `files`.
   # Its keys are the filenames available under `mountPath`. When set, `files` is
-  # ignored and no ConfigMap is created. Changes are not auto-detected — restart
+  # ignored and no ConfigMap is created. Changes are not auto-detected - restart
   # the pods to pick them up (std.fileread caches content until the varnishd
   # process restarts).
   existingConfigMap: ""
@@ -875,7 +875,7 @@ istio:
 # ===========================================================================
 # PodMonitor (optional, requires Prometheus Operator)
 # ===========================================================================
-# Alternative to serviceMonitor — scrapes pods directly. Enable only one.
+# Alternative to serviceMonitor - scrapes pods directly. Enable only one.
 podMonitor:
   # -- Enable Prometheus PodMonitor
   enabled: false

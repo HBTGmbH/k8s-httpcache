@@ -46,7 +46,7 @@ spec:
     {{- if or .Values.networkPolicy.allowDNS .Values.networkPolicy.egress }}
     {{- if .Values.networkPolicy.allowDNS }}
     {{- /* Allow DNS resolution. Egress to the Kubernetes API server and to backends
-           is cluster-specific — add rules via networkPolicy.egress as needed. */}}
+           is cluster-specific - add rules via networkPolicy.egress as needed. */}}
     - to:
         - namespaceSelector: {}
       ports:
