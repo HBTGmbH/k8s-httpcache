@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.2.0...k8s-httpcache-v1.2.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* race in collectInitialState ([4f082f7](https://github.com/HBTGmbH/k8s-httpcache/commit/4f082f7928ebb10139052266cd9c6166df453244))
+
 ## [1.2.0](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.1.0...k8s-httpcache-v1.2.0) (2026-06-27)
 
 
