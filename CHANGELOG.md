@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.3](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.2.2...v1.2.3) (2026-06-30)
+
+
+### Bug Fixes
+
+* go.mod module path ([9716014](https://github.com/HBTGmbH/k8s-httpcache/commit/9716014446d5dd4eacabf159f516379b8a3876b2))
+* race in collectInitialState ([4f082f7](https://github.com/HBTGmbH/k8s-httpcache/commit/4f082f7928ebb10139052266cd9c6166df453244))
+
 ## [1.2.2](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.2.1...v1.2.2) (2026-06-27)
 
 
