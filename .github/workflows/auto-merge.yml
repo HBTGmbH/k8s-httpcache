@@ -33,3 +33,22 @@ jobs:
       env:
         PR_URL: ${{ github.event.pull_request.html_url }}
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-please:
+    name: Auto-approve Release-please PRs
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.user.login == 'hbtgmbh-release-bot[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--branches--')
+    permissions:
+      pull-requests: write   # approve only — no contents: write, we do not merge
+    steps:
+    # main requires one approving review. Approve as github-actions[bot] (a
+    # different identity than the hbtgmbh-release-bot[bot] author, so it counts
+    # toward the requirement). We intentionally do NOT enable auto-merge: a
+    # maintainer still clicks Merge to consciously cut the release. The required
+    # CI gate must still pass before that merge is allowed.
+    - run: gh pr review --approve "$PR_URL"
+      env:
+        PR_URL: ${{ github.event.pull_request.html_url }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
