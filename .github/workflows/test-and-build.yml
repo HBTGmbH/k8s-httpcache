@@ -705,10 +705,31 @@ jobs:
       with:
         cluster_name: test
         config: .github/test/kind-config.yaml
+    - name: Restore ingress-nginx manifest
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      id: ingress-nginx
+      with:
+        path: ~/manifests/ingress-nginx-deploy.yaml
+        key: ingress-nginx-manifest-1.15.1-kind
+    - name: Download ingress-nginx manifest
+      if: steps.ingress-nginx.outputs.cache-hit != 'true'
+      # raw.githubusercontent.com rate-limits unauthenticated fetches (429),
+      # and the matrix legs all start at once; retry with backoff on any error
+      # (curl honors Retry-After on 429 when --retry is set).
+      run: |
+        mkdir -p ~/manifests
+        curl -sfL --retry 8 --retry-all-errors --retry-max-time 300 \
+          -o ~/manifests/ingress-nginx-deploy.yaml \
+          https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/kind/deploy.yaml
+    - name: Save ingress-nginx manifest
+      if: steps.ingress-nginx.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/manifests/ingress-nginx-deploy.yaml
+        key: ingress-nginx-manifest-1.15.1-kind
     - name: Install ingress-nginx
       run: |
-        url=https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/kind/deploy.yaml
-        kubectl apply -f "$url" > /dev/null
+        kubectl apply -f ~/manifests/ingress-nginx-deploy.yaml > /dev/null
         kubectl wait -n ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=120s > /dev/null
         kubectl patch configmap -n ingress-nginx ingress-nginx-controller --type merge -p '{"data":{"upstream-keepalive-timeout":"5"}}' > /dev/null
     - name: Load image into kind
