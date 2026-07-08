@@ -35,7 +35,7 @@ jobs:
       with:
         persist-credentials: false
         fetch-depth: 20
-    - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
+    - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706  # v4.0.2
       id: filter
       with:
         filters: |
@@ -186,7 +186,7 @@ jobs:
           ~/go/bin/deadcode
           ~/go/bin/nilaway
           ~/go/bin/shfmt
-        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260625224722-136c083a9b77-shfmt-3.13.1
+        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260707193443-5c662b71f232-shfmt-3.13.1
     - name: Install analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -196,7 +196,7 @@ jobs:
       run: |
         go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
         go install golang.org/x/tools/cmd/deadcode@v0.47.0
-        go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260625224722-136c083a9b77
+        go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260707193443-5c662b71f232
         go install mvdan.cc/sh/v3/cmd/shfmt@v3.13.1
     - name: Save analysis tools
       if: >-
@@ -211,7 +211,7 @@ jobs:
           ~/go/bin/deadcode
           ~/go/bin/nilaway
           ~/go/bin/shfmt
-        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260625224722-136c083a9b77-shfmt-3.13.1
+        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260707193443-5c662b71f232-shfmt-3.13.1
     - name: Run govulncheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -341,7 +341,7 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.md == 'true'
-      uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89  # v1.47.2
+      uses: crate-ci/typos@bee27e3a4fd1ea2111cf90ab89cd076c870fce14  # v1.48.0
     - name: Restore hadolint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -839,20 +839,20 @@ jobs:
     - name: Set SOURCE_DATE_EPOCH from commit
       run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
     - name: Setup BuildKit
-      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
       with:
         version: v0.35.0
         driver-opts: image=moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a
         cache-binary: false
     - name: Docker Login
-      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
       if: github.event_name != 'pull_request'
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     - name: Extract Metadata
-      uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
       id: meta
       with:
         images: ghcr.io/${{ github.repository }}
@@ -864,7 +864,7 @@ jobs:
           type=sha
           type=raw,value=latest,enable={{is_default_branch}}
     - name: Docker push
-      uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
       with:
         context: .docker-context
         file: .github/build/Dockerfile
