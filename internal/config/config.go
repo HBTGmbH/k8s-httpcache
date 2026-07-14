@@ -22,7 +22,9 @@ import (
 )
 
 // DefaultDebounceLatencyBuckets are the default histogram bucket boundaries
-// (in seconds) for the debounce_latency_seconds metric.
+// (in seconds) for the debounce_latency_seconds metric. Treat as immutable:
+// it is package-level shared state, so callers must not sort, append to, or
+// otherwise modify the slice.
 var DefaultDebounceLatencyBuckets = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
 const (
@@ -74,6 +76,7 @@ var (
 	errInvalidDNSLabel    = errors.New("invalid RFC 1123 DNS label")
 	errEmptySelector      = errors.New("empty selector")
 	errListenAddrNotFound = errors.New("does not match any --listen-addr name")
+	errListenAddrUDS      = errors.New("is a unix domain socket listener; the broadcast fan-out targets pods over TCP and needs a port")
 	errNoHTTPSListener    = errors.New("requires a --listen-addr with the 'https' protocol (e.g. --listen-addr=https=:8443,https)")
 )
 
@@ -145,9 +148,10 @@ type BackendSelectorSpec struct {
 // varnishd -a flag format: [name=][bind-ip]:port[,proto[,proto...]].
 type ListenAddrSpec struct {
 	Name string // optional name (e.g. "http")
-	Host string // bind IP (e.g. "0.0.0.0", "127.0.0.1", or "" for all interfaces)
-	Port int32  // numeric port extracted from the address
+	Host string // bind IP (e.g. "0.0.0.0", "127.0.0.1", or "" for all interfaces); unset for UDS listeners
+	Port int32  // numeric port extracted from the address; 0 for UDS listeners
 	Raw  string // original flag value passed through to varnishd
+	UDS  bool   // unix domain socket listener (absolute path or @abstract); Host/Port are unset
 }
 
 // listenAddrFlags implements a parser for repeatable --listen-addr flags.
@@ -169,6 +173,21 @@ func (l *listenAddrFlags) Set(val string) error {
 
 	// Strip protocol suffixes: ":8080,HTTP" → ":8080"
 	addr, _, _ := strings.Cut(rest, ",")
+
+	// Unix domain socket listeners (varnishd accepts absolute paths and
+	// @-prefixed abstract sockets) carry no host/port; the raw value is
+	// passed through to varnishd unchanged. They cannot be the first listen
+	// address or a broadcast target - both need a TCP port (validated in
+	// Parse and resolveBroadcastTargetPort).
+	if strings.HasPrefix(addr, "/") || strings.HasPrefix(addr, "@") {
+		if len(addr) < 2 {
+			return fmt.Errorf("--listen-addr %q: %w", val, errInvalidFormat)
+		}
+		spec.UDS = true
+		*l = append(*l, spec)
+
+		return nil
+	}
 
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -455,6 +474,17 @@ var ErrHelp = errors.New("help requested")
 // validationError is returned from the Action for validation failures.
 // It prints the error message and help before Parse returns, so callers
 // can rely on output already being written.
+// Per-source debounce flag names, shared between the flag definitions and the
+// negative-value validation.
+const (
+	flagFrontendDebounce    = "frontend-debounce"
+	flagFrontendDebounceMax = "frontend-debounce-max"
+	flagBackendDebounce     = "backend-debounce"
+	flagBackendDebounceMax  = "backend-debounce-max"
+	flagTLSCertDebounce     = "tls-cert-debounce"
+	flagTLSCertDebounceMax  = "tls-cert-debounce-max"
+)
+
 func validationError(cmd *cli.Command, format string, args ...any) error {
 	err := fmt.Errorf(format, args...) //nolint:err113 // dynamic validation messages; callers format context-specific user-facing text
 	_, _ = fmt.Fprintf(cmd.Root().ErrWriter, "error: %v\n\n", err)
@@ -464,13 +494,19 @@ func validationError(cmd *cli.Command, format string, args ...any) error {
 }
 
 // resolveBroadcastTargetPort returns the port of the listen address matching
-// targetName. When targetName is empty, the first listen address is used.
+// targetName. When targetName is empty, the first listen address is used
+// (validated in Parse to be a TCP listener). A UDS listener cannot be a
+// broadcast target: the fan-out connects to sibling pods over TCP.
 func resolveBroadcastTargetPort(addrs []ListenAddrSpec, targetName string) (int32, error) {
 	if targetName == "" {
 		return addrs[0].Port, nil
 	}
 	for _, la := range addrs {
 		if la.Name == targetName {
+			if la.UDS {
+				return 0, fmt.Errorf("--broadcast-target-listen-addr %q: %w", targetName, errListenAddrUDS)
+			}
+
 			return la.Port, nil
 		}
 	}
@@ -557,7 +593,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Name:        "listen-addr",
 				Aliases:     []string{"l"},
 				Category:    catListen,
-				Usage:       "Varnish listen address: [name=]address[,proto] (repeatable)",
+				Usage:       "Varnish listen address: [name=]address[,proto] (repeatable). Unix domain sockets ([name=]/path.sock[,proto] or @abstract) are passed through to varnishd but cannot be the first listen address or a broadcast target",
 				DefaultText: defaultListenAddrText,
 				Destination: &rawListenAddrs,
 			},
@@ -900,7 +936,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &c.DebounceMax,
 			},
 			&cli.DurationFlag{
-				Name:        "frontend-debounce",
+				Name:        flagFrontendDebounce,
 				Category:    catTiming,
 				Usage:       "Debounce duration for frontend (--service-name) changes; overrides --debounce for the frontend group",
 				Value:       time.Duration(-1),
@@ -908,7 +944,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &rawFrontendDebounce,
 			},
 			&cli.DurationFlag{
-				Name:        "frontend-debounce-max",
+				Name:        flagFrontendDebounceMax,
 				Category:    catTiming,
 				Usage:       "Maximum debounce duration for frontend changes; overrides --debounce-max for the frontend group",
 				Value:       time.Duration(-1),
@@ -916,7 +952,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &rawFrontendDebounceMax,
 			},
 			&cli.DurationFlag{
-				Name:        "backend-debounce",
+				Name:        flagBackendDebounce,
 				Category:    catTiming,
 				Usage:       "Debounce duration for backend (--backend, --values, --values-dir, template) changes; overrides --debounce for the backend group",
 				Value:       time.Duration(-1),
@@ -924,7 +960,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &rawBackendDebounce,
 			},
 			&cli.DurationFlag{
-				Name:        "backend-debounce-max",
+				Name:        flagBackendDebounceMax,
 				Category:    catTiming,
 				Usage:       "Maximum debounce duration for backend changes; overrides --debounce-max for the backend group",
 				Value:       time.Duration(-1),
@@ -932,7 +968,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &rawBackendDebounceMax,
 			},
 			&cli.DurationFlag{
-				Name:        "tls-cert-debounce",
+				Name:        flagTLSCertDebounce,
 				Category:    catTiming,
 				Usage:       "Debounce duration for --tls-cert Secret changes; overrides --debounce for the TLS certificate group",
 				Value:       time.Duration(-1),
@@ -940,7 +976,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				Destination: &rawTLSCertDebounce,
 			},
 			&cli.DurationFlag{
-				Name:        "tls-cert-debounce-max",
+				Name:        flagTLSCertDebounceMax,
 				Category:    catTiming,
 				Usage:       "Maximum debounce duration for --tls-cert changes; overrides --debounce-max for the TLS certificate group",
 				Value:       time.Duration(-1),
@@ -1064,6 +1100,15 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 				return nil
 			}
+			// Identical delimiters make text/template parsing degenerate
+			// (a bare delimiter in template text becomes an empty action);
+			// reject them here with a clear message instead of surfacing a
+			// cryptic parse error at renderer startup.
+			if parts[0] == parts[1] {
+				actionErr = validationError(cmd, "--template-delims left and right delimiters must differ, got %q", templateDelims)
+
+				return nil
+			}
 			c.TemplateDelimLeft = parts[0]
 			c.TemplateDelimRight = parts[1]
 
@@ -1110,6 +1155,29 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				actionErr = validationError(cmd, "--debounce-max (%v) must be >= --debounce (%v)", c.DebounceMax, c.Debounce)
 
 				return nil
+			}
+
+			// Per-source debounce flags: reject user-supplied negatives just
+			// like the global flags above. The -1 default is only the internal
+			// "unset → use global" sentinel; without the IsSet check a typo
+			// like --frontend-debounce=-5s would be silently coerced to the
+			// global value instead of erroring.
+			for _, f := range []struct {
+				name string
+				v    time.Duration
+			}{
+				{flagFrontendDebounce, rawFrontendDebounce},
+				{flagFrontendDebounceMax, rawFrontendDebounceMax},
+				{flagBackendDebounce, rawBackendDebounce},
+				{flagBackendDebounceMax, rawBackendDebounceMax},
+				{flagTLSCertDebounce, rawTLSCertDebounce},
+				{flagTLSCertDebounceMax, rawTLSCertDebounceMax},
+			} {
+				if cmd.IsSet(f.name) && f.v < 0 {
+					actionErr = validationError(cmd, "--%s must be >= 0, got %v", f.name, f.v)
+
+					return nil
+				}
 			}
 
 			// Resolve per-source debounce flags (sentinel -1 → global).
@@ -1338,6 +1406,16 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 					return nil
 				}
+			}
+
+			// The first listen address must be TCP: the readiness probe dials
+			// its port, and it is the default broadcast fan-out target.
+			if listenAddrs[0].UDS {
+				actionErr = validationError(cmd,
+					"the first --listen-addr must be a TCP host:port (the readiness probe dials it); a unix domain socket listener like %q can only be an additional --listen-addr",
+					listenAddrs[0].Raw)
+
+				return nil
 			}
 
 			// Validate listen address name uniqueness.

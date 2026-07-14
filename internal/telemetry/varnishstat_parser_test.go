@@ -1,7 +1,9 @@
 package telemetry
 
 import (
+	"errors"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -572,5 +574,45 @@ func TestInternedFlags(t *testing.T) {
 	// The flag should be the interned string, not a new allocation.
 	if c.Flag != "c" {
 		t.Errorf("Flag = %q, want %q", c.Flag, "c")
+	}
+}
+
+// TestParseVarnishstatInvalidUnicodeEscapeRejected verifies scanString
+// validates \u escapes: blindly skipping 4 bytes accepts "\uZZZZ" and decodes
+// it to a garbage rune (or, for a short escape, jumps past the string's
+// closing quote and silently misreads everything after it).
+func TestParseVarnishstatInvalidUnicodeEscapeRejected(t *testing.T) {
+	t.Parallel()
+	input := `{"version":1,"counters":{"MAIN.x":{"description":"a\uZZZZ","flag":"c","value":5}}}`
+	counters, err := parseVarnishstatV7(input)
+	if err == nil {
+		if c, present := counters["MAIN.x"]; present {
+			t.Fatalf("malformed \\u escape parsed silently, description = %q", c.Description)
+		}
+	}
+}
+
+// TestUnescapeInvalidHexEscape verifies parseHex4 rejects non-hex digits:
+// treating them as zeros silently produces a garbage rune where
+// encoding/json-style handling substitutes U+FFFD.
+func TestUnescapeInvalidHexEscape(t *testing.T) {
+	t.Parallel()
+	got := unescapeJSONString(`a\uZZZZb`)
+	want := "a�b"
+	if got != want {
+		t.Fatalf("unescapeJSONString = %q, want %q", got, want)
+	}
+}
+
+// TestParseVarnishstatNestingDepthBounded verifies the scanner caps recursion
+// while skipping values: without a bound, pathologically nested (corrupt)
+// input recurses one Go frame per level toward a fatal stack overflow.
+func TestParseVarnishstatNestingDepthBounded(t *testing.T) {
+	t.Parallel()
+	deep := strings.Repeat("[", 2000) + strings.Repeat("]", 2000)
+	input := `{"version":` + deep + `,"counters":{}}`
+	_, err := parseVarnishstatV7(input)
+	if !errors.Is(err, errNestingTooDeep) {
+		t.Fatalf("err = %v, want errNestingTooDeep for 2000-deep nesting", err)
 	}
 }

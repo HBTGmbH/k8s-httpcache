@@ -74,6 +74,12 @@ func splitEndpointsByZone(eps []watcher.Endpoint, zone string) ([]watcher.Endpoi
 }
 
 // Renderer renders VCL from a Go template and a list of frontends.
+//
+// Renderer is NOT safe for concurrent use: Reload/Rollback swap tmpl/prev and
+// Render writes drainPlacementWarned without synchronisation. All calls must
+// come from a single goroutine - in this application the main event loop
+// (plus the initial Render before the loop starts). Add a mutex before
+// calling it from anywhere else (e.g. a preview endpoint).
 type Renderer struct {
 	tmpl         *template.Template
 	prev         *template.Template
@@ -116,6 +122,13 @@ func buildFuncMap(templateFuncs string) template.FuncMap {
 }
 
 // New parses the template file and returns a Renderer.
+//
+// Templates should only use DETERMINISTIC functions. The full sprig/sprout
+// function map is available, which includes nondeterministic funcs (now,
+// date, uuidv4, randAlphaNum, ...): using one makes every render produce
+// different output, permanently defeating the rendered-VCL hash dedup - each
+// redundant watcher event then triggers a full varnishd VCL compile instead
+// of being skipped as unchanged.
 func New(templatePath, delimLeft, delimRight, templateFuncs string) (*Renderer, error) {
 	funcMap := buildFuncMap(templateFuncs)
 
@@ -567,18 +580,38 @@ func injectDrainVCL(vcl, backendName string) (string, bool) {
 // user backend. firstBackendEnd must be <= deliverStart so the backend is
 // declared before the sub.
 func injectDrainPrepended(vcl, backendName string, firstBackendEnd, deliverStart int) string {
+	// import std must precede the drain sub: reuse a user import that already
+	// appears before it, otherwise inject one after the version line. Either
+	// way, user "import std;" lines at or after the drain sub would duplicate
+	// the surviving import ("Module std already imported" compile error), so
+	// comment them out - mirroring injectDrainVCLLegacy. Commenting out only
+	// rewrites text at or after deliverStart, so the insertion offsets
+	// (firstBackendEnd <= deliverStart, versionEnd < deliverStart) stay valid.
+	hasEarlyImport := false
+	for _, pos := range importStdPositions(vcl) {
+		if pos[0] < deliverStart {
+			hasEarlyImport = true
+
+			break
+		}
+	}
+	vcl = commentOutImportStdFrom(vcl, deliverStart)
+
 	// Insert from the highest offset downward so lower offsets stay valid.
 	out := vcl[:deliverStart] + drainDeliverSub(backendName) + vcl[deliverStart:]
 	out = out[:firstBackendEnd] + drainBackendBlock(backendName) + out[firstBackendEnd:]
 
-	// import std must precede the drain sub. Reuse a user import that already
-	// appears before the drain sub; otherwise inject one after the version line.
-	for _, pos := range importStdPositions(vcl) {
-		if pos[0] < deliverStart {
-			return out
-		}
+	if hasEarlyImport {
+		return out
 	}
 	versionEnd := vclVersionEnd(vcl)
+	if versionEnd > deliverStart {
+		// The matched "vcl X.Y;" token sits after the drain sub (e.g. inside
+		// a trailing comment of a template with no top version line);
+		// splicing the import there would place it after the sub that uses
+		// std. Inject at the top instead.
+		versionEnd = 0
+	}
 
 	return out[:versionEnd] + drainImportStd + out[versionEnd:]
 }

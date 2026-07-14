@@ -153,6 +153,22 @@ Usage: {{ include "k8s-httpcache.foreignNamespaces" . }}
 {{- define "k8s-httpcache.foreignNamespaces" -}}
 {{- $foreign := dict }}
 {{- $releaseNs := .Release.Namespace }}
+{{- /* The frontend Service may live in another namespace
+       (serviceName: "ns/name"); the frontend EndpointSlice watcher and the
+       event recorder both operate there and need RBAC. */}}
+{{- if contains "/" (.Values.serviceName | default "") }}
+  {{- $parts := splitList "/" .Values.serviceName }}
+  {{- $ns := first $parts }}
+  {{- if ne $ns $releaseNs }}
+    {{- $existing := dict }}
+    {{- if hasKey $foreign $ns }}
+      {{- $existing = get $foreign $ns }}
+    {{- end }}
+    {{- $_ := set $existing "services" true }}
+    {{- $_ := set $existing "endpointslices" true }}
+    {{- $_ := set $foreign $ns $existing }}
+  {{- end }}
+{{- end }}
 {{- range .Values.backends }}
   {{- if contains "/" .service }}
     {{- $parts := splitList "/" .service }}

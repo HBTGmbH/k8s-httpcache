@@ -601,7 +601,13 @@ tolerations: []
 affinity: {}
 # -- Topology spread constraints
 topologySpreadConstraints: []
-# -- Termination grace period in seconds
+# -- Termination grace period in seconds. Must cover the WORST-CASE
+# sequential shutdown budget: drain.delay + drain.timeout +
+# broadcast drain (30s) + broadcast shutdown (5s) + varnishncsa stop (5s,
+# when access logging is enabled) + vcl shutdown-timeout (30s) + metrics
+# drain (5s), plus slack. The controller logs a warning at startup when its
+# configured budget exceeds this value (the kubelet would SIGKILL varnishd
+# mid-drain).
 terminationGracePeriodSeconds: 90
 # -- Priority class name for pod scheduling priority
 priorityClassName: ""
@@ -625,12 +631,17 @@ revisionHistoryLimit: ""
 # -- Minimum seconds a new pod must be ready before it is considered available (empty = omit)
 minReadySeconds: ""
 
-# -- Startup probe configuration
+# -- Startup probe configuration. The probe budget (failureThreshold x
+# periodSeconds) must cover the controller's own --startup-timeout (default
+# 3m): varnishd only starts listening on the http port after the initial
+# endpoint snapshot was collected, and a probe budget shorter than that
+# deadline kills the pod while the controller is still legitimately waiting
+# (e.g. for a slow API server), turning a transient delay into a CrashLoop.
 startupProbe:
   httpGet:
     path: /ready
     port: http
-  failureThreshold: 30
+  failureThreshold: 210
   periodSeconds: 1
 # -- Liveness probe configuration (only used when metrics.enabled is true)
 livenessProbe:

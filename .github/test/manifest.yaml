@@ -267,7 +267,9 @@ spec:
         app: k8s-httpcache
     spec:
       serviceAccountName: k8s-httpcache
-      terminationGracePeriodSeconds: 90
+      # Worst-case shutdown budget: drain 15+30, broadcast drain 30+5,
+      # varnishd 30, metrics 5 (see README "Pod spec requirements").
+      terminationGracePeriodSeconds: 120
       containers:
       - name: k8s-httpcache
         image: localhost/k8s-httpcache:test
@@ -348,7 +350,9 @@ spec:
           httpGet:
             path: /ready
             port: http
-          failureThreshold: 30
+          # Budget must cover --startup-timeout (default 3m): varnishd only
+          # listens after the initial endpoint snapshot was collected.
+          failureThreshold: 210
           periodSeconds: 1
         livenessProbe:
           httpGet:

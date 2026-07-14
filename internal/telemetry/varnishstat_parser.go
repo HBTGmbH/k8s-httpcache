@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // jsonScanner is a minimal, zero-allocation JSON scanner that operates on
@@ -12,9 +13,16 @@ import (
 // data[start:end] return zero-allocation string views into the same backing
 // memory, eliminating per-field allocations for stored counter values.
 type jsonScanner struct {
-	data string
-	pos  int
+	data  string
+	pos   int
+	depth int // current object/array nesting inside skipValue (bounded by maxNestingDepth)
 }
+
+// maxNestingDepth caps object/array nesting while skipping values. skipValue
+// recurses one Go frame per level; without a cap, pathologically nested
+// (corrupt) input would grow the goroutine stack until a fatal, unrecoverable
+// stack overflow. Real varnishstat output nests two levels.
+const maxNestingDepth = 1000
 
 // internedFlags avoids per-counter allocation for the common single-char flag
 // strings emitted by varnishstat ("c", "g", "a", "b").
@@ -33,6 +41,7 @@ var (
 	errUnterminatedCounterMap = errors.New("unterminated counter map")
 	errV7NoCountersKey        = errors.New("decoding varnishstat v7 output: no counters key found")
 	errV7UnterminatedObject   = errors.New("decoding varnishstat v7 output: unterminated object")
+	errNestingTooDeep         = errors.New("json nesting exceeds maximum depth")
 )
 
 func (s *jsonScanner) skipWhitespace() {
@@ -76,17 +85,10 @@ func (s *jsonScanner) scanString() (string, error) {
 		if ch == '\\' {
 			hasEscape = true
 			s.pos++
-			if s.pos >= len(s.data) {
-				return "", fmt.Errorf("unterminated string escape at position %d", s.pos) //nolint:err113 // position-specific parse error
+			err := s.skipStringEscape()
+			if err != nil {
+				return "", err
 			}
-			// Skip the escaped character; \uXXXX needs 4 more hex digits.
-			if s.data[s.pos] == 'u' {
-				if s.pos+4 >= len(s.data) {
-					return "", fmt.Errorf("unterminated \\u escape at position %d", s.pos) //nolint:err113 // position-specific parse error
-				}
-				s.pos += 4 // skip the 4 hex digits (the loop increment handles the 'u')
-			}
-			s.pos++
 
 			continue
 		}
@@ -103,6 +105,30 @@ func (s *jsonScanner) scanString() (string, error) {
 	}
 
 	return "", fmt.Errorf("unterminated string starting at position %d", start-1) //nolint:err113 // position-specific parse error
+}
+
+// skipStringEscape advances past the escape sequence whose backslash was
+// just consumed. \uXXXX escapes are validated to carry 4 actual hex digits:
+// blindly skipping 4 bytes would jump past the string's closing quote on a
+// malformed short escape like "\u12" and silently misread everything after.
+func (s *jsonScanner) skipStringEscape() error {
+	if s.pos >= len(s.data) {
+		return fmt.Errorf("unterminated string escape at position %d", s.pos) //nolint:err113 // position-specific parse error
+	}
+	if s.data[s.pos] == 'u' {
+		if s.pos+4 >= len(s.data) {
+			return fmt.Errorf("unterminated \\u escape at position %d", s.pos) //nolint:err113 // position-specific parse error
+		}
+		for j := 1; j <= 4; j++ {
+			if !isHexDigit(s.data[s.pos+j]) {
+				return fmt.Errorf("invalid \\u escape at position %d", s.pos) //nolint:err113 // position-specific parse error
+			}
+		}
+		s.pos += 4 // pass 'u' plus 3 hex digits; the s.pos++ below passes the 4th
+	}
+	s.pos++
+
+	return nil
 }
 
 // scanNumber scans a JSON number literal and returns the raw string.
@@ -174,6 +200,11 @@ func (s *jsonScanner) skipValue() error {
 }
 
 func (s *jsonScanner) skipObject() error {
+	s.depth++
+	defer func() { s.depth-- }()
+	if s.depth > maxNestingDepth {
+		return errNestingTooDeep
+	}
 	s.pos++ // skip '{'
 	s.skipWhitespace()
 	if s.pos < len(s.data) && s.data[s.pos] == '}' {
@@ -220,6 +251,11 @@ func (s *jsonScanner) skipObject() error {
 }
 
 func (s *jsonScanner) skipArray() error {
+	s.depth++
+	defer func() { s.depth-- }()
+	if s.depth > maxNestingDepth {
+		return errNestingTooDeep
+	}
 	s.pos++ // skip '['
 	s.skipWhitespace()
 	if s.pos < len(s.data) && s.data[s.pos] == ']' {
@@ -300,12 +336,18 @@ func unescapeJSONString(raw string) string {
 
 				continue
 			}
-			r1 := parseHex4(raw[i+1 : i+5])
+			r1, ok := parseHex4(raw[i+1 : i+5])
+			if !ok {
+				_, _ = buf.WriteRune(utf8.RuneError)
+				i += 5
+
+				continue
+			}
 			i += 4
 			// Handle surrogate pairs.
 			if r1 >= 0xD800 && r1 <= 0xDBFF && i+2 < len(raw) && raw[i+1] == '\\' && raw[i+2] == 'u' && i+6 < len(raw) {
-				r2 := parseHex4(raw[i+3 : i+7])
-				if r2 >= 0xDC00 && r2 <= 0xDFFF {
+				r2, ok2 := parseHex4(raw[i+3 : i+7])
+				if ok2 && r2 >= 0xDC00 && r2 <= 0xDFFF {
 					combined := 0x10000 + (r1-0xD800)*0x400 + (r2 - 0xDC00)
 					_, _ = buf.WriteRune(rune(combined))
 					i += 6 // skip \uXXXX of the low surrogate
@@ -324,7 +366,16 @@ func unescapeJSONString(raw string) string {
 	return buf.String()
 }
 
-func parseHex4(b string) int {
+// isHexDigit reports whether c is an ASCII hexadecimal digit.
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+// parseHex4 decodes 4 hex digits. ok is false when any byte is not a hex
+// digit - the caller substitutes U+FFFD (matching encoding/json's lenient
+// handling of broken escapes) instead of silently treating the bad digit as
+// zero and emitting a garbage rune.
+func parseHex4(b string) (int, bool) {
 	var n int
 	for i := range len(b) {
 		c := b[i]
@@ -337,10 +388,12 @@ func parseHex4(b string) int {
 			n |= int(c-'a') + 10
 		case c >= 'A' && c <= 'F':
 			n |= int(c-'A') + 10
+		default:
+			return 0, false
 		}
 	}
 
-	return n
+	return n, true
 }
 
 // parseCounterObject parses a single counter object: {"value":N, "flag":"c", ...}.
@@ -569,7 +622,23 @@ func (s *jsonScanner) parseCounterMap(skipKey func(string) bool) (map[string]var
 	}
 }
 
-// parseVarnishstatV7 parses the Varnish 7+ JSON format where counters are
+// parseVarnishstat parses varnishstat -1 -j output, auto-detecting the schema
+// from the content: the nested {"version":1,"counters":{...}} format first,
+// falling back to the flat format (counters at the top level) when no
+// "counters" key exists. The schema must NOT be selected by varnishd major
+// version: the nested format was introduced in Varnish 6.5, so major-version
+// routing would feed 6.5/6.6 output to the flat parser, which skips the whole
+// nested "counters" object and silently returns zero counters.
+func parseVarnishstat(data string) (map[string]varnishstatCounter, error) {
+	result, err := parseVarnishstatV7(data)
+	if errors.Is(err, errV7NoCountersKey) {
+		return parseVarnishstatV6(data)
+	}
+
+	return result, err
+}
+
+// parseVarnishstatV7 parses the Varnish 6.5+ JSON format where counters are
 // nested under a "counters" key:
 //
 //	{"version": 1, "counters": {"MAIN.cache_hit": {...}, ...}}

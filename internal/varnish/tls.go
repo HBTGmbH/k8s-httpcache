@@ -2,7 +2,9 @@ package varnish
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -27,15 +29,19 @@ var (
 	errEmptyTLSMaterial = errors.New("TLS certificate or private key is empty")
 )
 
-// tlsCertIDRe matches varnishadm TLS certificate identifiers (e.g. "cert0").
-// Matching by pattern keeps id extraction independent of the exact column
-// layout of `tls.cert.list` output.
-var tlsCertIDRe = regexp.MustCompile(`\bcert\d+\b`)
+// tlsCertIDRe matches a varnishadm TLS certificate identifier when it forms a
+// complete whitespace-delimited field (e.g. "cert0"). Full-field matching
+// keeps id extraction independent of the exact column layout of
+// `tls.cert.list` output without misreading name/SAN/path tokens that merely
+// contain a cert<N> substring (e.g. "foo.cert12.example" or "my-cert5", which
+// the previous substring match would have counted as ids - corrupting the
+// before/after diff LoadCert uses to identify the committed certificate).
+var tlsCertIDRe = regexp.MustCompile(`^cert\d+$`)
 
 // TLSSupported reports whether the detected cache daemon supports native TLS
 // (Varnish/Vinyl major version >= 9). DetectVersion must have run first.
 func (m *Manager) TLSSupported() bool {
-	return m.majorVersion >= tlsMinMajorVersion
+	return m.majorVersion.Load() >= tlsMinMajorVersion
 }
 
 // LoadCert installs a frontend TLS certificate from raw PEM material via the
@@ -86,7 +92,7 @@ func (m *Manager) LoadCert(name string, cert, key, ca []byte) error {
 		return err
 	}
 
-	before := m.listCertIDs()
+	before, beforeErr := m.listCertIDs()
 	prior := m.tlsCertIDs[name]
 
 	// Stage the new certificate.
@@ -107,29 +113,51 @@ func (m *Manager) LoadCert(name string, cert, key, ca []byte) error {
 		return fmt.Errorf("tls.cert.commit: %w: %s", err, resp)
 	}
 
-	// Identify the newly-added certificate id by set difference.
-	after := m.listCertIDs()
+	// Identify the newly-added certificate id by set difference. The diff is
+	// only meaningful when both list calls succeeded: with a failed "before"
+	// list every id looks new and an arbitrary one - possibly another
+	// certificate's active id - would be recorded for this name and discarded
+	// on a later rotation; with a failed "after" list a successful commit
+	// would look like it removed every certificate.
+	after, afterErr := m.listCertIDs()
 	newID := ""
-	for id := range after {
-		if _, existed := before[id]; !existed {
-			newID = id
+	if beforeErr == nil && afterErr == nil {
+		for id := range after {
+			if _, existed := before[id]; !existed {
+				newID = id
 
-			break
+				break
+			}
 		}
 	}
 	if newID != "" {
 		m.tlsCertIDs[name] = newID
+	} else {
+		// Keep the recorded id unchanged: the prior certificate is not
+		// discarded below, so a later successful rotation still knows which
+		// id to retry discarding.
+		m.log.Warn("could not identify newly committed TLS certificate id, skipping discard of prior certificate",
+			logKeyCert, name, "before_err", beforeErr, "after_err", afterErr)
 	}
-	m.metrics.TLSCertsActive.Set(float64(len(after)))
 
 	// Discard the certificate this name previously used (rotation). Only when
 	// we positively identified a distinct new id, so we never discard the cert
 	// we just committed.
+	activeCerts := len(after)
 	if newID != "" && prior != "" && prior != newID {
 		_, discardErr := m.tlsOp("discard", "tls.cert.discard", prior)
 		if discardErr != nil {
 			m.log.Warn("failed to discard previous TLS certificate", logKeyCert, name, "id", prior, "error", discardErr)
+		} else {
+			// The post-commit listing still contained the prior certificate;
+			// count it out so the gauge reflects the post-discard state
+			// (setting the gauge from len(after) alone would overcount by one
+			// until the next rotation).
+			activeCerts--
 		}
+	}
+	if afterErr == nil {
+		m.metrics.TLSCertsActive.Set(float64(activeCerts))
 	}
 
 	m.metrics.TLSCertReloadsTotal.WithLabelValues(name, "success").Inc()
@@ -168,20 +196,22 @@ func (m *Manager) CleanupTLS() {
 }
 
 // listCertIDs returns the set of active TLS certificate ids reported by
-// `tls.cert.list`. It returns nil on error (treated as an empty set).
-func (m *Manager) listCertIDs() map[string]struct{} {
+// `tls.cert.list`, or an error when the listing itself failed. Callers must
+// not treat a failed listing as an empty set: LoadCert's before/after diff
+// would misidentify the committed certificate id.
+func (m *Manager) listCertIDs() (map[string]struct{}, error) {
 	resp, err := m.adm("tls.cert.list")
 	if err != nil {
-		m.log.Debug("tls.cert.list failed", "error", err)
-
-		return nil
+		return nil, fmt.Errorf("tls.cert.list: %w", err)
 	}
 	ids := make(map[string]struct{})
-	for _, id := range tlsCertIDRe.FindAllString(resp, -1) {
-		ids[id] = struct{}{}
+	for field := range strings.FieldsSeq(resp) {
+		if tlsCertIDRe.MatchString(field) {
+			ids[field] = struct{}{}
+		}
 	}
 
-	return ids
+	return ids, nil
 }
 
 // ensureTLSDir lazily creates the temp directory that holds combined PEM files.
@@ -252,6 +282,10 @@ func writePEMBlock(buf *bytes.Buffer, block []byte) {
 
 // sanitizeCertFileName maps a logical certificate name to a filesystem-safe
 // base name, preventing path traversal from user-supplied --tls-cert names.
+// When sanitisation had to alter the name, a short hash of the original is
+// appended: character replacement is lossy, so two distinct logical names
+// (e.g. "web api" and "web_api") would otherwise collapse onto the same PEM
+// file and one certificate's material would overwrite the other's.
 func sanitizeCertFileName(name string) string {
 	safe := strings.Map(func(r rune) rune {
 		switch {
@@ -261,9 +295,14 @@ func sanitizeCertFileName(name string) string {
 			return '_'
 		}
 	}, name)
-	if safe == "" || safe == "." || safe == ".." {
-		return defaultCertFileName
+	if safe == name && safe != "" && safe != "." && safe != ".." {
+		return safe
 	}
 
-	return safe
+	if safe == "" || safe == "." || safe == ".." {
+		safe = defaultCertFileName
+	}
+	sum := sha256.Sum256([]byte(name))
+
+	return safe + "-" + hex.EncodeToString(sum[:4])
 }

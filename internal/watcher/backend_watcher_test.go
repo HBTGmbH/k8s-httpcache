@@ -1901,3 +1901,44 @@ func TestBackendWatcherChangesSnapshotNoTornRead(t *testing.T) {
 	close(stop)
 	<-done
 }
+
+// TestBackendWatcherServiceDeletionClearsMetadata verifies that deleting a
+// Service whose endpoints were already empty still delivers the cleared
+// labels/annotations: sendLocked dedups on endpoint equality alone, so
+// without a forced resend the metadata reset would be silently dropped and
+// consumers would keep rendering the deleted Service's stale labels.
+func TestBackendWatcherServiceDeletionClearsMetadata(t *testing.T) {
+	t.Parallel()
+	svc := makeService(corev1.ServiceTypeClusterIP, "")
+	svc.Labels = map[string]string{"team": "x"}
+
+	// No EndpointSlice: the Service exists with zero ready endpoints.
+	clientset := fake.NewClientset(svc)
+	bw := NewBackendWatcher(clientset, "default", "svc", "8080")
+
+	ctx := t.Context()
+	go func() { _ = bw.Run(ctx) }()
+
+	st := readBackendState(t, bw)
+	if len(st.Endpoints) != 0 {
+		t.Fatalf("expected 0 endpoints, got %v", st.Endpoints)
+	}
+	if st.Labels["team"] != "x" {
+		t.Fatalf("initial Labels = %v, want team=x", st.Labels)
+	}
+
+	err := clientset.CoreV1().Services("default").Delete(ctx, "svc", metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("deleting Service: %v", err)
+	}
+
+	// Endpoints stay empty, so only the metadata distinguishes this update -
+	// it must still be delivered.
+	st = readBackendState(t, bw)
+	if len(st.Labels) != 0 {
+		t.Fatalf("Labels after Service deletion = %v, want empty (stale metadata delivered to consumers)", st.Labels)
+	}
+	if len(st.Endpoints) != 0 {
+		t.Fatalf("expected 0 endpoints after deletion, got %v", st.Endpoints)
+	}
+}

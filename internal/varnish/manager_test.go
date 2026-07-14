@@ -72,15 +72,16 @@ func (p *mockProc) Pid() int { return p.pid }
 // newTestManager creates a Manager wired with a mock runner for testing.
 func newTestManager(r *mockRunner) *Manager {
 	return &Manager{
-		varnishdPath:   "/usr/sbin/varnishd",
-		varnishadmPath: "/usr/bin/varnishadm",
-		listenAddrs:    []string{":8080"},
-		log:            slog.New(slog.DiscardHandler),
-		run:            r,
-		done:           make(chan struct{}),
-		metrics:        telemetry.NewMetrics(prometheus.NewRegistry(), nil),
-		tlsCertIDs:     make(map[string]string),
-		AdminTimeout:   30 * time.Second,
+		varnishdPath:    "/usr/sbin/varnishd",
+		varnishadmPath:  "/usr/bin/varnishadm",
+		listenAddrs:     []string{":8080"},
+		log:             slog.New(slog.DiscardHandler),
+		run:             r,
+		done:            make(chan struct{}),
+		metrics:         telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+		tlsCertIDs:      make(map[string]string),
+		AdminTimeout:    30 * time.Second,
+		NCSAStopTimeout: 30 * time.Second,
 	}
 }
 
@@ -303,8 +304,8 @@ func TestActiveSessionsVinylBinaryPath(t *testing.T) {
 		run:             r,
 		done:            make(chan struct{}),
 		metrics:         telemetry.NewMetrics(prometheus.NewRegistry(), nil),
-		majorVersion:    9,
 	}
+	m.majorVersion.Store(9)
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -341,8 +342,8 @@ func TestVarnishstatFuncVinylBinaryPath(t *testing.T) {
 		run:             r,
 		done:            make(chan struct{}),
 		metrics:         telemetry.NewMetrics(prometheus.NewRegistry(), nil),
-		majorVersion:    9,
 	}
+	m.majorVersion.Store(9)
 
 	fn := m.VarnishstatFunc()
 	out, ver, err := fn()
@@ -839,7 +840,6 @@ func TestStartDetectVersionError(t *testing.T) {
 func TestStartAdminTimeoutViaStart(t *testing.T) {
 	t.Parallel()
 	mp := &mockProc{pid: 1, waitCh: make(chan struct{})}
-	defer close(mp.waitCh)
 
 	r := &mockRunner{
 		startFn: func(string, []string) (proc, error) { return mp, nil },
@@ -857,6 +857,23 @@ func TestStartAdminTimeoutViaStart(t *testing.T) {
 
 	m := newTestManager(r)
 	m.AdminTimeout = 500 * time.Millisecond
+
+	// Start kills and reaps the spawned process on the admin-timeout path, so
+	// the mock must behave like a real process and exit once signalled
+	// (a defer-only close would deadlock Start's reap wait).
+	go func() {
+		for {
+			mp.mu.Lock()
+			n := len(mp.signalled)
+			mp.mu.Unlock()
+			if n > 0 {
+				close(mp.waitCh)
+
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
 
 	err := m.Start("/tmp/test.vcl")
 	if err == nil {
@@ -1097,7 +1114,7 @@ func TestActiveSessions(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1131,7 +1148,7 @@ func TestActiveSessionsZero(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1164,7 +1181,7 @@ func TestActiveSessionsNoCounters(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1190,7 +1207,7 @@ func TestActiveSessionsError(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1216,7 +1233,7 @@ func TestActiveSessionsInvalidJSON(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1250,7 +1267,7 @@ func TestActiveSessionsMalformedValue(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1384,8 +1401,8 @@ func TestDetectVersion(t *testing.T) {
 			if err != nil {
 				t.Fatalf("detectVersion() error: %v", err)
 			}
-			if m.majorVersion != tt.wantVer {
-				t.Errorf("majorVersion = %d, want %d", m.majorVersion, tt.wantVer)
+			if m.MajorVersion() != tt.wantVer {
+				t.Errorf("majorVersion = %d, want %d", m.MajorVersion(), tt.wantVer)
 			}
 		})
 	}
@@ -1414,7 +1431,7 @@ func TestActiveSessionsV6(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 6
+	m.majorVersion.Store(6)
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1440,7 +1457,7 @@ func TestActiveSessionsV6InvalidJSON(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 6
+	m.majorVersion.Store(6)
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1472,7 +1489,7 @@ func TestActiveSessionsV6MalformedCounter(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 6
+	m.majorVersion.Store(6)
 
 	_, err := m.ActiveSessions()
 	if err == nil {
@@ -1503,7 +1520,7 @@ func TestActiveSessionsV6NoCounters(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 6
+	m.majorVersion.Store(6)
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1526,7 +1543,7 @@ func TestMajorVersion(t *testing.T) {
 		t.Errorf("MajorVersion() before DetectVersion = %d, want 0", got)
 	}
 
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 	if got := m.MajorVersion(); got != 7 {
 		t.Errorf("MajorVersion() = %d, want 7", got)
 	}
@@ -1553,7 +1570,7 @@ func TestActiveSessionsV6Zero(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 6
+	m.majorVersion.Store(6)
 
 	sessions, err := m.ActiveSessions()
 	if err != nil {
@@ -1644,7 +1661,7 @@ func TestActiveSessionsWithWorkDir(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 	m.workDir = "/var/lib/varnish/myname"
 
 	_, err := m.ActiveSessions()
@@ -1683,7 +1700,7 @@ func TestActiveSessionsWithoutWorkDir(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	_, err := m.ActiveSessions()
 	if err != nil {
@@ -1716,7 +1733,7 @@ func TestVarnishstatFuncWithWorkDir(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 	m.workDir = "/var/lib/varnish/myname"
 
 	fn := m.VarnishstatFunc()
@@ -1757,7 +1774,7 @@ func TestVarnishstatFuncWithoutWorkDir(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	fn := m.VarnishstatFunc()
 	out, ver, err := fn()
@@ -1789,7 +1806,7 @@ func TestVarnishstatFuncError(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = defaultVarnishstatPath
-	m.majorVersion = 7
+	m.majorVersion.Store(7)
 
 	fn := m.VarnishstatFunc()
 	_, _, err := fn()
@@ -3430,7 +3447,7 @@ func TestActiveSessionsSafeFromSecrets(t *testing.T) {
 	}
 
 	mgr := newTestManager(r)
-	mgr.majorVersion = 7
+	mgr.majorVersion.Store(7)
 
 	// ActiveSessions returns (uint64, error) - no raw string exposed.
 	total, err := mgr.ActiveSessions()
@@ -3462,7 +3479,7 @@ func TestActiveSessionsV6SafeFromSecrets(t *testing.T) {
 	}
 
 	mgr := newTestManager(r)
-	mgr.majorVersion = 6
+	mgr.majorVersion.Store(6)
 
 	total, err := mgr.ActiveSessions()
 	if err != nil {
@@ -3487,7 +3504,7 @@ func TestActiveSessionsErrorDoesNotLeakJSON(t *testing.T) {
 	}
 
 	mgr := newTestManager(r)
-	mgr.majorVersion = 7
+	mgr.majorVersion.Store(7)
 
 	_, err := mgr.ActiveSessions()
 	if err == nil {
@@ -3624,9 +3641,12 @@ func TestParseActiveSessionsV7MalformedCounter(t *testing.T) {
 	// Valid top-level structure but will parse to zero sessions.
 	mgr := newTestManager(&mockRunner{})
 	data := `{"counters": {"OTHER.counter": {"value": 999}}}`
-	total, err := mgr.parseActiveSessionsV7(data)
+	total, nested, err := mgr.parseActiveSessionsV7(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !nested {
+		t.Error("expected the nested schema to be detected")
 	}
 	if total != 0 {
 		t.Errorf("expected 0 sessions for non-MEMPOOL counter, got %d", total)
@@ -4776,7 +4796,7 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 
 	m := newTestManager(r)
 	m.varnishstatPath = "varnishstat"
-	m.majorVersion = 9 // native TLS supported; selects the v7+ stat parser
+	m.majorVersion.Store(9) // native TLS supported; selects the v7+ stat parser
 	m.VCLKept = 1
 	red := redact.NewRedactor()
 	m.SetRedactor(red)
@@ -4877,5 +4897,369 @@ func TestStartNCSA_RestartLoopRacesSignalAndStop(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("StopNCSA did not return; restart loop may be wedged")
+	}
+}
+
+// TestStartKillsVarnishdOnAdminTimeout verifies that Start does not leave the
+// freshly spawned varnishd behind when the admin port never becomes ready: the
+// process must be SIGKILLed and reaped (Done closed) before Start returns,
+// since the caller exits on this error and an unkilled varnishd would survive
+// whenever this process is not the container's PID 1.
+func TestStartKillsVarnishdOnAdminTimeout(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProc{pid: 42, waitCh: make(chan struct{})}
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) { return mp, nil },
+		runFn: func(_ string, args []string) (string, error) {
+			if slices.Contains(args, "-V") {
+				return varnishdVersionOutput, nil
+			}
+
+			// varnishadm ping keeps failing: admin never becomes ready.
+			return "", errors.New("connection refused")
+		},
+	}
+
+	m := newTestManager(r)
+	m.AdminTimeout = 10 * time.Millisecond
+
+	// Behave like a real process: unblock Wait once a signal arrives.
+	go func() {
+		for {
+			mp.mu.Lock()
+			n := len(mp.signalled)
+			mp.mu.Unlock()
+			if n > 0 {
+				close(mp.waitCh)
+
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	err := m.Start("/tmp/initial.vcl")
+	if err == nil {
+		t.Fatal("expected Start to fail when the admin port never becomes ready")
+	}
+
+	mp.mu.Lock()
+	signalled := slices.Clone(mp.signalled)
+	mp.mu.Unlock()
+	if !slices.Contains(signalled, os.Signal(syscall.SIGKILL)) {
+		t.Errorf("expected SIGKILL to the spawned varnishd, got signals %v", signalled)
+	}
+
+	// Start must have reaped the process (done closed) before returning.
+	select {
+	case <-m.Done():
+	default:
+		t.Error("expected Done() to be closed after Start reaped the timed-out varnishd")
+	}
+}
+
+// TestStopNCSAEscalatesToSIGKILL verifies the bounded stop: a varnishncsa that
+// ignores SIGTERM must be SIGKILLed after NCSAStopTimeout so StopNCSA cannot
+// stall shutdown indefinitely.
+func TestStopNCSAEscalatesToSIGKILL(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProc{pid: 42, waitCh: make(chan struct{})}
+	started := make(chan struct{}, 1)
+
+	r := &mockRunner{
+		startFn: func(string, []string) (proc, error) {
+			started <- struct{}{}
+
+			return mp, nil
+		},
+		runFn: func(string, []string) (string, error) { return "", nil },
+	}
+
+	m := newTestManager(r)
+	m.NCSAStopTimeout = 10 * time.Millisecond
+	m.ncsaRun = r
+
+	m.StartNCSA("/usr/bin/varnishncsa", nil, "")
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ncsa process to start")
+	}
+
+	// The process ignores SIGTERM (Wait stays blocked) and exits only once
+	// SIGKILL arrives.
+	go func() {
+		for {
+			mp.mu.Lock()
+			killed := slices.Contains(mp.signalled, os.Signal(syscall.SIGKILL))
+			mp.mu.Unlock()
+			if killed {
+				close(mp.waitCh)
+
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() { m.StopNCSA(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("StopNCSA did not return; SIGKILL escalation is missing")
+	}
+
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if len(mp.signalled) == 0 || mp.signalled[0] != os.Signal(syscall.SIGTERM) {
+		t.Errorf("first signal = %v, want SIGTERM", mp.signalled)
+	}
+	if !slices.Contains(mp.signalled, os.Signal(syscall.SIGKILL)) {
+		t.Errorf("expected SIGKILL escalation after SIGTERM, got %v", mp.signalled)
+	}
+}
+
+// TestReloadRetryAbortsWhenVarnishdExits verifies that the retry wait aborts
+// once varnishd exits: Reload runs on the event loop goroutine, and sleeping
+// through the remaining retries would stall all event handling (signals,
+// varnishd-exit handling) for retries x interval.
+func TestReloadRetryAbortsWhenVarnishdExits(t *testing.T) {
+	t.Parallel()
+
+	loadAttempts := 0
+	r := &mockRunner{runFn: func(_ string, args []string) (string, error) {
+		if len(args) > 0 && args[0] == "vcl.load" {
+			loadAttempts++
+
+			return "", errors.New("Command failed with error code 300")
+		}
+
+		return "", nil
+	}}
+
+	m := newTestManager(r)
+	m.ReloadRetries = 1000
+	m.ReloadRetryInterval = time.Hour
+	close(m.done) // varnishd has already exited
+
+	start := time.Now()
+	err := m.Reload("/tmp/test.vcl")
+	if err == nil {
+		t.Fatal("expected Reload to fail when vcl.load keeps failing")
+	}
+	// The wait must abort via done, not sleep out 1000 x 1h of retries. The
+	// bound is deliberately generous so it cannot flake on slow CI.
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("Reload took %v; the retry wait must abort when varnishd exits", elapsed)
+	}
+	if loadAttempts != 1 {
+		t.Errorf("vcl.load attempts = %d, want 1 (no retries after varnishd exit)", loadAttempts)
+	}
+}
+
+// TestMajorVersionConcurrentDetectAndRead runs DetectVersion concurrently with
+// every majorVersion reader. Under -race this pins down that majorVersion is
+// safe to re-detect at runtime (it is atomic); with a plain int field this
+// test is a guaranteed race-detector hit.
+func TestMajorVersionConcurrentDetectAndRead(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{runFn: func(_ string, args []string) (string, error) {
+		if slices.Contains(args, "-V") {
+			return varnishdVersionOutput, nil
+		}
+
+		return `{"version":1,"counters":{}}`, nil
+	}}
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+	vsFn := m.VarnishstatFunc()
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for range 50 {
+				_ = m.DetectVersion()
+			}
+		})
+		wg.Go(func() {
+			for range 50 {
+				_ = m.MajorVersion()
+				_ = m.TLSSupported()
+				_, _, _ = vsFn()
+			}
+		})
+	}
+	wg.Wait()
+
+	if got := m.MajorVersion(); got != 7 {
+		t.Errorf("MajorVersion = %d, want 7", got)
+	}
+}
+
+// TestActiveSessionsNestedSchemaOnVarnish6 verifies ActiveSessions detects
+// the varnishstat JSON schema from the content: Varnish 6.5/6.6 report major
+// version 6 but emit the nested schema. Major-version routing parsed that
+// with the flat parser, found no top-level MEMPOOL keys, and returned 0 live
+// sessions with no error - making graceful drain exit immediately while
+// client sessions were still active.
+func TestActiveSessionsNestedSchemaOnVarnish6(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{runFn: func(_ string, args []string) (string, error) {
+		if slices.Contains(args, "-j") {
+			return `{"version": 1, "counters": {"MEMPOOL.sess0.live": {"value": 2}, "MEMPOOL.sess1.live": {"value": 1}}}`, nil
+		}
+
+		return "", nil
+	}}
+	m := newTestManager(r)
+	m.varnishstatPath = "varnishstat"
+	m.majorVersion.Store(6) // Varnish 6.5/6.6: major version 6, nested schema
+
+	got, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions() error: %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("ActiveSessions = %d, want 3 (nested schema on major 6 parsed as flat yields 0 and breaks drain)", got)
+	}
+}
+
+// TestDiscardOldVCLsSkipsLabelRowsAndTargets verifies vcl.list label handling:
+// a label row ("<label> -> <target>") must not be misread as an available VCL
+// named after its target (queuing a still-referenced VCL for discard), the
+// label's target must be protected from discard, and the "(N label)" suffix
+// varnishd appends to a labeled VCL's own row must not corrupt name parsing.
+func TestDiscardOldVCLsSkipsLabelRowsAndTargets(t *testing.T) {
+	t.Parallel()
+	vclListOutput := strings.Join([]string{
+		"active      auto/warm          0 kv_reload_3",
+		"available   auto/warm          0 kv_reload_1",
+		"available  label/warm          0 mylabel -> kv_reload_2",
+		"available   auto/warm          0 kv_reload_2 (1 label)",
+	}, "\n")
+
+	var discarded []string
+	r := &mockRunner{
+		runFn: func(_ string, args []string) (string, error) {
+			for i, a := range args {
+				if a == "vcl.list" {
+					return vclListOutput, nil
+				}
+				if a == "vcl.discard" && i+1 < len(args) {
+					discarded = append(discarded, args[i+1])
+
+					return "", nil
+				}
+			}
+
+			return "", nil
+		},
+	}
+
+	m := newTestManager(r)
+	m.discardOldVCLs("kv_reload_3")
+
+	if len(discarded) != 1 || discarded[0] != "kv_reload_1" {
+		t.Fatalf("discarded %v, want exactly [kv_reload_1]: the label target kv_reload_2 is still referenced and must not be discarded", discarded)
+	}
+}
+
+// TestExecRunnerRunTimeout verifies run() bounds its subprocess: varnishadm
+// calls run on the event-loop goroutine, and a wedged CLI (half-open admin
+// socket) would otherwise block CombinedOutput forever, freezing all event
+// handling including signal-driven shutdown.
+func TestExecRunnerRunTimeout(t *testing.T) {
+	t.Parallel()
+
+	r := execRunner{runTimeout: 100 * time.Millisecond}
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.run("sleep", []string{"5"})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error from the timed-out subprocess")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run() did not return; the subprocess timeout is missing")
+	}
+}
+
+// TestBuildNCSAWritersRedact verifies varnishncsa output passes through the
+// redactor: the ncsa runner is built separately from the varnishd runner that
+// SetRedactor wraps, so without explicit wrapping an access-log format that
+// echoes a secret-bearing header would log it in cleartext.
+func TestBuildNCSAWritersRedact(t *testing.T) {
+	t.Parallel()
+
+	red := redact.NewRedactor()
+	red.Update(map[string]map[string]any{"app": {"key": "supersecretvalue"}})
+	m := newTestManager(&mockRunner{})
+	m.SetRedactor(red)
+
+	var out, errOut bytes.Buffer
+	stdout, stderr := m.buildNCSAWriters(&out, &errOut, "ncsa: ")
+
+	_, err := stdout.Write([]byte("GET /x?key=supersecretvalue HTTP/1.1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); strings.Contains(got, "supersecretvalue") {
+		t.Fatalf("ncsa stdout leaked the secret: %q", got)
+	}
+	if got := out.String(); !strings.HasPrefix(got, "ncsa: ") {
+		t.Errorf("prefix missing on ncsa stdout: %q", got)
+	}
+
+	_, err = stderr.Write([]byte("error: supersecretvalue rejected\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := errOut.String(); strings.Contains(got, "supersecretvalue") {
+		t.Fatalf("ncsa stderr leaked the secret: %q", got)
+	}
+}
+
+// TestNCSAWritersFlushedBetweenProcesses verifies partial-line buffers are
+// drained after a varnishncsa exit: without the flush, a process dying
+// mid-line loses its final output (at stop) or has the next process's first
+// line appended to its truncated one (at restart).
+func TestNCSAWritersFlushedBetweenProcesses(t *testing.T) {
+	t.Parallel()
+
+	red := redact.NewRedactor()
+	red.Update(map[string]map[string]any{"app": {"key": "supersecretvalue"}})
+	m := newTestManager(&mockRunner{})
+	m.SetRedactor(red)
+
+	var out bytes.Buffer
+	stdout, _ := m.buildNCSAWriters(&out, io.Discard, "ncsa: ")
+
+	// varnishncsa dies mid-line, mid-secret.
+	_, err := stdout.Write([]byte("GET /x?key=supersecret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("partial line emitted before flush: %q", out.String())
+	}
+
+	m.flushNCSAWriters()
+
+	got := out.String()
+	if got == "" {
+		t.Fatal("final partial line was dropped instead of flushed")
+	}
+	if !strings.HasPrefix(got, "ncsa: ") {
+		t.Errorf("flushed line lost its prefix: %q", got)
 	}
 }

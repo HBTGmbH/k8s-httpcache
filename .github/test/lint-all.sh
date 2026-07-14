@@ -37,6 +37,9 @@ hadolint .github/build/Dockerfile .github/test/*/Dockerfile
 echo "=== helm lint ==="
 helm lint --strict charts/k8s-httpcache
 
+echo "=== chart contract checks ==="
+.github/test/chart-contract-test.sh
+
 echo "=== kube-linter ==="
 helm template charts/k8s-httpcache --set image.repository=ghcr.io/example/k8s-httpcache |
   kube-linter lint --config .kube-linter.yaml -

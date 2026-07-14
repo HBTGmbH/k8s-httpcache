@@ -70,8 +70,10 @@ var genSeq atomic.Uint64
 // this is enforced as a graceful first-come-first-served claim rather than a
 // startup error.
 type NameRegistry struct {
-	mu     sync.Mutex
-	owners map[string]string // bare name -> owner token
+	mu          sync.Mutex
+	owners      map[string]string // bare name -> owner token
+	subscribers map[uint64]func() // invoked (outside mu) after every successful release
+	subSeq      uint64            // next subscriber id
 }
 
 // NewNameRegistry creates an empty shared name registry.
@@ -94,12 +96,54 @@ func (r *NameRegistry) claim(name, owner string) bool {
 }
 
 // release relinquishes name iff it is currently held by owner. Releasing a name
-// held by someone else (or not held at all) is a no-op.
+// held by someone else (or not held at all) is a no-op. After a successful
+// release, all subscribers are notified: a watcher suppressed on this name gets
+// no informer event for the release (the departing Service does not match its
+// selector, and there is no informer resync), so this notification is its only
+// wakeup to re-attempt the claim.
 func (r *NameRegistry) release(name, owner string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	released := false
 	if r.owners[name] == owner {
 		delete(r.owners, name)
+		released = true
+	}
+	var subs []func()
+	if released && len(r.subscribers) > 0 {
+		subs = make([]func(), 0, len(r.subscribers))
+		for _, f := range r.subscribers {
+			subs = append(subs, f)
+		}
+	}
+	r.mu.Unlock()
+
+	// Called outside mu: subscribers are cheap non-blocking kicks, but they
+	// must never run under the registry lock (a kicked watcher's reconcile
+	// claims/releases names itself).
+	for _, f := range subs {
+		f()
+	}
+}
+
+// subscribe registers f to be invoked after every successful release and
+// returns a function that removes the subscription. f must be non-blocking
+// (subscribers typically do a coalescing channel send). Unsubscribing on
+// watcher shutdown keeps a long-lived registry from accumulating dead
+// closures that fire on every future release.
+func (r *NameRegistry) subscribe(f func()) func() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.subscribers == nil {
+		r.subscribers = make(map[uint64]func())
+	}
+	id := r.subSeq
+	r.subSeq++
+	r.subscribers[id] = f
+
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		delete(r.subscribers, id)
 	}
 }
 
@@ -242,6 +286,32 @@ func (dw *BackendDiscoveryWatcher) Run(ctx context.Context) error {
 	_, err := informer.AddEventHandler(handler)
 	if err != nil {
 		return fmt.Errorf("adding event handler: %w", err)
+	}
+
+	// Reconcile when any watcher releases a bare name: this watcher may hold a
+	// suppressed same-named Service that can now be adopted, and no informer
+	// event fires here for the release (the departing Service does not match
+	// this selector; resync is disabled). The cap-1 kick channel coalesces
+	// bursts; syncServices is already safe to run from any goroutine (dw.mu).
+	if dw.registry != nil {
+		kick := make(chan struct{}, 1)
+		unsubscribe := dw.registry.subscribe(func() {
+			select {
+			case kick <- struct{}{}:
+			default:
+			}
+		})
+		defer unsubscribe()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-kick:
+					dw.syncServices(ctx, lister)
+				}
+			}
+		}()
 	}
 
 	// Release child watchers and registry claims on every return path,

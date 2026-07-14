@@ -410,3 +410,192 @@ func TestFileValuesWatcherYMLExtension(t *testing.T) {
 		t.Errorf("expected key=value, got %v", m["key"])
 	}
 }
+
+// TestScanKeepsValuesOnReadDirError verifies a transient directory-listing
+// failure does not wipe the previously delivered values: publishing an empty
+// snapshot for one poll interval would force a spurious VCL reload with all
+// values missing, then another when the next poll restores them.
+func TestScanKeepsValuesOnReadDirError(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	dir := filepath.Join(base, "values")
+	err := os.Mkdir(dir, 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.WriteFile(filepath.Join(dir, "k.yaml"), []byte("v: 1"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewFileValuesWatcher(dir, time.Hour)
+	w.ScanOnce()
+	got := <-w.Changes()
+	if len(got) != 1 {
+		t.Fatalf("initial scan = %v, want 1 key", got)
+	}
+
+	// The directory disappears (e.g. volume remount mid-poll).
+	err = os.RemoveAll(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.ScanOnce()
+	select {
+	case got := <-w.Changes():
+		t.Fatalf("unexpected update after transient ReadDir failure: %v (previous values wiped)", got)
+	default:
+	}
+}
+
+// TestScanDeliversEmptyOnInitialReadDirError pins the startup contract: even
+// when the very first scan fails, an (empty) snapshot must be delivered so
+// the startup collection reading Changes() is never left blocking.
+func TestScanDeliversEmptyOnInitialReadDirError(t *testing.T) {
+	t.Parallel()
+	w := NewFileValuesWatcher(filepath.Join(t.TempDir(), "missing"), time.Hour)
+	w.ScanOnce()
+	select {
+	case got := <-w.Changes():
+		if len(got) != 0 {
+			t.Fatalf("initial delivery = %v, want empty", got)
+		}
+	default:
+		t.Fatal("expected an initial delivery even when the directory is missing (startup collection would block forever)")
+	}
+}
+
+// TestScanRetriesOnDataSymlinkSwap verifies the torn-snapshot guard: a
+// Kubernetes ConfigMap volume update atomically replaces the ..data symlink,
+// and a swap landing between two file reads of one scan pass must trigger a
+// rescan instead of delivering a snapshot mixing old- and new-generation
+// values.
+func TestScanRetriesOnDataSymlinkSwap(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, g := range []struct{ sub, val string }{{"..gen1", "old"}, {"..gen2", "new"}} {
+		err := os.MkdirAll(filepath.Join(dir, g.sub), 0o750)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"a.yaml", "b.yaml"} {
+			err = os.WriteFile(filepath.Join(dir, g.sub, f), []byte("v: "+g.val), 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Kubernetes ConfigMap volume layout: visible files resolve through ..data.
+	err := os.Symlink("..gen1", filepath.Join(dir, k8sDataSymlink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"a.yaml", "b.yaml"} {
+		err = os.Symlink(filepath.Join(k8sDataSymlink, f), filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := NewFileValuesWatcher(dir, time.Hour)
+	// Swap ..data right after the first file read of the first pass: the rest
+	// of that pass reads new-generation content, tearing the snapshot.
+	swapped := false
+	w.testHookAfterRead = func(string) {
+		if swapped {
+			return
+		}
+		swapped = true
+		rmErr := os.Remove(filepath.Join(dir, k8sDataSymlink))
+		if rmErr != nil {
+			t.Error(rmErr)
+		}
+		lnErr := os.Symlink("..gen2", filepath.Join(dir, k8sDataSymlink))
+		if lnErr != nil {
+			t.Error(lnErr)
+		}
+	}
+
+	w.ScanOnce()
+	got := <-w.Changes()
+	if len(got) != 2 {
+		t.Fatalf("scan = %v, want 2 keys", got)
+	}
+	for key, val := range got {
+		m, ok := val.(map[string]any)
+		if !ok {
+			t.Fatalf("key %s = %T, want map", key, val)
+		}
+		if m["v"] != "new" {
+			t.Errorf("key %s = %v, want the new-generation value (torn snapshot delivered)", key, m["v"])
+		}
+	}
+}
+
+// TestScanDeliversPriorPassOnRetryReadDirError verifies a torn-snapshot
+// rescan whose directory listing then transiently fails still delivers the
+// previous pass's successfully-read snapshot: discarding it and publishing
+// nil would wipe the values - permanently when watching is disabled, since
+// ScanOnce has no next poll to self-correct.
+func TestScanDeliversPriorPassOnRetryReadDirError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, gen := range []string{"..gen1", "..gen2"} {
+		err := os.MkdirAll(filepath.Join(dir, gen), 0o750)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"a.yaml", "b.yaml"} {
+			err = os.WriteFile(filepath.Join(dir, gen, f), []byte("v: 1"), 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	err := os.Symlink("..gen1", filepath.Join(dir, k8sDataSymlink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"a.yaml", "b.yaml"} {
+		err = os.Symlink(filepath.Join(k8sDataSymlink, f), filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := NewFileValuesWatcher(dir, time.Hour)
+	reads := 0
+	w.testHookAfterRead = func(string) {
+		reads++
+		switch reads {
+		case 1:
+			// Swap ..data to another generation so pass 0 looks torn and a
+			// rescan is forced.
+			rmErr := os.Remove(filepath.Join(dir, k8sDataSymlink))
+			if rmErr != nil {
+				t.Error(rmErr)
+			}
+			lnErr := os.Symlink("..gen2", filepath.Join(dir, k8sDataSymlink))
+			if lnErr != nil {
+				t.Error(lnErr)
+			}
+		case 2:
+			// After pass 0 completes, the whole directory disappears so the
+			// rescan's ReadDir fails.
+			rmErr := os.RemoveAll(dir)
+			if rmErr != nil {
+				t.Error(rmErr)
+			}
+		}
+	}
+
+	w.ScanOnce()
+	select {
+	case got := <-w.Changes():
+		if len(got) != 2 {
+			t.Fatalf("delivered %d keys, want the 2 keys of the prior successful pass (nil delivery wipes the values)", len(got))
+		}
+	default:
+		t.Fatal("no snapshot delivered; startup collection would block")
+	}
+}

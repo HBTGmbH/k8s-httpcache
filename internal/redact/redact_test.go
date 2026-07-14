@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -172,13 +173,13 @@ func TestRedactWriter(t *testing.T) {
 
 	var buf bytes.Buffer
 	w := r.Writer(&buf)
-	_, err := w.Write([]byte("error: my-secret-token leaked"))
+	_, err := w.Write([]byte("error: my-secret-token leaked\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	got := buf.String()
-	want := "error: [REDACTED] leaked"
+	want := "error: [REDACTED] leaked\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -284,15 +285,16 @@ func TestRedactWriterInnerError(t *testing.T) {
 
 	errInner := errors.New("disk full")
 	w := r.Writer(&failWriter{err: errInner, n: 3})
-	input := []byte("token: my-secret-token")
+	input := []byte("token: my-secret-token\n")
 	n, err := w.Write(input)
 
 	if !errors.Is(err, errInner) {
 		t.Errorf("expected inner error, got %v", err)
 	}
-	// When the inner writer fails, we forward its n (not len(input)).
-	if n != 3 {
-		t.Errorf("expected n=3 from inner writer, got %d", n)
+	// The writer consumed all of p into its buffer; n reports accepted input
+	// bytes (io.Writer contract: 0 <= n <= len(p)).
+	if n > len(input) {
+		t.Errorf("Write returned n=%d > len(p)=%d", n, len(input))
 	}
 }
 
@@ -305,9 +307,9 @@ func TestRedactWriterInnerErrorCountWithinInput(t *testing.T) {
 
 	errInner := errors.New("disk full")
 	// The inner writer consumed 8 bytes of the redacted (longer) output
-	// before failing - more than the 6 input bytes.
+	// before failing - more than the 7 input bytes.
 	w := r.Writer(&failWriter{err: errInner, n: 8})
-	input := []byte("secret")
+	input := []byte("secret\n")
 	n, err := w.Write(input)
 
 	if !errors.Is(err, errInner) {
@@ -497,5 +499,185 @@ func TestRedactWriterNoTornReadUnderConcurrentUpdate(t *testing.T) {
 	wg.Wait()
 	if failure != "" {
 		t.Fatalf("torn redaction observed: %q (want %q or %q)", failure, line, redacted)
+	}
+}
+
+// TestRedactWriterSecretSpansWrites verifies the chunk-boundary guarantee:
+// subprocess pipes deliver arbitrary chunks, and a secret split across two
+// Write calls must still be redacted. Without line buffering each chunk is
+// redacted in isolation, neither half matches, and the cleartext secret
+// escapes into the log stream.
+func TestRedactWriterSecretSpansWrites(t *testing.T) {
+	t.Parallel()
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{
+		"app": {"token": "supersecretvalue"},
+	})
+
+	var buf bytes.Buffer
+	w := r.Writer(&buf)
+	// The pipe splits varnishd's output mid-secret.
+	for _, chunk := range []string{"backend .host = \"super", "secretvalue\"; // end\n"} {
+		_, err := w.Write([]byte(chunk))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := buf.String()
+	if strings.Contains(got, "supersecretvalue") {
+		t.Fatalf("secret escaped redaction across a write boundary: %q", got)
+	}
+	if !strings.Contains(got, placeholder) {
+		t.Fatalf("expected %s in output, got %q", placeholder, got)
+	}
+}
+
+// TestRedactWriterFlushEmitsFinalPartialLine verifies an unterminated final
+// line (a subprocess dying mid-line) is delivered - redacted - on Flush
+// rather than silently dropped.
+func TestRedactWriterFlushEmitsFinalPartialLine(t *testing.T) {
+	t.Parallel()
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{
+		"app": {"token": "supersecretvalue"},
+	})
+
+	var buf bytes.Buffer
+	w := r.Writer(&buf)
+	_, err := w.Write([]byte("dying: supersecretvalue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("partial line written before flush: %q", buf.String())
+	}
+
+	f, ok := w.(interface{ Flush() error })
+	if !ok {
+		t.Fatal("redacting writer must expose Flush")
+	}
+	err = f.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "dying: "+placeholder {
+		t.Fatalf("flushed output = %q, want redacted final line", got)
+	}
+}
+
+// TestRedactWriterOverflowRetainsSecretPrefix verifies the bounded-buffer
+// flush cannot leak a secret straddling the flush cut: the tail that is a
+// prefix of a configured secret is retained until the remainder arrives.
+func TestRedactWriterOverflowRetainsSecretPrefix(t *testing.T) {
+	t.Parallel()
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{
+		"app": {"token": "supersecretvalue"},
+	})
+
+	var buf bytes.Buffer
+	w := r.Writer(&buf)
+
+	// A newline-free stream that overflows the buffer bound and ends exactly
+	// on the first half of the secret.
+	filler := bytes.Repeat([]byte("x"), maxRedactBuffer-5)
+	_, err := w.Write(filler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.Write([]byte("supersec")) // buffer now > bound, ends mid-secret
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.Write([]byte("retvalue rest\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if strings.Contains(got, "supersecretvalue") {
+		t.Fatal("secret escaped across the overflow flush boundary")
+	}
+	if !strings.Contains(got, placeholder) {
+		t.Fatal("expected the reassembled secret to be redacted")
+	}
+}
+
+// TestSetStaticValues verifies static targets (e.g. TLS private-key lines)
+// survive Update calls, are keyed independently, and respect the minimum
+// length filter.
+func TestSetStaticValues(t *testing.T) {
+	t.Parallel()
+	r := NewRedactor()
+	r.SetStaticValues("cert-a", []string{"MIIEvKEYLINEDATA", "tiny"})
+
+	if got := r.Redact("leak MIIEvKEYLINEDATA here"); got != "leak "+placeholder+" here" {
+		t.Errorf("static value not redacted: %q", got)
+	}
+	if got := r.Redact("tiny stays"); got != "tiny stays" {
+		t.Errorf("below-minimum static value must not be redacted: %q", got)
+	}
+
+	// Update must not evict static values.
+	r.Update(map[string]map[string]any{"app": {"token": "secret-token-1"}})
+	if got := r.Redact("MIIEvKEYLINEDATA and secret-token-1"); got != placeholder+" and "+placeholder {
+		t.Errorf("static value lost after Update: %q", got)
+	}
+
+	// Re-setting a key replaces that key's values only.
+	r.SetStaticValues("cert-a", []string{"NEWKEYLINEDATA00"})
+	if got := r.Redact("MIIEvKEYLINEDATA"); got != "MIIEvKEYLINEDATA" {
+		t.Errorf("replaced static value still redacted: %q", got)
+	}
+	if got := r.Redact("NEWKEYLINEDATA00"); got != placeholder {
+		t.Errorf("new static value not redacted: %q", got)
+	}
+}
+
+// TestKeyMaterialValues verifies private-key PEM lines become redaction
+// targets while the public BEGIN/END markers and short lines are skipped.
+func TestKeyMaterialValues(t *testing.T) {
+	t.Parallel()
+	// Fabricated non-key test fixture; the PEM markers are the point of the test.
+	key := []byte("-----BEGIN EC PRIVATE KEY-----\r\nMIGkAgEBBDBsecretline1\nMHcCAQEEIsecretline2\nab\n-----END EC PRIVATE KEY-----\n") //gitleaks:allow
+	vals := KeyMaterialValues(key)
+	want := []string{"MIGkAgEBBDBsecretline1", "MHcCAQEEIsecretline2"}
+	if len(vals) != len(want) {
+		t.Fatalf("vals = %q, want %q", vals, want)
+	}
+	for i := range want {
+		if vals[i] != want[i] {
+			t.Errorf("vals[%d] = %q, want %q", i, vals[i], want[i])
+		}
+	}
+}
+
+// BenchmarkRedactWriterLine pins the steady-state allocation cost of the
+// line-buffered redacting writer with secrets configured: one string
+// conversion per emitted segment (required by the [strings.Replacer] API),
+// nothing else.
+func BenchmarkRedactWriterLine(b *testing.B) {
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{"app": {"token": "supersecretvalue"}})
+	w := r.Writer(io.Discard)
+	line := []byte("10.2.3.4 - - GET /some/path HTTP/1.1 200 1234\n")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = w.Write(line)
+	}
+}
+
+// BenchmarkRedactWriterLineNoSecrets pins the zero-allocation fast path when
+// no redaction targets are configured.
+func BenchmarkRedactWriterLineNoSecrets(b *testing.B) {
+	r := NewRedactor()
+	w := r.Writer(io.Discard)
+	line := []byte("10.2.3.4 - - GET /some/path HTTP/1.1 200 1234\n")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = w.Write(line)
 	}
 }

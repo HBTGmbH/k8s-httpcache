@@ -624,7 +624,7 @@ func setupMetricsServer(cfg *config.Config, status *statusStore, serverErrCh cha
 	mux.Handle("/metrics", promhttp.HandlerFor(&telemetry.ZeroCounterFilter{Inner: prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/status", statusHandler(status))
 	mux.HandleFunc("/healthz", healthzHandler(status))
-	readyzAddr := net.JoinHostPort("localhost", strconv.FormatInt(int64(cfg.ListenAddrs[0].Port), 10))
+	readyzAddr := readyzDialAddr(cfg.ListenAddrs[0])
 	mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
 	metricsSrv := &http.Server{
 		Addr:              cfg.MetricsAddr,
@@ -717,7 +717,7 @@ func run() int {
 		// the time defers run, so a fresh background context is used rather than
 		// the cancelled run ctx.
 		defer func() {
-			shutdownCtx, cancelShutdown := kubeContext(cfg.ShutdownTimeout)
+			shutdownCtx, cancelShutdown := kubeContext(metricsShutdownTimeout(cfg.ShutdownTimeout))
 			defer cancelShutdown()
 			shutdownErr := metricsSrv.Shutdown(shutdownCtx)
 			if shutdownErr != nil {
@@ -746,6 +746,9 @@ func run() int {
 				Interface: clientset.CoreV1().Events(cfg.ServiceNamespace),
 			},
 		})
+		// Flush buffered events and stop the broadcaster's dispatch goroutine
+		// on every exit path.
+		defer eventBroadcaster.Shutdown()
 		eventRecorder = eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "k8s-httpcache"})
 		podRef = &v1.ObjectReference{
 			Kind:       podKind,
@@ -760,6 +763,7 @@ func run() int {
 			slog.Warn("could not look up pod UID for event recording; events may not appear in kubectl describe pod", "error", getErr)
 		} else {
 			podRef.UID = pod.UID
+			warnShortGracePeriod(cfg, pod.Spec.TerminationGracePeriodSeconds)
 		}
 		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace)
 	} else {
@@ -833,12 +837,28 @@ func run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// watcherErrCh carries the first error returned by any watcher's Run.
+	// A watcher that fails before its guaranteed initial send would leave
+	// awaitInitial blocked forever when --startup-timeout=0 disables the
+	// deadline, so startup selects on this channel to fail fast instead.
+	// Cap 1 + non-blocking send: only the first error matters and senders
+	// must never block; after startup the channel is simply never read again
+	// (runtime watcher errors remain log-only, as before).
+	watcherErrCh := make(chan error, 1)
+	reportWatcherErr := func(err error) {
+		select {
+		case watcherErrCh <- err:
+		default:
+		}
+	}
+
 	// Start frontend watcher.
 	w := watcher.New(clientset, cfg.ServiceNamespace, cfg.ServiceName, "")
 	go func() {
 		runErr := w.Run(ctx)
 		if runErr != nil {
 			slog.Error("watcher error", "error", runErr)
+			reportWatcherErr(fmt.Errorf("frontend watcher: %w", runErr))
 		}
 	}()
 
@@ -859,6 +879,7 @@ func run() int {
 			runErr := bw.Run(ctx)
 			if runErr != nil {
 				slog.Error("backend watcher error", "backend", name, "error", runErr)
+				reportWatcherErr(fmt.Errorf("backend watcher %q: %w", name, runErr))
 			}
 		}()
 		bwNames = append(bwNames, name)
@@ -886,6 +907,7 @@ func run() int {
 			runErr := dw.Run(ctx)
 			if runErr != nil {
 				slog.Error("discovery watcher error", "selector", bs.Selector, "error", runErr)
+				reportWatcherErr(fmt.Errorf("discovery watcher %q: %w", bs.Selector, runErr))
 			}
 		}()
 		discoveryWatchers = append(discoveryWatchers, dw)
@@ -903,6 +925,7 @@ func run() int {
 			runErr := vw.Run(ctx)
 			if runErr != nil {
 				slog.Error("values watcher error", "values", name, "error", runErr)
+				reportWatcherErr(fmt.Errorf("values watcher %q: %w", name, runErr))
 			}
 		}()
 		vwNames = append(vwNames, name)
@@ -921,6 +944,7 @@ func run() int {
 			runErr := sw.Run(ctx)
 			if runErr != nil {
 				slog.Error("secrets watcher error", "secrets", name, "error", runErr)
+				reportWatcherErr(fmt.Errorf("secrets watcher %q: %w", name, runErr))
 			}
 		}()
 		swNames = append(swNames, name)
@@ -939,6 +963,7 @@ func run() int {
 			runErr := tw.Run(ctx)
 			if runErr != nil {
 				slog.Error("tls-cert watcher error", "tls_cert", name, "error", runErr)
+				reportWatcherErr(fmt.Errorf("tls-cert watcher %q: %w", name, runErr))
 			}
 		}()
 		twNames = append(twNames, name)
@@ -946,7 +971,7 @@ func run() int {
 	}
 
 	// Start directory watchers for --values-dir (polling only when enabled).
-	fvwWatchers, fvwNames := startValuesDirWatchers(ctx, cfg)
+	fvwWatchers, fvwNames := startValuesDirWatchers(ctx, cfg, reportWatcherErr)
 
 	// Populate remaining static status fields now that config is known.
 	status.setServiceInfo(cfg.ServiceName, cfg.ServiceNamespace, cfg.Drain, cfg.BroadcastAddr != "")
@@ -956,8 +981,9 @@ func run() int {
 	// The watcher guarantees at least one send after cache sync (even if
 	// the endpoint list is empty). The collection is bounded by
 	// --startup-timeout so a watcher that never syncs (e.g. the Kubernetes API
-	// is unreachable, or AddEventHandler failed before the guaranteed initial
-	// send) cannot hang startup indefinitely.
+	// is unreachable) cannot hang startup indefinitely, and aborts immediately
+	// - even with --startup-timeout=0 - when a watcher's Run fails before its
+	// guaranteed initial send (via watcherErrCh).
 	slog.Info("waiting for initial endpoint data", "timeout", cfg.StartupTimeout)
 	startupCtx := ctx
 	if cfg.StartupTimeout > 0 {
@@ -965,7 +991,7 @@ func run() int {
 		startupCtx, startupCancel = context.WithTimeout(ctx, cfg.StartupTimeout)
 		defer startupCancel()
 	}
-	initial, err := awaitInitial(startupCtx, func() initialEndpoints {
+	initial, err := awaitInitial(startupCtx, watcherErrCh, func() initialEndpoints {
 		data := initialEndpoints{
 			backends: make(map[string]renderer.BackendGroup),
 			values:   make(map[string]map[string]any),
@@ -985,11 +1011,16 @@ func run() int {
 		}
 		for _, dw := range discoveryWatchers {
 			<-dw.Initial()
+			// Snapshot the label/annotation maps once per watcher: the
+			// accessors deep-clone their whole map on every call, so calling
+			// them inside the per-backend loop would be O(n²) allocations.
+			labels := dw.InitialLabels()
+			annotations := dw.InitialAnnotations()
 			for name, eps := range dw.InitialState() {
 				data.backends[name] = renderer.BackendGroup{
 					Endpoints:   eps,
-					Labels:      dw.InitialLabels()[name],
-					Annotations: dw.InitialAnnotations()[name],
+					Labels:      labels[name],
+					Annotations: annotations[name],
 				}
 			}
 		}
@@ -1009,7 +1040,7 @@ func run() int {
 		return data
 	})
 	if err != nil {
-		slog.Error("timed out waiting for initial endpoint data; is the Kubernetes API reachable?",
+		slog.Error("waiting for initial endpoint data failed; is the Kubernetes API reachable?",
 			"timeout", cfg.StartupTimeout, "error", err)
 
 		return 1
@@ -1078,7 +1109,7 @@ func run() int {
 	initialVCLStr, err := rend.Render(latestFrontends, latestBackends, latestValues, latestSecrets)
 	metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
-		slog.Error("initial render", "error", err)
+		slog.Error("initial render", "error", redactedErr(secretRedactor, err))
 
 		return 1
 	}
@@ -1106,21 +1137,23 @@ func run() int {
 	// certificate is fatal (don't go Ready with a failing https listener); an
 	// absent Secret is a no-op (LoadCert returns nil) and is loaded hot once it
 	// appears.
-	loadedCerts := 0
-	for _, name := range twNames {
-		d := initialTLS[name]
-		err = mgr.LoadCert(name, d.Cert, d.Key, d.CA)
-		if err != nil {
-			slog.Error("loading initial TLS certificate", "cert", name, "error", err)
+	// Register private-key material as redaction targets BEFORE the first
+	// LoadCert, so any path that surfaces key bytes is already covered (the
+	// Kubernetes-Secret redaction set from --secrets does not include TLS
+	// keys, which arrive via --tls-cert watchers).
+	for name, d := range initialTLS {
+		secretRedactor.SetStaticValues(tlsRedactKey(name), redact.KeyMaterialValues(d.Key))
+	}
 
-			return 1
-		}
-		if !d.Empty() {
-			loadedCerts++
-			recordTLSCertInfo(status, metrics, name, d.Cert)
-		} else {
-			slog.Warn("TLS certificate Secret is empty at startup; https listener has no certificate until it appears", "cert", name)
-		}
+	loadedCerts := 0
+	err = loadInitialTLSCerts(mgr, twNames, initialTLS, func(name string, d watcher.TLSCertData) {
+		loadedCerts++
+		recordTLSCertInfo(status, metrics, name, d.Cert)
+	})
+	if err != nil {
+		slog.Error("initial TLS certificates", "error", redactedErr(secretRedactor, err))
+
+		return 1
 	}
 	if loadedCerts > 0 && eventRecorder != nil && podRef != nil {
 		eventRecorder.Event(podRef, v1.EventTypeNormal, "TLSCertLoaded", fmt.Sprintf("Loaded %d initial TLS certificate(s)", loadedCerts))
@@ -1252,8 +1285,7 @@ func run() int {
 	}
 
 	// Signal handling.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	sigCh := notifySignals()
 
 	// Main event loop with debounce.
 	lc := &loopConfig{
@@ -1333,8 +1365,9 @@ func rollbackReload(lc *loopConfig, reasons string) bool {
 	lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 	if err != nil {
 		lc.metrics.VCLRenderErrorsTotal.Inc()
-		slog.Error("render error after rollback", "error", err)
-		emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error after rollback: %v", err))
+		msg := redactedErr(lc.redactor, err)
+		slog.Error("render error after rollback", "error", msg)
+		emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", "VCL render error after rollback: "+msg)
 
 		return false
 	}
@@ -1567,8 +1600,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		lc.metrics.VCLRenderDurationSeconds.Observe(time.Since(renderStart).Seconds())
 		if err != nil {
 			lc.metrics.VCLRenderErrorsTotal.Inc()
-			slog.Error("render error", "error", err)
-			emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", fmt.Sprintf("VCL render error: %v", err))
+			msg := redactedErr(lc.redactor, err)
+			slog.Error("render error", "error", msg)
+			emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", "VCL render error: "+msg)
 			if reloadedTemplate {
 				// A new template parsed but failed to render. Roll back to the
 				// known-good template and re-render the current inputs with it,
@@ -1831,6 +1865,14 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// TLS certificate rotations are applied on their own debounce
 			// group and never trigger a VCL reload.
 			latestTLS[tc.name] = tc.data
+			// Keep the rotated private key redactable before it is handed to
+			// LoadCert (whose error paths may surface material). An EMPTY
+			// update must not wipe the entry: LoadCert no-ops on empty
+			// material and keeps the previous certificate - and therefore its
+			// private key - active, so its redaction targets must survive.
+			if lc.redactor != nil && len(tc.data.Key) > 0 {
+				lc.redactor.SetStaticValues(tlsRedactKey(tc.name), redact.KeyMaterialValues(tc.data.Key))
+			}
 			pendingCertNames[tc.name] = struct{}{}
 			lc.metrics.TLSCertUpdatesTotal.WithLabelValues(tc.name).Inc()
 			lc.metrics.DebounceEventsTotal.WithLabelValues("tls").Inc()
@@ -1916,12 +1958,22 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			case <-time.After(lc.shutdownTimeout):
 				slog.Warn("varnishd did not exit in time, forcing")
 				lc.mgr.ForwardSignal(syscall.SIGKILL)
+				// SIGKILL cannot be ignored; wait so varnishd is reaped
+				// before the process exits.
+				<-lc.mgr.Done()
 			}
 
 			return 1
 
 		case serveErr := <-lc.serverErrCh:
 			slog.Error("HTTP server failed, shutting down", "error", serveErr)
+			// Stop varnishncsa first: without this its monitor keeps running
+			// (it does not watch ctx) and can even respawn varnishncsa during
+			// its restart delay, leaving an orphan when this process exits
+			// without being the container's PID 1.
+			if lc.stopNCSA != nil {
+				lc.stopNCSA()
+			}
 			cancel()
 			lc.mgr.ForwardSignal(syscall.SIGTERM)
 			select {
@@ -1929,6 +1981,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			case <-time.After(lc.shutdownTimeout):
 				slog.Warn("varnishd did not exit in time, forcing")
 				lc.mgr.ForwardSignal(syscall.SIGKILL)
+				// SIGKILL cannot be ignored; wait so varnishd is reaped
+				// before the process exits.
+				<-lc.mgr.Done()
 			}
 
 			return 1
@@ -1938,6 +1993,14 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 
 			if lc.drainBackend != "" {
 				handleDrain(lc, sig)
+			}
+
+			// SIGHUP means "terminal gone", not a request varnishd
+			// understands; forward SIGTERM so varnishd shuts down cleanly.
+			// Remapped only after handleDrain so the drain event reports the
+			// signal that was actually received.
+			if sig == syscall.SIGHUP {
+				sig = syscall.SIGTERM
 			}
 
 			if lc.bcast != nil {
@@ -1979,6 +2042,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			slog.Error("varnishd exited unexpectedly", "error", lc.mgr.Err())
 			emitEvent(lc, v1.EventTypeWarning, "VarnishdExited", fmt.Sprintf("varnishd exited unexpectedly: %v", lc.mgr.Err()))
 			cancel()
+			// Stop and reap varnishncsa (its monitor does not watch ctx and
+			// would otherwise keep running - or respawn varnishncsa - until
+			// the process exits).
+			if lc.stopNCSA != nil {
+				lc.stopNCSA()
+			}
 
 			return 1
 		}
@@ -2184,7 +2253,7 @@ func startTemplateWatch(ctx context.Context, cfg *config.Config) <-chan struct{}
 // startValuesDirWatchers creates a FileValuesWatcher per --values-dir. The polling
 // goroutine is started only when --values-dir-watch is enabled; otherwise a single
 // ScanOnce delivers the initial values with no ongoing poller.
-func startValuesDirWatchers(ctx context.Context, cfg *config.Config) ([]*watcher.FileValuesWatcher, []string) {
+func startValuesDirWatchers(ctx context.Context, cfg *config.Config, reportWatcherErr func(error)) ([]*watcher.FileValuesWatcher, []string) {
 	names := make([]string, 0, len(cfg.ValuesDirs))
 	watchers := make([]*watcher.FileValuesWatcher, 0, len(cfg.ValuesDirs))
 	for _, vd := range cfg.ValuesDirs {
@@ -2195,6 +2264,7 @@ func startValuesDirWatchers(ctx context.Context, cfg *config.Config) ([]*watcher
 				runErr := fvw.Run(ctx)
 				if runErr != nil {
 					slog.Error("values-dir watcher error", "values_dir", name, "error", runErr)
+					reportWatcherErr(fmt.Errorf("values-dir watcher %q: %w", name, runErr))
 				}
 			}()
 		} else {
@@ -2325,22 +2395,165 @@ type initialEndpoints struct {
 	tls       map[string]watcher.TLSCertData
 }
 
-// awaitInitial runs collect in a goroutine and returns its result, or ctx.Err()
-// if ctx is cancelled first (e.g. the startup timeout elapses because the
-// Kubernetes API is unreachable and the informers never sync, or a watcher's
-// Run returned before its guaranteed initial send). On cancellation the collect
-// goroutine is abandoned; the caller is expected to exit the process.
-func awaitInitial[T any](ctx context.Context, collect func() T) (T, error) { //nolint:ireturn // returns the caller's generic type T, not an abstract interface
+// awaitInitial runs collect in a goroutine and returns its result, or an error
+// if a watcher's Run fails first (it would never deliver its guaranteed initial
+// send, leaving collect blocked) or ctx is cancelled (e.g. the startup timeout
+// elapses because the Kubernetes API is unreachable and the informers never
+// sync). The watcherErr channel is what keeps --startup-timeout=0 from hanging
+// forever on a failed watcher. On error the collect goroutine is abandoned; the
+// caller is expected to exit the process.
+func awaitInitial[T any](ctx context.Context, watcherErr <-chan error, collect func() T) (T, error) { //nolint:ireturn // returns the caller's generic type T, not an abstract interface
 	done := make(chan T, 1)
 	go func() { done <- collect() }()
 	select {
 	case v := <-done:
 		return v, nil
+	case err := <-watcherErr:
+		var zero T
+
+		return zero, fmt.Errorf("watcher failed before delivering initial data: %w", err)
 	case <-ctx.Done():
 		var zero T
 
 		return zero, ctx.Err() //nolint:wrapcheck // context cancellation surfaced as-is
 	}
+}
+
+// tlsRedactKey namespaces a certificate's static-redaction entry so it can
+// never collide with another redaction source using the same Redactor.
+func tlsRedactKey(certName string) string { return "tls:" + certName }
+
+// ncsaStopBudget mirrors the varnish.Manager's default NCSAStopTimeout: the
+// SIGTERM path waits up to this long for varnishncsa before escalating.
+const ncsaStopBudget = 5 * time.Second
+
+// shutdownBudget returns the worst-case SEQUENTIAL time the SIGTERM path can
+// take before the process exits: connection drain, broadcast drain and
+// shutdown, varnishncsa stop, the varnishd shutdown wait, and the deferred
+// metrics-server drain. Returns 0 when --shutdown-timeout=0 (the varnishd
+// wait is unbounded, so no finite budget exists).
+func shutdownBudget(cfg *config.Config) time.Duration {
+	if cfg.ShutdownTimeout <= 0 {
+		return 0
+	}
+	budget := cfg.ShutdownTimeout
+	if cfg.Drain {
+		budget += cfg.DrainDelay + cfg.DrainTimeout
+	}
+	if cfg.BroadcastAddr != "" {
+		budget += cfg.BroadcastDrainTimeout + cfg.BroadcastShutdownTimeout
+	}
+	if cfg.VarnishncsaEnabled {
+		budget += ncsaStopBudget
+	}
+	if cfg.MetricsAddr != "" {
+		budget += metricsShutdownTimeout(cfg.ShutdownTimeout)
+	}
+
+	return budget
+}
+
+// warnShortGracePeriod logs a warning when the configured worst-case shutdown
+// budget exceeds the pod's terminationGracePeriodSeconds: the kubelet would
+// SIGKILL varnishd mid-drain, silently defeating the graceful shutdown the
+// drain flags exist for. grace is the pod-spec value (nil = cluster default).
+func warnShortGracePeriod(cfg *config.Config, grace *int64) {
+	if grace == nil {
+		return
+	}
+	budget := shutdownBudget(cfg)
+	gracePeriod := time.Duration(*grace) * time.Second
+	if budget > gracePeriod {
+		slog.Warn("worst-case shutdown budget exceeds terminationGracePeriodSeconds; the kubelet may SIGKILL varnishd mid-drain",
+			"budget", budget, "grace_period", gracePeriod)
+	}
+}
+
+// redactedErr returns err's message with configured secret values redacted.
+// Template render errors can embed secret VALUES (a failing template function
+// echoes its input, e.g. atoi on a non-numeric secret), and their
+// destinations - slog on stderr and persisted Kubernetes Events - are not
+// covered by the subprocess-output redactor.
+func redactedErr(r *redact.Redactor, err error) string {
+	if r == nil {
+		return err.Error()
+	}
+
+	return r.Redact(err.Error())
+}
+
+// readyzDialAddr returns the address the readiness probe dials to verify the
+// first varnishd listener accepts connections. A wildcard or empty bind host
+// is reachable via loopback, but a specific-IP bind (e.g. the pod IP) is NOT
+// listening on localhost - dialing localhost there would keep the pod
+// NotReady forever.
+func readyzDialAddr(la config.ListenAddrSpec) string {
+	host := la.Host
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "localhost"
+	}
+
+	return net.JoinHostPort(host, strconv.FormatInt(int64(la.Port), 10))
+}
+
+// notifySignals registers the shutdown signals and returns the channel they
+// are delivered on. SIGHUP is included so a terminal hangup in non-Kubernetes
+// use triggers the same graceful drain as SIGTERM instead of the default
+// immediate termination (which would orphan varnishd).
+func notifySignals() chan os.Signal {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+
+	return sigCh
+}
+
+// defaultMetricsShutdownTimeout bounds the metrics server drain when
+// --shutdown-timeout=0 disables the varnishd wait bound.
+const defaultMetricsShutdownTimeout = 5 * time.Second
+
+// metricsShutdownTimeout returns the deadline for the metrics server's
+// graceful Shutdown. --shutdown-timeout=0 means "wait indefinitely for
+// varnishd", but reusing 0 here would give the HTTP drain no deadline at all
+// (kubeContext(0) returns a context without one) - and by the time this runs,
+// varnishd is already gone, so an active scrape or status request must not be
+// able to stall process exit. Fall back to a fixed bound instead.
+func metricsShutdownTimeout(shutdownTimeout time.Duration) time.Duration {
+	if shutdownTimeout <= 0 {
+		return defaultMetricsShutdownTimeout
+	}
+
+	return shutdownTimeout
+}
+
+// loadInitialTLSCerts installs every initial TLS certificate, invoking
+// onLoaded for each certificate that carried material (an empty Secret is a
+// warned no-op). On failure it kills and reaps varnishd before returning the
+// error: this runs after mgr.Start succeeded and before runLoop, so no other
+// code path would ever signal the already-running varnishd - without the reap
+// it would survive the process exit whenever k8s-httpcache is not the
+// container's PID 1 (shared PID namespace, shell/tini wrapper), keeping the
+// listen ports bound and turning a broken initial certificate into a
+// persistent crash loop (the same reasoning as Manager.Start's admin-timeout
+// reap).
+func loadInitialTLSCerts(mgr varnishProcess, twNames []string, initialTLS map[string]watcher.TLSCertData, onLoaded func(name string, d watcher.TLSCertData)) error {
+	for _, name := range twNames {
+		d := initialTLS[name]
+		err := mgr.LoadCert(name, d.Cert, d.Key, d.CA)
+		if err != nil {
+			mgr.ForwardSignal(syscall.SIGKILL)
+			<-mgr.Done()
+
+			return fmt.Errorf("loading initial TLS certificate %q: %w", name, err)
+		}
+		if !d.Empty() {
+			onLoaded(name, d)
+		} else {
+			slog.Warn("TLS certificate Secret is empty at startup; https listener has no certificate until it appears", "cert", name)
+		}
+	}
+
+	return nil
 }
 
 // writeInitialVCLFile writes the rendered VCL to a new temp file and returns

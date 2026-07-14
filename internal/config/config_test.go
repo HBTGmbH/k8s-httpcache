@@ -4727,3 +4727,129 @@ func TestParseNegativeBroadcastClientTimeoutNotMasked(t *testing.T) {
 		t.Errorf("error = %q, want the client-timeout sign check, not a masked/other error", err)
 	}
 }
+
+// TestParsePerSourceDebounceNegative verifies user-supplied negative
+// per-source debounce values are rejected like the global flags: the -1
+// default is only the internal "unset" sentinel, and silently coercing a typo
+// like --frontend-debounce=-5s to the global value hides the mistake.
+func TestParsePerSourceDebounceNegative(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	for _, flag := range []string{
+		"frontend-debounce", "frontend-debounce-max",
+		"backend-debounce", "backend-debounce-max",
+		"tls-cert-debounce", "tls-cert-debounce-max",
+	} {
+		_, err := Parse("", []string{
+			"test",
+			"--service-name=my-svc",
+			"--namespace=default",
+			"--vcl-template=" + vcl,
+			"--" + flag + "=-5s",
+		})
+		if err == nil {
+			t.Fatalf("expected error for negative --%s", flag)
+		}
+		if !strings.Contains(err.Error(), "--"+flag+" must be >= 0") {
+			t.Errorf("--%s error = %q, want substring 'must be >= 0'", flag, err)
+		}
+	}
+}
+
+// TestParseListenAddrUnixSocket verifies unix-domain-socket listen addresses
+// are accepted as additional listeners and passed through to varnishd
+// unchanged (previously they were rejected with "missing port in address").
+func TestParseListenAddrUnixSocket(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=http=:8080,HTTP",
+		"--listen-addr=uds=/var/run/varnish.sock,PROXY",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.ListenAddrs) != 2 {
+		t.Fatalf("ListenAddrs = %v, want 2 entries", cfg.ListenAddrs)
+	}
+	uds := cfg.ListenAddrs[1]
+	if !uds.UDS {
+		t.Error("expected the socket listener to be marked UDS")
+	}
+	if uds.Raw != "uds=/var/run/varnish.sock,PROXY" {
+		t.Errorf("Raw = %q, want the flag value passed through unchanged", uds.Raw)
+	}
+	if uds.Port != 0 || uds.Host != "" {
+		t.Errorf("UDS listener Host/Port = %q/%d, want unset", uds.Host, uds.Port)
+	}
+}
+
+// TestParseListenAddrUnixSocketFirstRejected verifies a UDS listener cannot be
+// the first listen address: the readiness probe dials the first address's TCP
+// port, and it is the default broadcast fan-out target.
+func TestParseListenAddrUnixSocketFirstRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=/var/run/varnish.sock",
+	})
+	if err == nil {
+		t.Fatal("expected error when the first --listen-addr is a unix domain socket")
+	}
+	if !strings.Contains(err.Error(), "first --listen-addr must be a TCP host:port") {
+		t.Errorf("error = %q, want the first-listener TCP requirement", err)
+	}
+}
+
+// TestParseBroadcastTargetUnixSocketRejected verifies a UDS listener cannot be
+// selected as the broadcast fan-out target: the fan-out connects to sibling
+// pods over TCP and needs a port.
+func TestParseBroadcastTargetUnixSocketRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=http=:8080,HTTP",
+		"--listen-addr=uds=/var/run/varnish.sock,PROXY",
+		"--broadcast-target-listen-addr=uds",
+	})
+	if err == nil {
+		t.Fatal("expected error when the broadcast target is a unix domain socket listener")
+	}
+	if !strings.Contains(err.Error(), "unix domain socket") {
+		t.Errorf("error = %q, want the UDS broadcast-target rejection", err)
+	}
+}
+
+// TestParseTemplateDelimsIdenticalRejected verifies identical left/right
+// delimiters are rejected with a clear message: text/template parsing is
+// degenerate with identical delims, and the renderer would otherwise fail at
+// startup with a cryptic parse error.
+func TestParseTemplateDelimsIdenticalRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--template-delims=** **",
+	})
+	if err == nil {
+		t.Fatal("expected error for identical template delimiters")
+	}
+	if !strings.Contains(err.Error(), "must differ") {
+		t.Errorf("error = %q, want the delimiters-must-differ message", err)
+	}
+}

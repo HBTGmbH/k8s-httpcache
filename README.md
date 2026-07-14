@@ -1495,10 +1495,10 @@ The drain VCL is injected transparently around your template output:
 
 ### Pod spec requirements
 
-Set `terminationGracePeriodSeconds` to accommodate the drain delay + drain timeout + shutdown timeout (e.g. `90` seconds):
+Set `terminationGracePeriodSeconds` to accommodate the worst-case sequential shutdown budget: drain delay + drain timeout + broadcast drain timeout (default 30s) + broadcast shutdown timeout (default 5s) + varnishncsa stop (5s, when access logging is enabled) + shutdown timeout + metrics drain (up to 5s). With the values below (15s + 30s + 30s + 5s + 30s) that is up to ~110 seconds, so use e.g. `120`; the controller logs a warning at startup when its budget exceeds the pod's grace period:
 
 ```yaml
-terminationGracePeriodSeconds: 90
+terminationGracePeriodSeconds: 120
 ```
 
 ## RBAC

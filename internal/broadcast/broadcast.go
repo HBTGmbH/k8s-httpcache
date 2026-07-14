@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,7 +22,10 @@ import (
 	"github.com/HBTGmbH/k8s-httpcache/internal/watcher"
 )
 
-// maxBodySize is the maximum response body size read from each pod.
+// maxBodySize is the maximum response body size read from each pod, and also
+// the cap on the incoming broadcast request body (bodies are held in memory
+// for the fan-out, so an uncapped read would let a single request exhaust
+// memory).
 const maxBodySize = 1 << 20 // 1 MiB
 
 // knownMethods is the set of HTTP methods recorded verbatim in the request
@@ -68,6 +73,40 @@ func classifyOutcome(status int) string {
 	default:
 		return outcomeOK
 	}
+}
+
+// hopByHopHeaders are the connection-scoped headers a proxy must not forward
+// (RFC 9110 §7.6.1), keyed in canonical form.
+var hopByHopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Proxy-Connection":    {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
+// isHopByHopHeader reports whether canonical header key k is hop-by-hop:
+// either a member of the standard set or named in the request's own
+// Connection header. Checked per key against the (rarely present) Connection
+// tokens rather than materialising a merged drop-set per request, so the
+// common no-Connection-header case allocates nothing.
+func isHopByHopHeader(k string, h http.Header) bool {
+	if _, ok := hopByHopHeaders[k]; ok {
+		return true
+	}
+	for _, v := range h["Connection"] {
+		for tok := range strings.SplitSeq(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), k) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // PodResult holds the response from a single pod.
@@ -172,16 +211,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodySize))
 	if err != nil {
-		s.metrics.BroadcastRequestsTotal.WithLabelValues(method, "400").Inc()
+		status := http.StatusBadRequest
+		msg := "failed to read request body"
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			status = http.StatusRequestEntityTooLarge
+			msg = fmt.Sprintf("request body exceeds %d bytes", maxErr.Limit)
+		}
+		s.metrics.BroadcastRequestsTotal.WithLabelValues(method, strconv.Itoa(status)).Inc()
 		w.Header().Set("Content-Type", "application/json")
 		if s.draining.Load() {
 			w.Header().Set("Connection", "close")
 		}
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(status)
 		//nolint:errchkjson // best-effort error response; nothing to do if encoding fails
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to read request body"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 
 		return
 	}
@@ -277,6 +323,7 @@ func (s *Server) Drain(timeout time.Duration) error {
 	defer cancel()
 
 	err := s.srv.Shutdown(ctx)
+	s.client.CloseIdleConnections()
 	if err != nil {
 		return fmt.Errorf("broadcast shutdown after drain: %w", err)
 	}
@@ -285,8 +332,12 @@ func (s *Server) Drain(timeout time.Duration) error {
 }
 
 // Shutdown gracefully shuts down the broadcast server without draining.
+// Idle keep-alive connections in the fan-out client's pool are closed too;
+// they would otherwise linger (with their reader goroutines) until
+// ClientIdleTimeout after the server is gone.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.srv.Shutdown(ctx)
+	s.client.CloseIdleConnections()
 	if err != nil {
 		return fmt.Errorf("broadcast shutdown: %w", err)
 	}
@@ -332,8 +383,15 @@ func (s *Server) forward(origReq *http.Request, fe *watcher.Frontend, body []byt
 		return PodResult{Status: 0, Body: fmt.Sprintf("request error: %v", err)}
 	}
 
-	// Copy headers from the original request.
+	// Copy end-to-end headers from the original request. Hop-by-hop headers
+	// are connection-scoped and must not be forwarded by a proxy: a copied
+	// "Connection: close" would defeat the per-pod keep-alive pool (a fresh
+	// TCP connection per fan-out), and Transfer-Encoding/Upgrade would
+	// corrupt the outgoing request framing.
 	for k, vv := range origReq.Header {
+		if isHopByHopHeader(k, origReq.Header) {
+			continue
+		}
 		for _, v := range vv {
 			req.Header.Add(k, v)
 		}

@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,6 +142,18 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	return total, nil
 }
 
+// Flush emits any buffered partial line (prefixed). Called between
+// varnishncsa restarts and at shutdown so a process dying mid-line neither
+// loses its final output nor has the next process's first line appended to
+// its truncated one.
+func (w *prefixWriter) Flush() error {
+	if len(w.buf) == 0 {
+		return nil
+	}
+
+	return w.flushOverlongLine()
+}
+
 // flushOverlongLine emits the buffered partial line (prefixed) and releases the
 // buffer. It bounds memory when the upstream stream never delivers a newline;
 // an absurdly long line is split across flushes (each re-prefixed), which is
@@ -158,10 +171,21 @@ func (w *prefixWriter) flushOverlongLine() error {
 	return nil
 }
 
+// defaultCLITimeout bounds run() subprocess calls (varnishadm, varnishstat).
+// varnishadm's own CLI timeout only bounds a responsive-but-slow varnish; a
+// wedged connection to a half-open admin socket would otherwise block
+// CombinedOutput forever - and every adm() call runs on the event-loop
+// goroutine, so one hung call would freeze all event handling including
+// signal-driven shutdown. Generous enough for a large VCL compile.
+const defaultCLITimeout = 60 * time.Second
+
 // execRunner is the real implementation that uses os/exec.
 type execRunner struct {
 	stdout io.Writer
 	stderr io.Writer
+	// runTimeout bounds run() calls; the subprocess is killed at the
+	// deadline. 0 means no bound. start() is never bounded (long-running).
+	runTimeout time.Duration
 }
 
 func (r execRunner) start(name string, args []string) (proc, error) {
@@ -177,8 +201,14 @@ func (r execRunner) start(name string, args []string) (proc, error) {
 	return &execProc{cmd: cmd}, nil
 }
 
-func (execRunner) run(name string, args []string) (string, error) {
-	cmd := exec.Command(name, args...) //nolint:gosec,noctx // G702: paths from CLI flags, not runtime input; noctx: timeout handled by admin socket.
+func (r execRunner) run(name string, args []string) (string, error) {
+	ctx := context.Background()
+	if r.runTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.runTimeout)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G702: paths from CLI flags, not runtime input
 	out, err := cmd.CombinedOutput()
 
 	return strings.TrimSpace(string(out)), err
@@ -203,7 +233,7 @@ type Manager struct {
 	run                 runner
 	redactor            *redact.Redactor
 	proc                proc
-	majorVersion        int // major version of varnishd (e.g. 6, 7, 8)
+	majorVersion        atomic.Int64 // major version of varnishd (e.g. 6, 7, 8); atomic: read by the varnishstat scrape goroutine
 	done                chan struct{}
 	err                 error
 	reloadCounter       atomic.Int64
@@ -217,6 +247,19 @@ type Manager struct {
 	tlsCertIDs map[string]string // logical cert name → active varnishadm cert id
 	tlsCertDir string            // temp dir holding combined PEM files (lazily created)
 
+	// outFlushers holds the redacting writers wrapping varnishd's
+	// stdout/stderr. They line-buffer across writes, so the monitor goroutine
+	// flushes them once varnishd exited (its final output may lack a
+	// newline). Written once by SetRedactor before Start; read only by the
+	// monitor goroutine (ordered by the go statement).
+	outFlushers []flusher
+
+	// ncsaFlushers holds the buffering writers in the varnishncsa output
+	// chain (prefix + redaction). monitorNCSA flushes them after every
+	// process exit; written once by StartNCSA before the monitor goroutine
+	// starts (ordered by the go statement).
+	ncsaFlushers []flusher
+
 	ncsaMu     sync.Mutex // protects ncsaProc
 	ncsaProc   proc
 	ncsaRun    runner // separate runner with prefix writer for ncsa stdout
@@ -229,6 +272,7 @@ type Manager struct {
 	NCSARestartDelay time.Duration // default 5s, exported for testing
 	NCSAMaxCrashes   int           // max consecutive crashes; default 3, exported for testing
 	NCSAStableUptime time.Duration // run time after which the crash counter resets; default 1m, exported for testing (0 = never reset)
+	NCSAStopTimeout  time.Duration // wait after SIGTERM before SIGKILL on stop; default 5s, exported for testing
 	ncsaCrashed      chan struct{} // closed when crash limit is reached
 }
 
@@ -273,7 +317,7 @@ func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, v
 		extraArgs:        extraArgs,
 		workDir:          extractWorkDir(extraArgs),
 		log:              slog.Default(),
-		run:              execRunner{stdout: os.Stdout, stderr: os.Stderr},
+		run:              execRunner{stdout: os.Stdout, stderr: os.Stderr, runTimeout: defaultCLITimeout},
 		done:             make(chan struct{}),
 		metrics:          metrics,
 		tlsCertIDs:       make(map[string]string),
@@ -281,8 +325,13 @@ func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, v
 		NCSARestartDelay: 5 * time.Second,
 		NCSAMaxCrashes:   3,
 		NCSAStableUptime: time.Minute,
+		NCSAStopTimeout:  5 * time.Second,
 	}
 }
+
+// flusher is implemented by redacting writers that line-buffer output and
+// must be flushed once the writing subprocess exited.
+type flusher interface{ Flush() error }
 
 // SetRedactor installs a Redactor that filters secret values from varnishd
 // stdout/stderr and varnishadm command responses.
@@ -291,6 +340,11 @@ func (m *Manager) SetRedactor(r *redact.Redactor) {
 	if er, ok := m.run.(execRunner); ok {
 		er.stdout = r.Writer(er.stdout)
 		er.stderr = r.Writer(er.stderr)
+		for _, w := range []io.Writer{er.stdout, er.stderr} {
+			if f, ok := w.(flusher); ok {
+				m.outFlushers = append(m.outFlushers, f)
+			}
+		}
 		m.run = er
 	}
 }
@@ -319,7 +373,7 @@ func (m *Manager) DetectVersion() error {
 		return fmt.Errorf("running %s -V: %w", m.varnishdPath, err)
 	}
 	if trunkVersionRe.MatchString(out) {
-		m.majorVersion = trunkMajorVersion
+		m.majorVersion.Store(trunkMajorVersion)
 		m.log.Info("detected cache version", "major", "trunk")
 
 		return nil
@@ -332,8 +386,8 @@ func (m *Manager) DetectVersion() error {
 	if err != nil {
 		return fmt.Errorf("parsing major version %q: %w", matches[1], err)
 	}
-	m.majorVersion = v
-	m.log.Info("detected cache version", "major", m.majorVersion)
+	m.majorVersion.Store(int64(v))
+	m.log.Info("detected cache version", "major", v)
 
 	return nil
 }
@@ -341,13 +395,13 @@ func (m *Manager) DetectVersion() error {
 // MajorVersion returns the detected varnishd major version (e.g. 6, 7, 8).
 // Returns 0 if DetectVersion has not been called yet.
 func (m *Manager) MajorVersion() int {
-	return m.majorVersion
+	return int(m.majorVersion.Load())
 }
 
 // Start launches the cache daemon in foreground mode with the given initial VCL file.
 // It blocks until the admin port is ready or a timeout is reached.
 func (m *Manager) Start(initialVCL string) error {
-	if m.majorVersion == 0 {
+	if m.majorVersion.Load() == 0 {
 		err := m.DetectVersion()
 		if err != nil {
 			return fmt.Errorf("detecting cache version: %w", err)
@@ -378,12 +432,25 @@ func (m *Manager) Start(initialVCL string) error {
 	// Monitor the process in the background.
 	go func() {
 		m.err = m.proc.Wait()
+		// Wait has reaped the output-copy goroutines, so no Write can race
+		// this flush of a final unterminated output line.
+		for _, f := range m.outFlushers {
+			_ = f.Flush()
+		}
 		close(m.done)
 	}()
 
 	// Wait for admin port to become ready.
 	err = m.waitForAdmin(m.AdminTimeout)
 	if err != nil {
+		// Don't leave the freshly spawned varnishd behind: the caller exits
+		// on this error, and an unkilled varnishd would survive it whenever
+		// this process is not the container's PID 1 (shared PID namespace,
+		// shell/tini wrapper), keeping the listen ports bound and turning a
+		// transient slow start into a persistent crash loop.
+		_ = m.proc.Signal(syscall.SIGKILL)
+		<-m.done
+
 		return fmt.Errorf("waiting for cache admin: %w", err)
 	}
 
@@ -436,11 +503,8 @@ func (m *Manager) StartNCSA(ncsaPath string, args []string, prefix string) {
 	// Build a runner whose stdout is wrapped with the prefix writer.
 	// When ncsaRun is already set (e.g. by tests), keep it as-is.
 	if m.ncsaRun == nil {
-		ncsaStdout := io.Writer(os.Stdout)
-		if prefix != "" {
-			ncsaStdout = newPrefixWriter(os.Stdout, prefix)
-		}
-		m.ncsaRun = execRunner{stdout: ncsaStdout, stderr: os.Stderr}
+		ncsaStdout, ncsaStderr := m.buildNCSAWriters(os.Stdout, os.Stderr, prefix)
+		m.ncsaRun = execRunner{stdout: ncsaStdout, stderr: ncsaStderr}
 	}
 
 	m.ncsaArgs = make([]string, 0, len(args)+2)
@@ -461,7 +525,9 @@ func (m *Manager) NCSAEvents() <-chan NCSAEvent { return m.ncsaEvents }
 // makes the corresponding select case a no-op.
 func (m *Manager) NCSACrashed() <-chan struct{} { return m.ncsaCrashed }
 
-// StopNCSA gracefully stops the varnishncsa subprocess.
+// StopNCSA gracefully stops the varnishncsa subprocess: SIGTERM first,
+// escalating to SIGKILL after NCSAStopTimeout so a wedged varnishncsa
+// (e.g. blocked on a full-disk log file) cannot stall shutdown indefinitely.
 // It is a no-op if StartNCSA was never called.
 func (m *Manager) StopNCSA() {
 	if m.ncsaStop == nil {
@@ -477,6 +543,11 @@ func (m *Manager) Done() <-chan struct{} {
 }
 
 // Err returns the error from varnishd exiting, if any.
+//
+// Callers must first observe Done() being closed: m.err is written by the
+// monitor goroutine immediately before it closes done, and that close is the
+// only happens-before edge ordering the write against this read. Calling Err
+// without having received from Done() is a data race.
 func (m *Manager) Err() error {
 	return m.err
 }
@@ -490,7 +561,7 @@ func (m *Manager) MarkBackendSick(name string) error {
 
 // ActiveSessions returns the total number of live client sessions by summing
 // MEMPOOL.sess<N>.live counters from varnishstat -1 -j output.
-// It handles both the Varnish 7+ nested format and the Varnish 6.x flat format.
+// It handles both the nested format (Varnish 6.5+) and the flat 6.0-6.4 format.
 func (m *Manager) ActiveSessions() (uint64, error) {
 	args := []string{"-1", "-j"}
 	if m.workDir != "" {
@@ -500,11 +571,8 @@ func (m *Manager) ActiveSessions() (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("varnishstat: %w", err)
 	}
-	if m.majorVersion < 7 {
-		return m.parseActiveSessionsV6(out)
-	}
 
-	return m.parseActiveSessionsV7(out)
+	return m.parseActiveSessions(out)
 }
 
 // VarnishstatFunc returns a closure that runs varnishstat -1 -j and returns
@@ -521,7 +589,48 @@ func (m *Manager) VarnishstatFunc() func() (string, int, error) {
 			return "", 0, fmt.Errorf("varnishstat: %w", err)
 		}
 
-		return out, m.majorVersion, nil
+		return out, int(m.majorVersion.Load()), nil
+	}
+}
+
+// buildNCSAWriters wraps the base stdout/stderr for the varnishncsa
+// subprocess: redaction first (innermost, so the prefix writer hands it
+// complete lines), then the optional line prefix. Without the redaction wrap
+// varnishncsa output would bypass the redactor entirely - an access-log
+// format that echoes a header carrying a secret-derived value (e.g. an API
+// key doubling as a Kubernetes Secret) would log it in cleartext.
+func (m *Manager) buildNCSAWriters(stdout, stderr io.Writer, prefix string) (io.Writer, io.Writer) {
+	// Collect every buffering layer separately and flush outermost-first:
+	// the prefix writer's flush WRITES INTO the redacting writer, so the
+	// redacting writers must be flushed after it (registering only the final
+	// wrapped writer would strand the prefix flush in the redactor's
+	// partial-line buffer).
+	var redactFlushers []flusher
+	if m.redactor != nil {
+		stdout = m.redactor.Writer(stdout)
+		stderr = m.redactor.Writer(stderr)
+		for _, w := range []io.Writer{stdout, stderr} {
+			if f, ok := w.(flusher); ok {
+				redactFlushers = append(redactFlushers, f)
+			}
+		}
+	}
+	if prefix != "" {
+		pw := newPrefixWriter(stdout, prefix)
+		stdout = pw
+		m.ncsaFlushers = append(m.ncsaFlushers, pw)
+	}
+	m.ncsaFlushers = append(m.ncsaFlushers, redactFlushers...)
+
+	return stdout, stderr
+}
+
+// flushNCSAWriters drains partial-line buffers in the varnishncsa output
+// chain. Called by monitorNCSA after each process exit: p.Wait() has reaped
+// the output-copy goroutines by then, so no Write can race the flush.
+func (m *Manager) flushNCSAWriters() {
+	for _, f := range m.ncsaFlushers {
+		_ = f.Flush()
 	}
 }
 
@@ -564,13 +673,25 @@ func (m *Manager) monitorNCSA() {
 		select {
 		case <-m.ncsaStop:
 			_ = p.Signal(syscall.SIGTERM)
-			<-waitDone
+			select {
+			case <-waitDone:
+			case <-time.After(m.NCSAStopTimeout):
+				m.log.Warn("varnishncsa did not exit after SIGTERM, forcing", "timeout", m.NCSAStopTimeout)
+				_ = p.Signal(syscall.SIGKILL)
+				// SIGKILL cannot be ignored; wait for the exit so the child
+				// is reaped before StopNCSA returns.
+				<-waitDone
+			}
+			m.flushNCSAWriters()
 			m.ncsaMu.Lock()
 			m.ncsaProc = nil
 			m.ncsaMu.Unlock()
 
 			return
 		case waitErr := <-waitDone:
+			// Emit any partial final line before a restarted varnishncsa's
+			// first output would be appended to it.
+			m.flushNCSAWriters()
 			m.ncsaMu.Lock()
 			m.ncsaProc = nil
 			m.ncsaMu.Unlock()
@@ -638,7 +759,16 @@ func (m *Manager) reload(vclPath string) error {
 					"max_attempts", maxAttempts,
 					"error", lastErr,
 				)
-				time.Sleep(m.ReloadRetryInterval)
+				// Reload runs on the event loop goroutine, so this wait
+				// blocks all event handling (signals, varnishd exit, ncsa
+				// events). Abort the retries when varnishd exits: further
+				// attempts cannot succeed, and waiting would only delay the
+				// loop's handling of the exit.
+				select {
+				case <-time.After(m.ReloadRetryInterval):
+				case <-m.done:
+					return lastErr
+				}
 
 				continue
 			}
@@ -678,7 +808,31 @@ func (m *Manager) reload(vclPath string) error {
 	return lastErr
 }
 
-func (*Manager) parseActiveSessionsV7(out string) (uint64, error) {
+// parseActiveSessions sums MEMPOOL.sess<N>.live counters, auto-detecting the
+// varnishstat JSON schema from the content: the nested "counters" object
+// (Varnish 6.5+) first, falling back to the flat top-level format (6.0-6.4).
+// The schema must NOT be selected by major version: 6.5/6.6 already emit the
+// nested format, and the flat parser would find no MEMPOOL keys at the top
+// level - reporting 0 live sessions with no error, which would make graceful
+// drain exit while client sessions are still active.
+func (m *Manager) parseActiveSessions(out string) (uint64, error) {
+	total, nested, err := m.parseActiveSessionsV7(out)
+	if err != nil {
+		return 0, err
+	}
+	if nested {
+		return total, nil
+	}
+
+	return m.parseActiveSessionsV6(out)
+}
+
+// parseActiveSessionsV7 parses the nested schema. The second return value
+// reports whether the input actually carried a top-level "counters" object;
+// false means the flat 6.0-6.4 schema (flat counter keys always contain dots,
+// so a bare "counters" key cannot occur there) and the caller must fall back
+// to parseActiveSessionsV6.
+func (*Manager) parseActiveSessionsV7(out string) (uint64, bool, error) {
 	var data struct {
 		Counters map[string]struct {
 			Value uint64 `json:"value"`
@@ -687,7 +841,10 @@ func (*Manager) parseActiveSessionsV7(out string) (uint64, error) {
 
 	err := json.Unmarshal([]byte(out), &data)
 	if err != nil {
-		return 0, fmt.Errorf("parsing varnishstat JSON: %w", err)
+		return 0, false, fmt.Errorf("parsing varnishstat JSON: %w", err)
+	}
+	if data.Counters == nil {
+		return 0, false, nil
 	}
 
 	var total uint64
@@ -697,7 +854,7 @@ func (*Manager) parseActiveSessionsV7(out string) (uint64, error) {
 		}
 	}
 
-	return total, nil
+	return total, true, nil
 }
 
 func (*Manager) parseActiveSessionsV6(out string) (uint64, error) {
@@ -785,25 +942,62 @@ func (m *Manager) discardOldVCLs(currentName string) {
 		return
 	}
 
-	var available []string
+	// First pass: split label rows ("... <label> -> <target>") from VCL rows.
+	// A label row is not a discardable VCL itself, and its target must be
+	// protected: varnishd refuses to discard a labeled VCL, and the "name is
+	// the last field" rule below would otherwise misread the label's target
+	// as the row's VCL name and queue the still-referenced target for discard.
+	labelTargets := make(map[string]struct{})
+	var rows [][]string
 	scanner := bufio.NewScanner(strings.NewReader(resp))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 4 {
 			continue
 		}
-		state := fields[0]
-		name := fields[len(fields)-1]
+		if i := slices.Index(fields, "->"); i >= 0 {
+			if i+1 < len(fields) {
+				labelTargets[fields[i+1]] = struct{}{}
+			}
 
-		if state == "available" && name != currentName && strings.HasPrefix(name, vclReloadPrefix) {
-			available = append(available, name)
+			continue
 		}
+		rows = append(rows, fields)
 	}
 	err = scanner.Err()
 	if err != nil {
 		m.log.Warn("failed to parse vcl.list output, skipping VCL cleanup", "error", err)
 
 		return
+	}
+
+	var available []string
+	for _, fields := range rows {
+		state := fields[0]
+
+		// The VCL name is the last field, except when varnishd appends a
+		// "(N label[s])" suffix to a labeled VCL's row - then it is the field
+		// just before the "(" token.
+		nameIdx := len(fields) - 1
+		for i, f := range fields {
+			if strings.HasPrefix(f, "(") {
+				nameIdx = i - 1
+
+				break
+			}
+		}
+		if nameIdx < 1 {
+			continue
+		}
+		name := fields[nameIdx]
+
+		if state != "available" || name == currentName || !strings.HasPrefix(name, vclReloadPrefix) {
+			continue
+		}
+		if _, labeled := labelTargets[name]; labeled {
+			continue
+		}
+		available = append(available, name)
 	}
 
 	if len(available) == 0 {

@@ -2334,3 +2334,26 @@ func TestToLowerASCII(t *testing.T) {
 		})
 	}
 }
+
+// TestVarnishstatCollectorNestedSchemaOnVarnish6 verifies the JSON schema is
+// detected from the output content, not the reported major version: Varnish
+// 6.5/6.6 report major 6 but already emit the nested
+// {"version":1,"counters":{...}} schema. Major-version routing fed that to
+// the flat parser, which skipped the whole "counters" object and silently
+// exported zero counters.
+func TestVarnishstatCollectorNestedSchemaOnVarnish6(t *testing.T) {
+	t.Parallel()
+	fn := func() (string, int, error) {
+		return `{"version": 1, "counters": {"MAIN.cache_hit": {"description": "Cache hits", "flag": "c", "format": "i", "value": 42}}}`, 6, nil
+	}
+	c := NewVarnishstatCollector(fn, nil)
+
+	families := collectMetrics(t, c)
+	hit := findFamily(families, "varnish_main_cache_hit")
+	if hit == nil {
+		t.Fatalf("missing varnish_main_cache_hit: nested-schema output on major version 6 was parsed as zero counters (%d families)", len(families))
+	}
+	if got := hit.GetMetric()[0].GetCounter().GetValue(); got != 42 {
+		t.Errorf("varnish_main_cache_hit = %v, want 42", got)
+	}
+}

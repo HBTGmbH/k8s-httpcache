@@ -101,7 +101,9 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 	c.totalScrapes++
 
 	start := time.Now()
-	out, majorVersion, err := c.varnishstatFn()
+	// The major version returned by varnishstatFn is deliberately unused: the
+	// JSON schema is detected from the output itself (see parseVarnishstat).
+	out, _, err := c.varnishstatFn()
 	duration := time.Since(start).Seconds()
 
 	ch <- prometheus.MustNewConstMetric(c.durationDesc, prometheus.GaugeValue, duration)
@@ -116,12 +118,7 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 
 	ch <- prometheus.MustNewConstMetric(c.upDesc, prometheus.GaugeValue, 1)
 
-	var counters map[string]varnishstatCounter
-	if majorVersion < 7 {
-		counters, err = parseVarnishstatV6(out)
-	} else {
-		counters, err = parseVarnishstatV7(out)
-	}
+	counters, err := parseVarnishstat(out)
 	if err != nil {
 		c.parseFailures++
 		ch <- prometheus.MustNewConstMetric(c.parseFailuresDesc, prometheus.CounterValue, c.parseFailures)

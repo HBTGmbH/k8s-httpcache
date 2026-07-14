@@ -28,9 +28,12 @@ func (errorReader) Read([]byte) (int, error) {
 	return 0, errors.New("simulated read error")
 }
 
-// newTestServer creates a broadcast Server with default test timeouts.
-func newTestServer() *Server {
-	return New(Options{
+// newTestServer creates a broadcast Server with default test timeouts. The
+// fan-out client's idle keep-alive connections are closed on test cleanup so
+// their reader goroutines don't trip the package's goleak check.
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	s := New(Options{
 		Addr:              ":0",
 		ServerIdleTimeout: 120 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -39,6 +42,9 @@ func newTestServer() *Server {
 		ShutdownTimeout:   5 * time.Second,
 		Metrics:           telemetry.NewMetrics(prometheus.NewRegistry(), nil),
 	})
+	t.Cleanup(s.client.CloseIdleConnections)
+
+	return s
 }
 
 // collectSeriesCount returns the number of metric series a collector exports.
@@ -63,7 +69,7 @@ func collectSeriesCount(c prometheus.Collector) int {
 // and the registry's memory - without bound.
 func TestBroadcastRequestsTotalMethodCardinalityBounded(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 	// No SetFrontends → every request hits the no-frontends 503 branch.
 	for i := range 1000 {
 		req := httptest.NewRequest(fmt.Sprintf("M%04d", i), "/purge", http.NoBody)
@@ -94,7 +100,7 @@ func frontendFromServer(name string, ts *httptest.Server) watcher.Frontend {
 
 func TestNoFrontends(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
 	rec := httptest.NewRecorder()
@@ -123,7 +129,7 @@ func TestSingleFrontend(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
@@ -169,7 +175,7 @@ func TestMultipleFrontends(t *testing.T) {
 	b2 := makeBackend("ok-2")
 	defer b2.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{
 		frontendFromServer("pod-0", b0),
 		frontendFromServer("pod-1", b1),
@@ -218,7 +224,7 @@ func TestFrontendDown(t *testing.T) {
 	deadFe := frontendFromServer("pod-dead", dead)
 	dead.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{
 		frontendFromServer("pod-ok", healthy),
 		deadFe,
@@ -295,7 +301,7 @@ func TestBroadcastPodResultMetrics(t *testing.T) {
 	deadFe := frontendFromServer("pod-dead", dead)
 	dead.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{
 		frontendFromServer("pod-ok", ok),
 		frontendFromServer("pod-5xx", serverErr),
@@ -350,7 +356,7 @@ func TestMethodAndHeadersPreserved(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	req := httptest.NewRequest("PURGE", "/cache/item", http.NoBody)
@@ -395,7 +401,7 @@ func TestRequestBodyForwarded(t *testing.T) {
 	b1 := makeBackend()
 	defer b1.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{
 		frontendFromServer("pod-0", b0),
 		frontendFromServer("pod-1", b1),
@@ -476,7 +482,7 @@ func TestDrainingConnectionClose(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	// Before draining: no Connection: close header.
@@ -509,7 +515,7 @@ func TestDrainWaitsForConnections(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	// Start listening on a real port so ConnState fires.
@@ -560,7 +566,7 @@ func TestDrainTimeoutWithHeldConnection(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -610,7 +616,7 @@ func TestDrainTimeoutWithHeldConnection(t *testing.T) {
 
 func TestNoFrontendsDraining(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 	s.draining.Store(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
@@ -627,7 +633,7 @@ func TestNoFrontendsDraining(t *testing.T) {
 
 func TestDrainNoConnections(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 
 	// Drain with no connections should return immediately.
 	done := make(chan error, 1)
@@ -653,7 +659,7 @@ func TestShutdown(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -701,7 +707,7 @@ func TestMaxBodySizeTruncation(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	req := httptest.NewRequest(http.MethodGet, "/big", http.NoBody)
@@ -736,7 +742,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	req := httptest.NewRequest(http.MethodGet, "/redirect-me", http.NoBody)
@@ -762,7 +768,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 
 func TestRequestBodyReadError(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{
 		{Name: "pod-0", Host: "127.0.0.1", Port: 9999},
 	})
@@ -788,7 +794,7 @@ func TestRequestBodyReadError(t *testing.T) {
 
 func TestRequestBodyReadErrorDraining(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 	s.draining.Store(true)
 	s.SetFrontends([]watcher.Frontend{
 		{Name: "pod-0", Host: "127.0.0.1", Port: 9999},
@@ -854,7 +860,7 @@ func TestConcurrentSetFrontends(t *testing.T) {
 	}))
 	defer b1.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 
 	frontendSets := [][]watcher.Frontend{
 		{frontendFromServer("pod-0", b0)},
@@ -916,7 +922,7 @@ func TestForwardResponseBodyReadError(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	req := httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody)
@@ -1017,7 +1023,7 @@ func TestForwardPreservesHostHeader(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	s := newTestServer()
+	s := newTestServer(t)
 	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
 
 	// PURGE-style request: VCL on each pod matches on req.http.host, so the
@@ -1048,7 +1054,7 @@ func TestForwardPreservesHostHeader(t *testing.T) {
 // connection counter balances back to zero.
 func TestDrainRacesNewConnections(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1141,7 +1147,7 @@ func TestDrainRacesNewConnections(t *testing.T) {
 // (empty set) - never a panic or corrupt status.
 func TestServeHTTPRacesSetFrontends(t *testing.T) {
 	t.Parallel()
-	s := newTestServer()
+	s := newTestServer(t)
 
 	newPod := func() *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1192,5 +1198,65 @@ func TestServeHTTPRacesSetFrontends(t *testing.T) {
 	wg.Wait()
 	if badStatus != 0 {
 		t.Fatalf("unexpected response status under SetFrontends race: %d", badStatus)
+	}
+}
+
+// TestRequestBodyTooLargeRejected verifies the broadcast request body is
+// capped: bodies are held in memory for the fan-out, so an uncapped read
+// would let a single request exhaust memory.
+func TestRequestBodyTooLargeRejected(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	s.SetFrontends([]watcher.Frontend{{Name: "pod-0", Host: "127.0.0.1", Port: 1}})
+
+	req := httptest.NewRequest("PURGE", "/", strings.NewReader(strings.Repeat("x", maxBodySize+1)))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for an oversized body, got %d", rec.Code)
+	}
+}
+
+// TestForwardStripsHopByHopHeaders verifies the fan-out drops hop-by-hop
+// headers (RFC 9110 §7.6.1) plus any header named in the client's Connection
+// header, while end-to-end headers pass through. A copied "Connection: close"
+// would otherwise force a fresh TCP connection to every pod per broadcast.
+func TestForwardStripsHopByHopHeaders(t *testing.T) {
+	t.Parallel()
+
+	gotCh := make(chan http.Header, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCh <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	s := newTestServer(t)
+	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", ts)})
+
+	req := httptest.NewRequest("PURGE", "/x", http.NoBody)
+	req.Header.Set("X-Keep", "1")
+	req.Header.Set("Keep-Alive", "timeout=5")
+	req.Header.Set("Proxy-Authorization", "creds")
+	req.Header.Set("Connection", "x-hop")
+	req.Header.Set("X-Hop", "gone")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	var got http.Header
+	select {
+	case got = <-gotCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pod never received the fan-out request")
+	}
+
+	if got.Get("X-Keep") != "1" {
+		t.Error("end-to-end header X-Keep missing at the pod")
+	}
+	for _, h := range []string{"Keep-Alive", "Proxy-Authorization", "X-Hop"} {
+		if got.Get(h) != "" {
+			t.Errorf("hop-by-hop header %s forwarded to the pod: %q", h, got.Get(h))
+		}
 	}
 }

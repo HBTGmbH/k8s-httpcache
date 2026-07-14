@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -62,7 +63,7 @@ func TestAwaitInitial(t *testing.T) {
 	t.Parallel()
 
 	// Returns the collected value when collect finishes before ctx is cancelled.
-	got, err := awaitInitial(t.Context(), func() int { return 42 })
+	got, err := awaitInitial(t.Context(), nil, func() int { return 42 })
 	if err != nil || got != 42 {
 		t.Fatalf("awaitInitial = (%d, %v), want (42, nil)", got, err)
 	}
@@ -73,7 +74,7 @@ func TestAwaitInitial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err = awaitInitial(ctx, func() string {
+	_, err = awaitInitial(ctx, nil, func() string {
 		<-make(chan struct{}) // block forever
 
 		return "never"
@@ -88,6 +89,21 @@ func TestAwaitInitial(t *testing.T) {
 	// until the whole test binary times out).
 	if elapsed := time.Since(start); elapsed > 30*time.Second {
 		t.Fatalf("awaitInitial took %v, expected to return promptly when ctx is cancelled", elapsed)
+	}
+
+	// A watcher Run failure aborts the wait even when ctx has no deadline
+	// (--startup-timeout=0): the failed watcher would never deliver its
+	// guaranteed initial send, so collect would block forever.
+	sentinel := errors.New("adding event handler: informer stopped")
+	watcherErr := make(chan error, 1)
+	watcherErr <- sentinel
+	_, err = awaitInitial(t.Context(), watcherErr, func() string {
+		<-make(chan struct{}) // block forever
+
+		return "never"
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("awaitInitial error = %v, want the wrapped watcher error", err)
 	}
 }
 
@@ -152,20 +168,24 @@ func TestWatchFileDetectsChange(t *testing.T) {
 
 	ch := watchFile(ctx, path, 50*time.Millisecond)
 
-	// Wait a tick so the watcher reads the initial content.
-	time.Sleep(100 * time.Millisecond)
-
-	// Modify the file.
-	err = os.WriteFile(path, []byte("changed"), 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case <-ch:
-		// OK - change detected
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for file change notification")
+	// No sleep-based synchronisation with the watcher's baseline read: keep
+	// writing DISTINCT contents until a change fires. Whatever content the
+	// watcher happened to capture as its baseline, the next write differs
+	// from it, so detection is guaranteed regardless of goroutine scheduling.
+	deadline := time.After(5 * time.Second)
+	for i := 0; ; i++ {
+		err = os.WriteFile(path, fmt.Appendf(nil, "changed-%d", i), 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ch:
+			return // OK - change detected
+		case <-deadline:
+			t.Fatal("timeout waiting for file change notification")
+		case <-time.After(100 * time.Millisecond):
+			// Not yet - write the next distinct content.
+		}
 	}
 }
 
@@ -7176,7 +7196,7 @@ func TestStartValuesDirWatchers_NotWatchingNoPollGoroutine(t *testing.T) { //nol
 		ValuesDirPollInterval: time.Second,
 		ValuesDirWatch:        false,
 	}
-	watchers, names := startValuesDirWatchers(t.Context(), cfg)
+	watchers, names := startValuesDirWatchers(t.Context(), cfg, func(error) {})
 	if len(watchers) != 1 || len(names) != 1 {
 		t.Fatalf("expected 1 watcher + 1 name, got %d/%d", len(watchers), len(names))
 	}
@@ -7546,4 +7566,358 @@ func TestWriteInitialVCLFile_CreateError(t *testing.T) {
 	if cleanup != nil {
 		t.Error("cleanup should be nil on error")
 	}
+}
+
+// TestRunLoop_ServerErrorStopsNCSA verifies the serverErrCh shutdown path
+// stops varnishncsa: its monitor does not watch ctx and would otherwise keep
+// running (or respawn varnishncsa mid-restart-delay) while the process exits.
+func TestRunLoop_ServerErrorStopsNCSA(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var stopCalled atomic.Bool
+	serverErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.serverErrCh = serverErrCh
+	lc.stopNCSA = func() { stopCalled.Store(true) }
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	serverErrCh <- errors.New("broadcast serve: accept failed")
+
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+
+	if !stopCalled.Load() {
+		t.Fatal("stopNCSA was not called on the serverErrCh shutdown path")
+	}
+}
+
+// TestRunLoop_UnexpectedVarnishdExitStopsNCSA verifies the unexpected-exit
+// path stops varnishncsa before returning, for the same reason as above.
+func TestRunLoop_UnexpectedVarnishdExitStopsNCSA(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var stopCalled atomic.Bool
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.stopNCSA = func() { stopCalled.Store(true) }
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// varnishd exits unexpectedly.
+	close(h.mgr.done)
+	<-done
+
+	if got := int(code.Load()); got != 1 {
+		t.Fatalf("expected exit code 1, got %d", got)
+	}
+	if !stopCalled.Load() {
+		t.Fatal("stopNCSA was not called on the unexpected-varnishd-exit path")
+	}
+}
+
+// TestRunLoop_ServerErrorWaitsForVarnishdAfterSIGKILL verifies that after the
+// SIGKILL escalation on the serverErrCh path, runLoop waits for varnishd to be
+// reaped instead of returning while the child is still dying.
+func TestRunLoop_ServerErrorWaitsForVarnishdAfterSIGKILL(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	serverErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.serverErrCh = serverErrCh
+	lc.shutdownTimeout = 20 * time.Millisecond
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	serverErrCh <- errors.New("broadcast serve: accept failed")
+
+	// varnishd ignores SIGTERM (mgr.done stays open), so the loop escalates
+	// to SIGKILL after shutdownTimeout.
+	waitFor(t, func() bool {
+		for _, s := range h.mgr.getForwardedSigs() {
+			if s == syscall.SIGKILL {
+				return true
+			}
+		}
+
+		return false
+	}, "SIGKILL forwarded")
+
+	// The loop must still be waiting for the reap, not returned.
+	time.Sleep(50 * time.Millisecond)
+	if got := int(code.Load()); got != -1 {
+		t.Fatalf("runLoop returned (code %d) before varnishd was reaped after SIGKILL", got)
+	}
+
+	close(h.mgr.done)
+	<-done
+	if got := int(code.Load()); got != 1 {
+		t.Fatalf("expected exit code 1, got %d", got)
+	}
+}
+
+// TestLoadInitialTLSCertsKillsVarnishdOnFailure verifies a failed initial
+// certificate load does not leave the already-started varnishd running: this
+// is the only exit path between mgr.Start and runLoop, and without the
+// kill+reap an unkilled varnishd survives the process exit whenever
+// k8s-httpcache is not the container's PID 1, keeping the listen ports bound.
+func TestLoadInitialTLSCertsKillsVarnishdOnFailure(t *testing.T) {
+	t.Parallel()
+
+	mgr := &mockManager{
+		done:         make(chan struct{}),
+		tlsSupported: true,
+		loadCertFn: func(string, []byte, []byte, []byte) error {
+			return errors.New("bad cert")
+		},
+	}
+	close(mgr.done) // process exits once killed; the helper must reap via Done()
+
+	err := loadInitialTLSCerts(mgr, []string{"web"}, map[string]watcher.TLSCertData{
+		"web": {Cert: []byte("c"), Key: []byte("k")},
+	}, func(string, watcher.TLSCertData) {})
+	if err == nil {
+		t.Fatal("expected error from failed initial certificate load")
+	}
+
+	sigs := mgr.getForwardedSigs()
+	killed := false
+	for _, s := range sigs {
+		if s == syscall.SIGKILL {
+			killed = true
+		}
+	}
+	if !killed {
+		t.Fatalf("expected SIGKILL to varnishd on initial TLS load failure, got %v (varnishd left orphaned)", sigs)
+	}
+}
+
+// TestLoadInitialTLSCertsSuccess verifies the happy path: onLoaded fires only
+// for certificates that carried material, and varnishd is left untouched.
+func TestLoadInitialTLSCertsSuccess(t *testing.T) {
+	t.Parallel()
+
+	mgr := &mockManager{done: make(chan struct{}), tlsSupported: true}
+	var loaded []string
+	err := loadInitialTLSCerts(mgr, []string{"web", "empty"}, map[string]watcher.TLSCertData{
+		"web":   {Cert: []byte("c"), Key: []byte("k")},
+		"empty": {},
+	}, func(name string, _ watcher.TLSCertData) { loaded = append(loaded, name) })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0] != "web" {
+		t.Errorf("onLoaded calls = %v, want [web]", loaded)
+	}
+	if sigs := mgr.getForwardedSigs(); len(sigs) != 0 {
+		t.Errorf("unexpected signals on success path: %v", sigs)
+	}
+}
+
+// TestMetricsShutdownTimeoutBounded verifies the metrics server's graceful
+// shutdown always gets a deadline: --shutdown-timeout=0 means "wait
+// indefinitely for varnishd", but kubeContext(0) would give the HTTP drain no
+// deadline at all, letting an active scrape stall process exit after varnishd
+// is already gone.
+func TestMetricsShutdownTimeoutBounded(t *testing.T) {
+	t.Parallel()
+	if got := metricsShutdownTimeout(0); got != defaultMetricsShutdownTimeout {
+		t.Errorf("metricsShutdownTimeout(0) = %v, want the bounded default %v", got, defaultMetricsShutdownTimeout)
+	}
+	if got := metricsShutdownTimeout(3 * time.Second); got != 3*time.Second {
+		t.Errorf("metricsShutdownTimeout(3s) = %v, want 3s passed through", got)
+	}
+}
+
+// TestRunLoopRenderErrorRedactedInEvent verifies template render errors are
+// redacted before reaching Kubernetes Events: a failing template function
+// echoes its input (e.g. atoi on a non-numeric secret), and the Event is
+// persisted in etcd where anyone with events RBAC can read it.
+func TestRunLoopRenderErrorRedactedInEvent(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	rec := h.withRecorder()
+
+	red := redact.NewRedactor()
+	red.Update(map[string]map[string]any{"db": {"password": "s3cr3t-value-xyz"}})
+
+	h.rend.renderFn = func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error) {
+		return "", errors.New(`template: parsing "s3cr3t-value-xyz": invalid syntax`)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.redactor = red
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger a reload whose render fails.
+	h.frontendCh <- []watcher.Frontend{{Name: "pod-0", Host: "10.0.0.1", Port: 8080}}
+
+	select {
+	case ev := <-rec.Events:
+		if strings.Contains(ev, "s3cr3t-value-xyz") {
+			t.Fatalf("secret leaked into a persisted Kubernetes Event: %q", ev)
+		}
+		if !strings.Contains(ev, "VCLRenderFailed") {
+			t.Fatalf("expected VCLRenderFailed event, got %q", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event emitted for the render failure")
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+}
+
+// TestReadyzDialAddr verifies the readiness probe dials the configured bind
+// host: a specific-IP first listener (e.g. the pod IP) is not listening on
+// loopback, and always dialing localhost there keeps the pod NotReady
+// forever.
+func TestReadyzDialAddr(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"", "localhost:8080"},
+		{"0.0.0.0", "localhost:8080"},
+		{"::", "localhost:8080"},
+		{"127.0.0.1", "127.0.0.1:8080"},
+		{"10.0.0.5", "10.0.0.5:8080"},
+	}
+	for _, tt := range tests {
+		la := config.ListenAddrSpec{Host: tt.host, Port: 8080}
+		if got := readyzDialAddr(la); got != tt.want {
+			t.Errorf("readyzDialAddr(host=%q) = %q, want %q", tt.host, got, tt.want)
+		}
+	}
+}
+
+// TestNotifySignalsIncludesSIGHUP verifies SIGHUP triggers the graceful
+// shutdown path: with the default disposition a terminal hangup terminates
+// the process immediately, orphaning varnishd without a drain.
+func TestNotifySignalsIncludesSIGHUP(t *testing.T) { //nolint:paralleltest // raises a real signal against the whole process
+	ch := notifySignals()
+	defer signal.Stop(ch)
+
+	err := syscall.Kill(os.Getpid(), syscall.SIGHUP)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case sig := <-ch:
+		if sig != syscall.SIGHUP {
+			t.Fatalf("received %v, want SIGHUP", sig)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SIGHUP not delivered to the shutdown channel")
+	}
+}
+
+// TestShutdownBudget verifies the worst-case shutdown budget sums every
+// sequential SIGTERM phase - notably the broadcast drain, which the original
+// grace-period guidance omitted (a drain-enabled pod could be SIGKILLed
+// mid-drain despite following the documented formula).
+func TestShutdownBudget(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		ShutdownTimeout:          30 * time.Second,
+		Drain:                    true,
+		DrainDelay:               15 * time.Second,
+		DrainTimeout:             30 * time.Second,
+		BroadcastAddr:            ":8088",
+		BroadcastDrainTimeout:    30 * time.Second,
+		BroadcastShutdownTimeout: 5 * time.Second,
+		VarnishncsaEnabled:       true,
+		MetricsAddr:              ":9101",
+	}
+	// 30 (varnishd) + 15+30 (drain) + 30+5 (broadcast) + 5 (ncsa) + 30 (metrics).
+	want := 145 * time.Second
+	if got := shutdownBudget(cfg); got != want {
+		t.Errorf("shutdownBudget = %v, want %v", got, want)
+	}
+
+	// Disabled phases contribute nothing.
+	lean := &config.Config{ShutdownTimeout: 30 * time.Second}
+	if got := shutdownBudget(lean); got != 30*time.Second {
+		t.Errorf("lean shutdownBudget = %v, want 30s", got)
+	}
+
+	// --shutdown-timeout=0 means the varnishd wait is unbounded: no finite
+	// budget exists and no warning can be computed.
+	unbounded := &config.Config{Drain: true, DrainDelay: 15 * time.Second}
+	if got := shutdownBudget(unbounded); got != 0 {
+		t.Errorf("unbounded shutdownBudget = %v, want 0", got)
+	}
+}
+
+// TestRunLoopEmptyTLSUpdateKeepsKeyRedaction verifies an emptied TLS Secret
+// does not wipe the certificate's private key from the redaction set:
+// LoadCert no-ops on empty material and keeps the previous certificate (and
+// its key) active, so the key must remain a redaction target.
+func TestRunLoopEmptyTLSUpdateKeepsKeyRedaction(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	const keyLine = "MIGkAgEBBDBkeymaterialline"
+	red := redact.NewRedactor()
+	red.SetStaticValues(tlsRedactKey("web"), []string{keyLine})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.redactor = red
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// The Secret is emptied (e.g. briefly during a bad rotation); the old
+	// certificate stays active, so its key must stay redacted.
+	h.tlsCertCh <- tlsCertChange{name: "web", data: watcher.TLSCertData{}}
+
+	waitFor(t, func() bool {
+		return red.Redact(keyLine) != keyLine
+	}, "key material still redacted after empty TLS update")
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
 }

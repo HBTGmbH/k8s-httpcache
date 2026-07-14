@@ -414,7 +414,7 @@ spec:
             {{- end }}
           ports:
             - name: http
-              containerPort: {{ .Values.container.httpPort | default 8443 }}
+              containerPort: {{ .Values.container.httpPort | default 8080 }}
               protocol: TCP
             {{- if .Values.tlsCerts }}
             - name: https

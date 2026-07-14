@@ -24,7 +24,16 @@ type FileValuesWatcher struct {
 	mu       sync.Mutex
 	previous map[string]any
 	synced   bool
+
+	// testHookAfterRead, when non-nil, runs after each successful file read.
+	// Tests use it to swap the ..data symlink mid-scan to exercise the torn-
+	// snapshot rescan.
+	testHookAfterRead func(name string)
 }
+
+// k8sDataSymlink is the symlink Kubernetes atomically replaces when a
+// ConfigMap/Secret volume is updated; all mounted files resolve through it.
+const k8sDataSymlink = "..data"
 
 // NewFileValuesWatcher creates a new FileValuesWatcher that polls dir at
 // the given interval.
@@ -73,12 +82,70 @@ func (w *FileValuesWatcher) Run(ctx context.Context) error {
 }
 
 func (w *FileValuesWatcher) scan() {
+	// A ConfigMap volume update atomically replaces the ..data symlink, and
+	// every os.ReadFile resolves it independently - a swap landing between two
+	// reads of one pass would deliver a torn snapshot mixing old- and new-
+	// generation files. Recheck the symlink after each pass and rescan when it
+	// moved. Directories without a ..data link (non-Kubernetes) skip the check.
+	const maxScanAttempts = 3
+
+	var parsed map[string]any
+	haveSnapshot := false
+	for attempt := range maxScanAttempts {
+		dataBefore, dataErr := os.Readlink(filepath.Join(w.dir, k8sDataSymlink))
+		p, ok := w.readFiles()
+		if !ok {
+			// Transient ReadDir failure (e.g. volume remount). A prior pass of
+			// THIS scan already read a complete snapshot (we only looped
+			// because the ..data symlink moved) - deliver that instead of
+			// discarding it: possibly torn across generations, but strictly
+			// better than wiping the values, and the next poll corrects it.
+			if haveSnapshot {
+				slog.Warn("values directory listing failed mid-rescan, delivering the previous pass's snapshot", "dir", w.dir)
+
+				break
+			}
+			// No successful pass at all: keep the previously delivered values
+			// instead of wiping them for one interval and forcing a spurious
+			// empty-values reload. Before the first successful delivery there
+			// is nothing to keep - deliver the empty snapshot so startup
+			// collection is never left blocking.
+			w.mu.Lock()
+			synced := w.synced
+			w.mu.Unlock()
+			if !synced {
+				w.send(nil)
+			}
+
+			return
+		}
+		parsed = p
+		haveSnapshot = true
+		if dataErr != nil {
+			break // no ..data symlink - nothing to recheck
+		}
+		dataAfter, afterErr := os.Readlink(filepath.Join(w.dir, k8sDataSymlink))
+		if afterErr == nil && dataAfter == dataBefore {
+			break // consistent snapshot
+		}
+		if attempt == maxScanAttempts-1 {
+			// Deliver the last snapshot anyway: possibly torn, but the next
+			// poll corrects it, and the initial send must never be skipped.
+			slog.Warn("values directory kept changing during scan, delivering possibly inconsistent snapshot", "dir", w.dir)
+		}
+	}
+
+	w.send(parsed)
+}
+
+// readFiles reads all value files in one pass. It returns ok=false when the
+// directory listing itself failed; per-file errors only skip that file.
+func (w *FileValuesWatcher) readFiles() (map[string]any, bool) {
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
 		slog.Error("reading values directory", "dir", w.dir, "error", err)
-		w.send(nil)
 
-		return
+		return nil, false
 	}
 
 	parsed := make(map[string]any)
@@ -104,6 +171,9 @@ func (w *FileValuesWatcher) scan() {
 
 			continue
 		}
+		if w.testHookAfterRead != nil {
+			w.testHookAfterRead(name)
+		}
 
 		var val any
 		unmarshalErr := yaml.Unmarshal(data, &val)
@@ -115,7 +185,7 @@ func (w *FileValuesWatcher) scan() {
 		parsed[key] = val
 	}
 
-	w.send(parsed)
+	return parsed, true
 }
 
 func (w *FileValuesWatcher) send(data map[string]any) {

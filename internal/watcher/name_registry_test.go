@@ -127,3 +127,59 @@ func TestNameRegistry_ConcurrentClaimReleaseRace(t *testing.T) {
 		t.Fatalf("registry should be empty after all claims released, got %v", r.owners)
 	}
 }
+
+// TestNameRegistrySubscribeNotifiedOnRelease verifies subscribers fire on
+// successful releases only: the notification is a suppressed watcher's only
+// wakeup to re-claim a freed name (no informer event fires for it), so a
+// missing callback means the name stays orphaned until an unrelated event.
+func TestNameRegistrySubscribeNotifiedOnRelease(t *testing.T) {
+	t.Parallel()
+	r := NewNameRegistry()
+
+	notified := 0
+	r.subscribe(func() { notified++ })
+
+	if !r.claim("web", "owner-a") {
+		t.Fatal("initial claim failed")
+	}
+
+	// No-op releases (wrong owner, unknown name) must not notify.
+	r.release("web", "owner-b")
+	r.release("never-claimed", "owner-a")
+	if notified != 0 {
+		t.Fatalf("notified = %d after no-op releases, want 0", notified)
+	}
+
+	r.release("web", "owner-a")
+	if notified != 1 {
+		t.Fatalf("notified = %d after successful release, want 1", notified)
+	}
+}
+
+// TestNameRegistryUnsubscribe verifies a removed subscription no longer
+// fires: a long-lived registry would otherwise accumulate dead closures from
+// stopped watchers and invoke them on every future release.
+func TestNameRegistryUnsubscribe(t *testing.T) {
+	t.Parallel()
+	r := NewNameRegistry()
+
+	notified := 0
+	unsubscribe := r.subscribe(func() { notified++ })
+
+	if !r.claim("web", "owner-a") {
+		t.Fatal("initial claim failed")
+	}
+	r.release("web", "owner-a")
+	if notified != 1 {
+		t.Fatalf("notified = %d before unsubscribe, want 1", notified)
+	}
+
+	unsubscribe()
+	if !r.claim("web", "owner-a") {
+		t.Fatal("re-claim failed")
+	}
+	r.release("web", "owner-a")
+	if notified != 1 {
+		t.Fatalf("notified = %d after unsubscribe, want still 1 (dead subscription fired)", notified)
+	}
+}

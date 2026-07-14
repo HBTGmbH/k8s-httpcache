@@ -200,10 +200,19 @@ func (bw *BackendWatcher) syncService(ctx context.Context, lister corelisters.Se
 			bw.log.Warn("backend Service not found, emitting empty endpoints",
 				"namespace", bw.namespace, "service", bw.serviceName, "error", err)
 		}
+		metadataCleared := len(bw.labels) > 0 || len(bw.annotations) > 0
 		bw.labels = nil
 		bw.annotations = nil
 		bw.stopEndpointSliceWatcherLocked()
-		bw.sendLocked(nil)
+		if metadataCleared && bw.synced && EndpointsEqual(nil, bw.previous) {
+			// The endpoints were already empty, so sendLocked would dedup the
+			// update away - but consumers still need to observe the cleared
+			// labels/annotations (the exists-path resends on metadata changes
+			// for the same reason).
+			bw.resendLocked()
+		} else {
+			bw.sendLocked(nil)
+		}
 
 		return
 	}

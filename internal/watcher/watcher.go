@@ -131,10 +131,30 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 		return
 	}
 
+	// Dual-stack Services publish one EndpointSlice per address family, so the
+	// same pod would otherwise be listed once per family - with an identical
+	// endpoint Name but different addresses. Duplicate names break templates
+	// that key backends on .Name (duplicate VCL backend declarations fail to
+	// compile), and the broadcast fan-out would hit every pod twice. Serve a
+	// single family: IPv4 when any IPv4 slice exists, IPv6 otherwise.
+	//
+	// At informer startup the two family slices can be observed out of order
+	// (an IPv6-only first sync, then the IPv4 slice's Add flips the family).
+	// That one-time transition is absorbed by the frontend/backend debounce;
+	// in steady state a dual-stack Service's slices appear and disappear
+	// together, so the family never flaps.
+	family := discoveryv1.AddressTypeIPv6
+	for _, slice := range epSlices {
+		if slice.AddressType == discoveryv1.AddressTypeIPv4 {
+			family = discoveryv1.AddressTypeIPv4
+
+			break
+		}
+	}
+
 	var endpoints []Endpoint
 	for _, slice := range epSlices {
-		if slice.AddressType != discoveryv1.AddressTypeIPv4 &&
-			slice.AddressType != discoveryv1.AddressTypeIPv6 {
+		if slice.AddressType != family {
 			continue
 		}
 

@@ -2809,3 +2809,66 @@ func TestDiscoveryWatcher_InitPhaseChurnRace(t *testing.T) {
 		}
 	}
 }
+
+// TestDiscoveryCrossWatcherNameHandoff verifies that when the discovery
+// watcher owning a bare backend name loses its Service, a sibling watcher
+// (different --backend-selector) whose same-named Service was suppressed
+// adopts the name. The departing Service does not match the sibling's
+// selector and informers run with no resync, so no informer event ever fires
+// for the sibling - the NameRegistry release notification is its only wakeup;
+// without it the backend stays absent until some unrelated Service event.
+func TestDiscoveryCrossWatcherNameHandoff(t *testing.T) {
+	t.Parallel()
+
+	svcA := makeDiscoverableService("ns-a", "foo", map[string]string{"selector": "one"})
+	sliceA := makeDiscoverableEndpointSlice("ns-a", "foo", "foo-abc", "10.0.1.1", 8080)
+	svcB := makeDiscoverableService("ns-b", "foo", map[string]string{"selector": "two"})
+	sliceB := makeDiscoverableEndpointSlice("ns-b", "foo", "foo-def", "10.0.2.1", 8080)
+
+	clientset := fake.NewClientset(svcA, sliceA, svcB, sliceB)
+	registry := NewNameRegistry()
+
+	sel1, _ := labels.Parse("selector=one")
+	dw1 := NewBackendDiscoveryWatcher(clientset, "", true, sel1, "", nil)
+	dw1.SetNameRegistry(registry)
+
+	ctx := t.Context()
+	go func() { _ = dw1.Run(ctx) }()
+	<-dw1.Initial()
+	if _, ok := dw1.InitialState()["foo"]; !ok {
+		t.Fatal("watcher 1 did not adopt foo")
+	}
+
+	// Watcher 2 starts after watcher 1 owns "foo"; its ns-b/foo is suppressed.
+	sel2, _ := labels.Parse("selector=two")
+	dw2 := NewBackendDiscoveryWatcher(clientset, "", true, sel2, "", nil)
+	dw2.SetNameRegistry(registry)
+	go func() { _ = dw2.Run(ctx) }()
+	<-dw2.Initial()
+	if _, ok := dw2.InitialState()["foo"]; ok {
+		t.Fatal("watcher 2 unexpectedly adopted foo while watcher 1 owns it")
+	}
+
+	// The owning Service disappears. Watcher 2 receives no informer event for
+	// this (selector mismatch) - only the registry release can wake it.
+	err := clientset.CoreV1().Services("ns-a").Delete(ctx, "foo", metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("deleting Service: %v", err)
+	}
+
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case u := <-dw2.Changes():
+			if u.Name == "foo" && u.Endpoints != nil {
+				if len(u.Endpoints) != 1 || u.Endpoints[0].Host != "10.0.2.1" {
+					t.Fatalf("handed-off endpoints = %v, want ns-b's 10.0.2.1", u.Endpoints)
+				}
+
+				return // watcher 2 adopted the freed name
+			}
+		case <-deadline:
+			t.Fatal("watcher 2 never adopted the freed backend name; released names must notify suppressed sibling watchers")
+		}
+	}
+}

@@ -4059,3 +4059,109 @@ func TestFirstSubVCLDeliverStart_LineCommentSlashStarNotSkipped(t *testing.T) {
 		t.Errorf("offset %d does not start at 'sub vcl_deliver': %q", got, vcl[got:min(got+20, len(vcl))])
 	}
 }
+
+// TestDrainPrependedCommentsOutLateImportStd verifies the prepend injection
+// path neutralises a user "import std;" that appears after their vcl_deliver:
+// the drain sub needs an import at the top, and leaving the user's later
+// import active produces a duplicate ("Module std already imported"), so
+// every reload of such a template would fail to compile and roll back.
+func TestDrainPrependedCommentsOutLateImportStd(t *testing.T) {
+	t.Parallel()
+	// Layout that takes the prepend path: the first backend ends before the
+	// user's vcl_deliver and another backend follows it; the user's only
+	// "import std;" sits after vcl_deliver.
+	tmpl := `vcl 4.1;
+
+backend first {
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+sub vcl_deliver {
+  set resp.http.X-Test = "1";
+}
+
+import std;
+
+backend second {
+  .host = "127.0.0.2";
+  .port = "8080";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	activeImports := 0
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.TrimSpace(line) == "import std;" {
+			activeImports++
+		}
+	}
+	if activeImports != 1 {
+		t.Fatalf("expected exactly 1 active \"import std;\", got %d (duplicate imports fail VCL compilation):\n%s", activeImports, out)
+	}
+	if !strings.Contains(out, "backend drain_flag {") {
+		t.Error("expected drain backend declaration")
+	}
+}
+
+// TestDrainPrependedIgnoresVersionTokenAfterDeliver verifies the injected
+// "import std;" lands before the drain sub even when the template has no top
+// version line but contains a "vcl X.Y;"-looking token later (e.g. in a
+// trailing comment): splicing at that token's offset would place the import
+// after the sub that calls std.healthy, failing VCL compilation.
+func TestDrainPrependedIgnoresVersionTokenAfterDeliver(t *testing.T) {
+	t.Parallel()
+	// No top version line; the prepend path is taken (first backend before
+	// the user's vcl_deliver, another backend after); a version-like token
+	// sits at line start inside a trailing comment, far enough after the sub
+	// that splicing at its raw offset cannot be masked by the length of the
+	// injected drain blocks.
+	padding := strings.Repeat("// padding comment line\n", 200)
+	tmpl := `backend first {
+  .host = "127.0.0.1";
+  .port = "8080";
+}
+
+sub vcl_deliver {
+  set resp.http.X-Test = "1";
+}
+
+` + padding + `/*
+vcl 4.0;
+*/
+backend second {
+  .host = "127.0.0.2";
+  .port = "8080";
+}
+`
+	path := writeTempTemplate(t, tmpl)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r.SetDrainBackend("drain_flag")
+
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	importIdx := strings.Index(out, "import std;")
+	deliverIdx := strings.Index(out, "sub vcl_deliver")
+	if importIdx < 0 {
+		t.Fatal("expected an injected import std;")
+	}
+	if importIdx > deliverIdx {
+		t.Fatalf("import std; at %d appears after the drain sub at %d - the VCL cannot compile:\n%s", importIdx, deliverIdx, out)
+	}
+}

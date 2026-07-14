@@ -1162,7 +1162,13 @@ func TestRunNamedPortDisappears(t *testing.T) {
 	}
 }
 
-func TestRunIPv4AndIPv6SlicesCoexist(t *testing.T) {
+// TestRunDualStackServesSingleFamily verifies a dual-stack Service - one
+// EndpointSlice per address family, listing the same pod in both - yields
+// each pod exactly once (IPv4 preferred). Without single-family selection the
+// pod appears twice with an identical endpoint Name and different addresses,
+// which breaks templates that key VCL backends on .Name (duplicate backend
+// declarations fail to compile) and doubles broadcast fan-out targets.
+func TestRunDualStackServesSingleFamily(t *testing.T) {
 	t.Parallel()
 	ipv4Slice := makeEndpointSlice("svc-ipv4",
 		discoveryv1.AddressTypeIPv4,
@@ -1183,7 +1189,7 @@ func TestRunIPv4AndIPv6SlicesCoexist(t *testing.T) {
 			{
 				Addresses:  []string{"fd00::1"},
 				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
-				TargetRef:  &corev1.ObjectReference{Name: "pod-a-v6"},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
 			},
 		},
 		[]discoveryv1.EndpointPort{
@@ -1197,16 +1203,46 @@ func TestRunIPv4AndIPv6SlicesCoexist(t *testing.T) {
 	go func() { _ = w.Run(ctx) }()
 
 	eps := readChanges(t, w)
-	if len(eps) != 2 {
-		t.Fatalf("expected 2 endpoints (IPv4 + IPv6), got %d: %v", len(eps), eps)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint for a dual-stack pod, got %d: %v", len(eps), eps)
 	}
-
-	// Endpoints are sorted by IP; "10.0.0.1" < "fd00::1".
 	if eps[0].Host != "10.0.0.1" {
-		t.Errorf("eps[0].Host = %q, want 10.0.0.1", eps[0].Host)
+		t.Errorf("Host = %q, want the IPv4 address 10.0.0.1 (IPv4 preferred)", eps[0].Host)
 	}
-	if eps[1].Host != "fd00::1" {
-		t.Errorf("eps[1].Host = %q, want fd00::1", eps[1].Host)
+	if eps[0].Name != "pod-a" {
+		t.Errorf("Name = %q, want pod-a", eps[0].Name)
+	}
+}
+
+// TestRunIPv6OnlyServed verifies IPv6-only Services still work: the IPv4
+// preference must not drop IPv6 slices when no IPv4 slice exists.
+func TestRunIPv6OnlyServed(t *testing.T) {
+	t.Parallel()
+	ipv6Slice := makeEndpointSlice("svc-ipv6",
+		discoveryv1.AddressTypeIPv6,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"fd00::1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(ipv6Slice)
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d: %v", len(eps), eps)
+	}
+	if eps[0].Host != "fd00::1" {
+		t.Errorf("Host = %q, want fd00::1", eps[0].Host)
 	}
 }
 
