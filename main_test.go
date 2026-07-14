@@ -7680,6 +7680,52 @@ func TestRunLoop_ServerErrorWaitsForVarnishdAfterSIGKILL(t *testing.T) {
 	}
 }
 
+// TestRunLoop_ShutdownTimeoutZeroWaitsIndefinitely verifies that
+// --shutdown-timeout=0 means "wait indefinitely for varnishd" on the signal
+// shutdown path. [time.After] with 0 fires immediately, so without the
+// afterOrNever guard the loop escalated to SIGKILL right after SIGTERM -
+// silently defeating the graceful shutdown the zero value is documented to
+// provide.
+func TestRunLoop_ShutdownTimeoutZeroWaitsIndefinitely(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.shutdownTimeout = 0
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+
+	// Wait until the loop has forwarded SIGTERM and is waiting on mgr.Done().
+	waitForForwardedSignal(t, h.mgr)
+
+	// Give the buggy immediate time.After(0) escalation ample time to fire,
+	// then assert varnishd was never SIGKILLed while still running.
+	time.Sleep(100 * time.Millisecond)
+	for _, s := range h.mgr.getForwardedSigs() {
+		if s == syscall.SIGKILL {
+			t.Fatal("varnishd was SIGKILLed despite --shutdown-timeout=0 (documented as: wait indefinitely)")
+		}
+	}
+	if got := int(code.Load()); got != -1 {
+		t.Fatalf("runLoop returned (code %d) instead of waiting indefinitely for varnishd", got)
+	}
+
+	// varnishd exits on its own; the loop must then return cleanly.
+	close(h.mgr.done)
+	<-done
+	if got := int(code.Load()); got != 0 {
+		t.Fatalf("expected exit code 0, got %d", got)
+	}
+}
+
 // TestLoadInitialTLSCertsKillsVarnishdOnFailure verifies a failed initial
 // certificate load does not leave the already-started varnishd running: this
 // is the only exit path between mgr.Start and runLoop, and without the

@@ -1955,7 +1955,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			lc.mgr.ForwardSignal(syscall.SIGTERM)
 			select {
 			case <-lc.mgr.Done():
-			case <-time.After(lc.shutdownTimeout):
+			case <-afterOrNever(lc.shutdownTimeout):
 				slog.Warn("varnishd did not exit in time, forcing")
 				lc.mgr.ForwardSignal(syscall.SIGKILL)
 				// SIGKILL cannot be ignored; wait so varnishd is reaped
@@ -1978,7 +1978,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			lc.mgr.ForwardSignal(syscall.SIGTERM)
 			select {
 			case <-lc.mgr.Done():
-			case <-time.After(lc.shutdownTimeout):
+			case <-afterOrNever(lc.shutdownTimeout):
 				slog.Warn("varnishd did not exit in time, forcing")
 				lc.mgr.ForwardSignal(syscall.SIGKILL)
 				// SIGKILL cannot be ignored; wait so varnishd is reaped
@@ -2016,7 +2016,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 
 			select {
 			case <-lc.mgr.Done():
-			case <-time.After(lc.shutdownTimeout):
+			case <-afterOrNever(lc.shutdownTimeout):
 				slog.Warn("varnishd did not exit in time, forcing")
 				lc.mgr.ForwardSignal(syscall.SIGKILL)
 				// SIGKILL cannot be ignored. Wait for the exit so the Err()
@@ -2355,6 +2355,18 @@ func timerChan(t *time.Timer) <-chan time.Time {
 	}
 
 	return t.C
+}
+
+// afterOrNever returns a channel that fires after d, or nil (never selected)
+// when d <= 0: --shutdown-timeout=0 means "wait indefinitely for varnishd",
+// and [time.After] with 0 would instead fire immediately - escalating to
+// SIGKILL right after SIGTERM and silently defeating the graceful shutdown.
+func afterOrNever(d time.Duration) <-chan time.Time {
+	if d <= 0 {
+		return nil
+	}
+
+	return time.After(d)
 }
 
 // appendUnique appends s to the slice only if it is not already present.

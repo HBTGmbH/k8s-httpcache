@@ -986,7 +986,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			&cli.DurationFlag{
 				Name:        "shutdown-timeout",
 				Category:    catTiming,
-				Usage:       "Time to wait for varnishd to exit before sending SIGKILL",
+				Usage:       "Time to wait for varnishd to exit before sending SIGKILL (0 = wait indefinitely)",
 				Value:       30 * time.Second,
 				Destination: &c.ShutdownTimeout,
 			},
