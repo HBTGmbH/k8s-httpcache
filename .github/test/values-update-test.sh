@@ -80,23 +80,37 @@ fi
 # --- Assert metrics increased ------------------------------------------------
 
 after_values=$(metric_value 'k8s_httpcache_values_updates_total{configmap="test"}')
-after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
-echo "After: values_updates=$after_values reloads=$after_reloads"
+echo "After: values_updates=$after_values"
 
 values_delta=$((after_values - before_values))
-reloads_delta=$((after_reloads - before_reloads))
-
 if [ "$values_delta" -le 0 ]; then
   echo "FAIL: values_updates_total did not increase (delta=$values_delta)"
   exit 1
 fi
 echo "PASS: values_updates_total increased (delta=$values_delta)"
 
+# The VCL reload is debounced (--debounce=2s) and the X-Values-Test header is
+# served through the ingress (load-balanced across all replicas), so the header
+# can flip before the reload counter on the single port-forwarded pod moves.
+# That pod received the values event (values_updates_total above), so it will
+# reload shortly - poll instead of reading the counter once.
+echo "--- Waiting for vcl_reloads_total to increase (up to 15s) ---"
+reloads_delta=0
+for i in $(seq 1 15); do
+  after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
+  reloads_delta=$((after_reloads - before_reloads))
+  if [ "$reloads_delta" -gt 0 ]; then
+    echo "PASS: vcl_reloads_total{result=success} increased (delta=$reloads_delta, attempt $i)"
+    break
+  fi
+  echo "Attempt $i: reloads=$after_reloads (delta=$reloads_delta), retrying..."
+  sleep 1
+done
+
 if [ "$reloads_delta" -le 0 ]; then
   echo "FAIL: vcl_reloads_total{result=success} did not increase (delta=$reloads_delta)"
   exit 1
 fi
-echo "PASS: vcl_reloads_total{result=success} increased (delta=$reloads_delta)"
 
 # --- Restore original value --------------------------------------------------
 
