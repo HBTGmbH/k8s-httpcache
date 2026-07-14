@@ -28,12 +28,15 @@ if [ "$elapsed" -lt 15 ]; then
 fi
 echo "PASS: pod took >= 15s to terminate (drain-delay honoured)"
 
-# drain-delay (15s) + drain-timeout (30s) = 45s max; add margin for scheduling.
-if [ "$elapsed" -gt 60 ]; then
-  echo "FAIL: pod took ${elapsed}s to terminate (expected < 60s)"
+# Upper bound: drain-delay (15s) + drain-timeout (30s) = 45s worst case, plus
+# generous margin for API/kubelet latency on a loaded runner - this is a
+# wall-clock ceiling, so keep it loose. It still detects a hung drain, which
+# would run to the 120s termination grace period before the kubelet SIGKILLs.
+if [ "$elapsed" -gt 90 ]; then
+  echo "FAIL: pod took ${elapsed}s to terminate (expected < 90s)"
   exit 1
 fi
-echo "PASS: pod terminated within 60s (drain-delay + drain-timeout + margin)"
+echo "PASS: pod terminated within 90s (drain-delay + drain-timeout + margin)"
 
 # --- Wait for deployment to recover ------------------------------------------
 

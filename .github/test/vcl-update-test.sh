@@ -139,9 +139,22 @@ for i in $(seq 1 120); do
   sleep 1
 done
 
-# Wait for retries to complete (3 retries × 1s interval + margin).
-echo "--- Waiting 10s for retries to complete ---"
-sleep 10
+# Wait for the retry/rollback sequence to complete. The sequence only starts
+# after the reload debounce fires, then runs 3 retries at 1s intervals plus
+# reload execution - poll for the rollback (the LAST event in the chain, so
+# the error and retry counters have necessarily moved by then) instead of
+# guessing a fixed sleep that a loaded runner can exceed.
+echo "--- Waiting for rollback (up to 30s) ---"
+rollbacks_delta=0
+for i in $(seq 1 30); do
+  after_rollbacks=$(metric_value 'k8s_httpcache_vcl_rollbacks_total ')
+  rollbacks_delta=$((after_rollbacks - before_rollbacks))
+  if [ "$rollbacks_delta" -gt 0 ]; then
+    echo "Rollback observed after ${i}s"
+    break
+  fi
+  sleep 1
+done
 
 after_errors=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="error"}')
 after_retries=$(metric_value 'k8s_httpcache_vcl_reload_retries_total ')

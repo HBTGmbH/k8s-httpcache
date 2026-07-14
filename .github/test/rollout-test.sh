@@ -11,7 +11,23 @@ sleep 3
 kubectl rollout restart deployment/k8s-httpcache
 kubectl rollout status deployment/k8s-httpcache --timeout=120s
 echo "Wait until all pods have successfully terminated to check for any aborted requests or connections..."
-while kubectl get pods -l app=k8s-httpcache | grep -q Terminating; do sleep 1; done
+# Bounded: a pod wedged in Terminating would otherwise hang this script until
+# the CI job timeout with no diagnostic. 180s covers the 120s termination
+# grace period plus kubelet cleanup.
+terminated=false
+for _ in $(seq 1 180); do
+  if ! kubectl get pods -l app=k8s-httpcache | grep -q Terminating; then
+    terminated=true
+    break
+  fi
+  sleep 1
+done
+if [ "$terminated" != "true" ]; then
+  kill -INT $OHA_PID 2>/dev/null || true
+  echo "FAIL: pods still Terminating after 180s"
+  kubectl get pods -l app=k8s-httpcache
+  exit 1
+fi
 
 kill -INT $OHA_PID
 wait $OHA_PID || true

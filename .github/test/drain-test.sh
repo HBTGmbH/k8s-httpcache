@@ -7,13 +7,30 @@ set -eu
 
 # --- Port-forward setup -----------------------------------------------------
 
-pf_pids=""
-cleanup() { kill "$pf_pids" 2>/dev/null || true; }
+pf_pid=""
+cleanup() { kill "$pf_pid" 2>/dev/null || true; }
 trap cleanup EXIT
 
 pod=$(kubectl get pods -l app=k8s-httpcache --no-headers | awk '$3 == "Running" {print $1; exit}')
-kubectl port-forward "$pod" 8081:8080 >/dev/null &
-pf_pids="$pf_pids $!"
+
+start_pf() {
+  kubectl port-forward "$pod" 8081:8080 >/dev/null 2>&1 &
+  pf_pid=$!
+}
+
+# ensure_pf restarts the port-forward if its process died: the kubelet can
+# close forwarding streams once the pod starts Terminating, and a dead
+# forward would fail every remaining retry even though the draining pod is
+# still alive and serving for the whole drain-delay window.
+ensure_pf() {
+  if ! kill -0 "$pf_pid" 2>/dev/null; then
+    echo "  (port-forward died, restarting)"
+    start_pf
+    sleep 1
+  fi
+}
+
+start_pf
 
 for _ in $(seq 1 30); do
   curl -sf http://localhost:8081/backend/ >/dev/null 2>&1 && break
@@ -40,6 +57,7 @@ sleep 2
 
 found=false
 for i in $(seq 1 10); do
+  ensure_pf
   conn=$(curl -sf -D- -o /dev/null http://localhost:8081/backend/ 2>/dev/null |
     grep -i '^connection:' | tr -d '\r' | awk '{print tolower($2)}' || true)
   if [ "$conn" = "close" ]; then

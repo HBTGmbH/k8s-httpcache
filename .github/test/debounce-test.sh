@@ -56,24 +56,33 @@ echo "Before: events=$before_events fires=$before_fires latency_count=$before_la
 kubectl scale deployment/backend --replicas=5
 kubectl rollout status deployment/backend --timeout=60s
 
-# Wait for debounce timer to fire and reload to complete.
+# Wait for the debounce timer to fire and the reload to complete.
 # EndpointSlice events may keep arriving after rollout status reports
 # Ready (Kubernetes reconciliation), so the first debounce fire may
-# render VCL with the same hash (skipped).  Allow enough time for a
-# second debounce cycle to pick up the final endpoint state.
-sleep 6
-
-after_events=$(metric_value 'k8s_httpcache_debounce_events_total{group="backend"}')
-after_fires=$(metric_value 'k8s_httpcache_debounce_fires_total{group="backend"}')
-after_latency=$(metric_value 'k8s_httpcache_debounce_latency_seconds_count{group="backend"}')
-after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
+# render VCL with the same hash (skipped) and a second debounce cycle
+# is needed. Poll instead of sleeping a fixed interval: a loaded runner
+# can stretch two 2s debounce cycles + reload execution well past any
+# fixed guess (a single-read variant of this assertion flaked in CI).
+echo "--- Waiting for debounced reload (up to 30s) ---"
+events_delta=0 fires_delta=0 latency_delta=0 reloads_delta=0
+for i in $(seq 1 30); do
+  after_events=$(metric_value 'k8s_httpcache_debounce_events_total{group="backend"}')
+  after_fires=$(metric_value 'k8s_httpcache_debounce_fires_total{group="backend"}')
+  after_latency=$(metric_value 'k8s_httpcache_debounce_latency_seconds_count{group="backend"}')
+  after_reloads=$(metric_value 'k8s_httpcache_vcl_reloads_total{result="success"}')
+  events_delta=$((after_events - before_events))
+  fires_delta=$((after_fires - before_fires))
+  latency_delta=$((after_latency - before_latency))
+  reloads_delta=$((after_reloads - before_reloads))
+  if [ "$events_delta" -gt 0 ] && [ "$fires_delta" -gt 0 ] &&
+    [ "$latency_delta" -gt 0 ] && [ "$reloads_delta" -gt 0 ]; then
+    echo "All deltas positive after ${i}s"
+    break
+  fi
+  sleep 1
+done
 
 echo "After:  events=$after_events fires=$after_fires latency_count=$after_latency reloads=$after_reloads"
-
-events_delta=$((after_events - before_events))
-fires_delta=$((after_fires - before_fires))
-latency_delta=$((after_latency - before_latency))
-reloads_delta=$((after_reloads - before_reloads))
 
 # Events received must have increased.
 if [ "$events_delta" -le 0 ]; then
@@ -122,20 +131,37 @@ echo "--- Part 2: debounce-max enforcement ---"
 before_max=$(metric_value 'k8s_httpcache_debounce_max_enforcements_total{group="backend"}')
 echo "Before: max_enforcements=$before_max"
 
-# Rapid ConfigMap patches: 16 × 0.5s = 8s of sustained activity (> 5s max).
-for i in $(seq 1 16); do
-  kubectl patch configmap k8s-httpcache-values-test \
-    --type merge -p "{\"data\":{\"debounce-test\":\"$i\"}}" >/dev/null
-  sleep 0.5
+# The burst must keep events arriving with no 2s quiet gap for longer than
+# the 5s max deadline. Each kubectl patch adds its own API round-trip to the
+# 0.5s cadence, and one slow patch (a starved runner or API server) opens a
+# quiet gap that lets the debounce fire normally - so the burst is retried
+# once before declaring failure. A broken debounce-max fails both bursts.
+max_delta=0
+for attempt in 1 2; do
+  echo "--- Burst attempt $attempt: 16 patches at 0.5s cadence ---"
+  for i in $(seq 1 16); do
+    kubectl patch configmap k8s-httpcache-values-test \
+      --type merge -p "{\"data\":{\"debounce-test\":\"$attempt-$i\"}}" >/dev/null
+    sleep 0.5
+  done
+
+  # Poll for the enforcement instead of a single fixed-sleep read.
+  for i in $(seq 1 10); do
+    after_max=$(metric_value 'k8s_httpcache_debounce_max_enforcements_total{group="backend"}')
+    max_delta=$((after_max - before_max))
+    if [ "$max_delta" -gt 0 ]; then
+      break
+    fi
+    sleep 1
+  done
+  echo "After attempt $attempt: max_enforcements=$after_max (delta=$max_delta)"
+
+  if [ "$max_delta" -gt 0 ]; then
+    break
+  fi
+  echo "No enforcement observed; the burst may have had a quiet gap - retrying"
 done
 
-# Wait for debounce-max to force the reload.
-sleep 4
-
-after_max=$(metric_value 'k8s_httpcache_debounce_max_enforcements_total{group="backend"}')
-echo "After:  max_enforcements=$after_max"
-
-max_delta=$((after_max - before_max))
 if [ "$max_delta" -le 0 ]; then
   echo "FAIL: debounce_max_enforcements_total did not increase (delta=$max_delta)"
   exit 1
