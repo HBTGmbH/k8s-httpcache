@@ -2357,3 +2357,104 @@ func TestVarnishstatCollectorNestedSchemaOnVarnish6(t *testing.T) {
 		t.Errorf("varnish_main_cache_hit = %v, want 42", got)
 	}
 }
+
+// TestResolveMetricDerivedIdentPreservesCase pins the ident case fix: when
+// the JSON carries no per-counter "ident" field, the ident derived from the
+// counter name was lowercased - so the same counter produced label value
+// "transient" on one schema and "Transient" on the other, splitting series
+// across Varnish versions.
+func TestResolveMetricDerivedIdentPreservesCase(t *testing.T) {
+	t.Parallel()
+	var keyBuf, valBuf [3]string
+	_, _, keys, vals := resolveMetric("SMA.Transient.g_alloc", "sma", "", "Allocs", keyBuf[:0], valBuf[:0])
+	if len(keys) == 0 || len(vals) == 0 {
+		t.Fatalf("expected labels, got keys=%v vals=%v", keys, vals)
+	}
+	if vals[0] != "Transient" {
+		t.Errorf("derived ident label = %q, want %q (case preserved, matching the provided-ident path)", vals[0], "Transient")
+	}
+}
+
+// TestParseBackendIdentIPv6Bracketed pins the IPv6 server-label fix: the raw
+// ",," -> ":" substitution produced "2001:db8::1:8080", indistinguishable
+// from a longer bare address; the host must be bracketed.
+func TestParseBackendIdentIPv6Bracketed(t *testing.T) {
+	t.Parallel()
+	backend, server := parseBackendIdent("boot.web(2001:db8::1,,8080)")
+	if backend != "web" {
+		t.Errorf("backend = %q, want web", backend)
+	}
+	if server != "[2001:db8::1]:8080" {
+		t.Errorf("server = %q, want %q", server, "[2001:db8::1]:8080")
+	}
+	// IPv4 stays in host:port form.
+	_, server4 := parseBackendIdent("boot.web(10.0.0.1,,80)")
+	if server4 != "10.0.0.1:80" {
+		t.Errorf("IPv4 server = %q, want %q", server4, "10.0.0.1:80")
+	}
+}
+
+// TestCollectForeignVCLGenerationsNoDuplicateSamples pins the per-scrape
+// dedup fix: a manually loaded VCL (e.g. varnishreload's reload_<ts> naming)
+// coexisting with boot produces two counters that normalize to identical
+// (name, labels) - and duplicate samples make the ENTIRE /metrics scrape fail
+// with HTTP 500. The collector must emit the first and drop the duplicate.
+func TestCollectForeignVCLGenerationsNoDuplicateSamples(t *testing.T) {
+	t.Parallel()
+	out := `{"version":1,"counters":{
+		"VBE.boot.web(1.2.3.4,,80).bereq_hdrbytes": {"value": 10, "flag": "c", "description": "d", "ident": "boot.web(1.2.3.4,,80)"},
+		"VBE.reload_20240101_120000.web(1.2.3.4,,80).bereq_hdrbytes": {"value": 20, "flag": "c", "description": "d", "ident": "reload_20240101_120000.web(1.2.3.4,,80)"}
+	}}`
+	c := NewVarnishstatCollector(func() (string, int, error) { return out, 7, nil }, nil)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather failed on duplicate samples (whole /metrics scrape would 500): %v", err)
+	}
+	for _, f := range fams {
+		if f.GetName() == "varnish_backend_bereq_hdrbytes" && len(f.GetMetric()) != 1 {
+			t.Errorf("expected exactly 1 deduped series, got %d", len(f.GetMetric()))
+		}
+	}
+}
+
+// TestCollectDescCacheSelfHeals pins the descCache poisoning fix: one scrape
+// whose counter resolves a metric name with anomalous label cardinality used
+// to cache that desc forever, silently dropping every later well-formed
+// counter for that name until process restart. The cache entry must be
+// evicted on a cardinality mismatch so the next scrape recovers.
+func TestCollectDescCacheSelfHeals(t *testing.T) {
+	t.Parallel()
+	malformed := `{"version":1,"counters":{"MAIN.sess_conn": {"value": 1, "flag": "c", "ident": "weird", "description": "d"}}}`
+	wellFormed := `{"version":1,"counters":{"MAIN.sess_conn": {"value": 2, "flag": "c", "description": "d"}}}`
+	outputs := []string{malformed, wellFormed, wellFormed}
+	i := 0
+	c := NewVarnishstatCollector(func() (string, int, error) {
+		out := outputs[i]
+		if i < len(outputs)-1 {
+			i++
+		}
+
+		return out, 7, nil
+	}, nil)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	_, _ = reg.Gather()       // scrape 1: malformed, poisons the cache
+	_, _ = reg.Gather()       // scrape 2: well-formed, dropped, must evict the bad desc
+	fams, err := reg.Gather() // scrape 3: must deliver varnish_main_sessions again
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	found := false
+	for _, f := range fams {
+		if f.GetName() == "varnish_main_sessions" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("varnish_main_sessions permanently lost after one malformed scrape (descCache poisoned)")
+	}
+}

@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"cmp"
+	"net"
 	"regexp"
 	"slices"
 	"strconv"
@@ -134,6 +135,10 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 	// Stack-allocated label buffers reused each iteration.
 	var keyBuf, valBuf [3]string
 
+	// Series already emitted this scrape, for the duplicate-sample dedup in
+	// emitOnce.
+	seen := make(map[string]struct{}, len(counters))
+
 	for name, counter := range counters {
 		if isStaleBackendCounter(name, latestReload) {
 			continue
@@ -171,24 +176,41 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 			if parseErr == nil && parsed&1 != 0 {
 				upValue = 1.0
 			}
-			c.emit(ch, c.cachedDesc("varnish_backend_up", "Whether the backend is healthy according to the latest probe", labelKeys), prometheus.GaugeValue, upValue, labelValues)
+			c.emitOnce(ch, seen, "varnish_backend_up", "Whether the backend is healthy according to the latest probe", labelKeys, prometheus.GaugeValue, upValue, labelValues)
 
 			continue
 		}
 
-		c.emit(ch, c.cachedDesc(metricName, desc, labelKeys), valueType, counter.Value, labelValues)
+		c.emitOnce(ch, seen, metricName, desc, labelKeys, valueType, counter.Value, labelValues)
 	}
 }
 
-// emit builds a const metric and sends it on ch, skipping it if construction
-// fails. Using the non-panicking NewConstMetric keeps a scrape robust: a counter
-// that disagrees with a cached desc's label cardinality (or yields an invalid
-// metric name) is dropped rather than crashing the whole Collect call. The first
-// counter seen for a metric name caches its desc, so well-formed varnishstat
-// output is unaffected.
-func (*VarnishstatCollector) emit(ch chan<- prometheus.Metric, desc *prometheus.Desc, valueType prometheus.ValueType, value float64, labelValues []string) {
-	m, err := prometheus.NewConstMetric(desc, valueType, value, labelValues...)
+// emitOnce resolves the cached desc for name, drops duplicates of an already
+// emitted (name, labelValues) series within this scrape, and self-heals the
+// desc cache on label-cardinality mismatches.
+//
+// The dedup matters because duplicate samples fail the ENTIRE registry Gather
+// (HTTP 500 on /metrics): a foreign-named VCL generation coexisting with the
+// controller's (e.g. a manual varnishreload names VCLs reload_<ts>, which the
+// kv_reload_-only staleness filter cannot order) yields the same backend under
+// two generations, normalizing to identical labels. First occurrence wins.
+//
+// Using the non-panicking NewConstMetric keeps a scrape robust: a counter that
+// disagrees with the cached desc's label cardinality is dropped rather than
+// crashing Collect - but the cache entry is ALSO evicted, because keeping it
+// would pin the anomalous label keys for this metric name forever, silently
+// dropping every later well-formed counter until process restart.
+func (c *VarnishstatCollector) emitOnce(ch chan<- prometheus.Metric, seen map[string]struct{}, name, help string, labelKeys []string, valueType prometheus.ValueType, value float64, labelValues []string) {
+	key := name + "\x00" + strings.Join(labelValues, "\x00")
+	if _, dup := seen[key]; dup {
+		return
+	}
+	seen[key] = struct{}{}
+
+	m, err := prometheus.NewConstMetric(c.cachedDesc(name, help, labelKeys), valueType, value, labelValues...)
 	if err != nil {
+		delete(c.descCache, name)
+
 		return
 	}
 	ch <- m
@@ -361,7 +383,14 @@ func parseBackendIdent(ident string) (string, string) {
 	// Parenthesized: name(ip,,port) - most common format.
 	if paren := strings.LastIndexByte(ident, '('); paren >= 0 &&
 		len(ident) > paren+1 && ident[len(ident)-1] == ')' {
-		addr := strings.Replace(ident[paren+1:len(ident)-1], ",,", ":", 1)
+		inner := ident[paren+1 : len(ident)-1]
+		addr := inner
+		if host, port, ok := strings.Cut(inner, ",,"); ok {
+			// JoinHostPort brackets IPv6 hosts. A raw ",," -> ":" splice
+			// produced "2001:db8::1:8080" - indistinguishable from a longer
+			// bare address.
+			addr = net.JoinHostPort(host, port)
+		}
 
 		return normalizeBackendName(ident[:paren]), addr
 	}
@@ -506,9 +535,12 @@ func resolveMetric(counterName, group, ident, help string, keysBuf, valsBuf []st
 
 	// When the JSON lacks an ident field, derive it from the counter name.
 	// Counters with more than one dot have the pattern "<group>.<ident>.<stat>".
+	// The derived ident keeps its original case: lowercasing here would make
+	// the same counter produce different label values depending on whether
+	// the schema carried an ident field (which is used verbatim).
 	if ident == "" {
 		if lastDot := strings.LastIndex(suffix, "."); lastDot > 0 {
-			ident = toLowerASCII(suffix[:lastDot])
+			ident = suffix[:lastDot]
 		}
 	}
 

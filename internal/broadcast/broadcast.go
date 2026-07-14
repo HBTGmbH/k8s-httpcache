@@ -377,7 +377,14 @@ func (s *Server) forward(origReq *http.Request, fe *watcher.Frontend, body []byt
 		RawQuery: origReq.URL.RawQuery,
 	}
 
-	ctx := origReq.Context()
+	// Detach the fan-out from the client's cancellation (values are kept): a
+	// client disconnect or client-side timeout mid-fan-out must not abort the
+	// in-flight pod requests - that would leave a PURGE/BAN partially applied
+	// across the fleet (some pods purged, others still serving the stale
+	// object) and misattribute the abort to the pod as a transport error.
+	// Once started, a broadcast completes fleet-wide; each pod request stays
+	// bounded by the client's Timeout.
+	ctx := context.WithoutCancel(origReq.Context())
 	req, err := http.NewRequestWithContext(ctx, origReq.Method, target.String(), http.NoBody)
 	if err != nil {
 		return PodResult{Status: 0, Body: fmt.Sprintf("request error: %v", err)}

@@ -40,7 +40,25 @@ func (r *mockRunner) run(name string, args []string) (string, error) {
 	r.calls = append(r.calls, append([]string{name}, args...))
 	r.mu.Unlock()
 
+	if strings.HasSuffix(name, "varnishadm") {
+		// Normalize only varnishadm calls so test runFns keep dispatching on
+		// args[0] as the CLI command regardless of which option pairs adm()
+		// prepends; varnishstat args are asserted verbatim by other tests.
+		args = stripAdmOptions(args)
+	}
+
 	return r.runFn(name, args)
+}
+
+// stripAdmOptions removes leading varnishadm option pairs (-n <dir>, -t <sec>).
+// The raw args (with options) remain visible via r.calls for tests that
+// assert them.
+func stripAdmOptions(args []string) []string {
+	for len(args) >= 2 && (args[0] == "-n" || args[0] == "-t") {
+		args = args[2:]
+	}
+
+	return args
 }
 
 type mockProc struct {
@@ -1834,11 +1852,23 @@ func TestAdmArgsWithWorkDir(t *testing.T) {
 
 	_ = m.Reload("/tmp/test.vcl")
 
-	if len(gotArgs) < 3 {
-		t.Fatalf("expected at least 3 args, got %v", gotArgs)
+	// Assert on the raw recorded calls: the mock hands runFn normalized args
+	// (adm option pairs stripped), so the -n option is only visible there.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var raw []string
+	for _, c := range r.calls {
+		if slices.Contains(c, "vcl.load") {
+			raw = c[1:]
+
+			break
+		}
 	}
-	if gotArgs[0] != "-n" || gotArgs[1] != "/var/lib/varnish/myinst" {
-		t.Errorf("expected args to start with [-n /var/lib/varnish/myinst], got %v", gotArgs[:2])
+	if len(raw) < 3 {
+		t.Fatalf("expected a vcl.load call with at least 3 args, got calls %v", r.calls)
+	}
+	if raw[0] != "-n" || raw[1] != "/var/lib/varnish/myinst" {
+		t.Errorf("expected args to start with [-n /var/lib/varnish/myinst], got %v", raw[:2])
 	}
 	if !slices.Contains(gotArgs, "vcl.load") {
 		t.Errorf("expected args to contain vcl.load, got %v", gotArgs)
@@ -3528,12 +3558,7 @@ func TestAdmWithWorkDirRedacts(t *testing.T) {
 	const secret = "workdir-secret-token"
 
 	r := &mockRunner{
-		runFn: func(_ string, args []string) (string, error) {
-			// Verify -n was prepended.
-			if !slices.Contains(args, "-n") {
-				return "", errors.New("expected -n flag")
-			}
-
+		runFn: func(_ string, _ []string) (string, error) {
 			return "response with " + secret + " inside", nil
 		},
 	}
@@ -5261,5 +5286,158 @@ func TestNCSAWritersFlushedBetweenProcesses(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "ncsa: ") {
 		t.Errorf("flushed line lost its prefix: %q", got)
+	}
+}
+
+// TestAdmPassesCLITimeout pins the fix for the missing varnishadm -t flag:
+// Varnish 7.0+ varnishadm defaults to a 5s CLI response timeout, so a
+// vcl.load whose compile takes longer fails every reload (and every retry)
+// even though defaultCLITimeout (60s) was chosen to accommodate large
+// compiles. adm() must forward that budget to varnishadm via -t.
+func TestAdmPassesCLITimeout(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{runFn: func(string, []string) (string, error) { return "", nil }}
+	m := newTestManager(r)
+
+	err := m.MarkBackendSick("web")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.calls) != 1 {
+		t.Fatalf("expected 1 varnishadm call, got %d", len(r.calls))
+	}
+	args := r.calls[0][1:] // strip binary name
+	found := false
+	for i, a := range args {
+		if a == "-t" && i+1 < len(args) {
+			found = true
+
+			break
+		}
+	}
+	if !found {
+		t.Errorf("varnishadm args missing -t CLI timeout: %v", args)
+	}
+}
+
+// TestPrefixWriterFlushTerminatesLine pins the flush-newline fix for the
+// prefix writer: after an ncsa crash the old incarnation's truncated final
+// line must be newline-terminated, or the restarted process's first line
+// merges into it.
+func TestPrefixWriterFlushTerminatesLine(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	pw := newPrefixWriter(&out, "[ncsa] ")
+	_, err := pw.Write([]byte("dying mid-line"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = pw.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "[ncsa] dying mid-line\n" {
+		t.Errorf("Flush output = %q, want %q", got, "[ncsa] dying mid-line\n")
+	}
+}
+
+// TestWaitForAdminHonorsDeadlineWithHungPing pins the overshoot fix: a wedged
+// varnishadm ping used to block waitForAdmin for the full CLI timeout (60s),
+// overshooting --admin-timeout by up to a minute; the deadline must now cut
+// the wait regardless of a hung subprocess.
+func TestWaitForAdminHonorsDeadlineWithHungPing(t *testing.T) {
+	t.Parallel()
+	pingReturned := make(chan struct{})
+	r := &mockRunner{runFn: func(string, []string) (string, error) {
+		time.Sleep(500 * time.Millisecond) // wedged admin socket
+		close(pingReturned)
+
+		return "", errors.New("hung")
+	}}
+	m := newTestManager(r)
+
+	start := time.Now()
+	err := m.waitForAdmin(100 * time.Millisecond)
+	elapsed := time.Since(start)
+	if !errors.Is(err, errAdminTimeout) {
+		t.Fatalf("expected errAdminTimeout, got %v", err)
+	}
+	if elapsed > 400*time.Millisecond {
+		t.Errorf("waitForAdmin took %v with a hung ping, want ~100ms (deadline must not wait for the subprocess)", elapsed)
+	}
+	// Drain the deliberately abandoned ping goroutine so goleak stays quiet;
+	// in production it is bounded by the subprocess CLI timeout.
+	<-pingReturned
+}
+
+// TestPrefixWriterFlushEmptyBufferNoOp covers Flush's empty-buffer early
+// return: no output and no fabricated newline when nothing is buffered.
+func TestPrefixWriterFlushEmptyBufferNoOp(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	pw := newPrefixWriter(&out, "[p] ")
+	if err := pw.Flush(); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("Flush on empty buffer emitted %q, want nothing", out.String())
+	}
+}
+
+// TestWaitForAdminVarnishdExitsDuringPing covers the done-during-ping select
+// branch: varnishd dying while a ping is in flight must surface the exit
+// error immediately instead of waiting for the ping or the deadline.
+func TestWaitForAdminVarnishdExitsDuringPing(t *testing.T) {
+	t.Parallel()
+	var entered sync.Once
+	enteredCh := make(chan struct{})
+	release := make(chan struct{})
+	r := &mockRunner{runFn: func(string, []string) (string, error) {
+		entered.Do(func() { close(enteredCh) })
+		<-release
+
+		return "", errors.New("never ready")
+	}}
+	m := newTestManager(r)
+	m.err = errors.New("varnishd crashed")
+
+	go func() {
+		<-enteredCh
+		close(m.done) // varnishd exits while the ping hangs
+	}()
+
+	start := time.Now()
+	err := m.waitForAdmin(10 * time.Second)
+	elapsed := time.Since(start)
+	close(release) // drain the abandoned ping goroutine for goleak
+
+	if err == nil || !strings.Contains(err.Error(), "varnishd exited") {
+		t.Fatalf("error = %v, want varnishd-exited", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("waitForAdmin took %v, want immediate return on varnishd exit", elapsed)
+	}
+}
+
+// TestWaitForAdminVarnishdAlreadyExited covers the pre-ping done check: when
+// varnishd has already exited before an iteration starts, waitForAdmin must
+// return the exit error without spawning a ping at all.
+func TestWaitForAdminVarnishdAlreadyExited(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{runFn: func(string, []string) (string, error) {
+		t.Error("ping must not run when varnishd already exited")
+
+		return "", nil
+	}}
+	m := newTestManager(r)
+	m.err = errors.New("crashed")
+	close(m.done)
+
+	err := m.waitForAdmin(5 * time.Second)
+	if err == nil || !strings.Contains(err.Error(), "varnishd exited") {
+		t.Fatalf("error = %v, want varnishd-exited", err)
 	}
 }

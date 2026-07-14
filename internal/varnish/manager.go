@@ -142,14 +142,17 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	return total, nil
 }
 
-// Flush emits any buffered partial line (prefixed). Called between
-// varnishncsa restarts and at shutdown so a process dying mid-line neither
-// loses its final output nor has the next process's first line appended to
-// its truncated one.
+// Flush emits any buffered partial line (prefixed and newline-terminated).
+// Called between varnishncsa restarts and at shutdown so a process dying
+// mid-line neither loses its final output nor has the next process's first
+// line appended to its truncated one - the terminating newline is what
+// actually prevents the merge (unlike flushOverlongLine, which flushes
+// MID-line and must not fabricate a line boundary in a continuing stream).
 func (w *prefixWriter) Flush() error {
 	if len(w.buf) == 0 {
 		return nil
 	}
+	w.buf = append(w.buf, '\n')
 
 	return w.flushOverlongLine()
 }
@@ -894,21 +897,42 @@ func (m *Manager) waitForAdmin(timeout time.Duration) error {
 		default:
 		}
 
-		_, err := m.adm("ping")
-		if err == nil {
-			return nil
+		// Run the ping asynchronously so a wedged varnishadm (hung admin
+		// socket) cannot overshoot the deadline by up to defaultCLITimeout:
+		// the deadline cuts the wait; the abandoned subprocess is bounded by
+		// its own CLI timeout and exits on its own.
+		pingDone := make(chan error, 1)
+		go func() {
+			_, err := m.adm("ping")
+			pingDone <- err
+		}()
+		select {
+		case err := <-pingDone:
+			if err == nil {
+				return nil
+			}
+			time.Sleep(250 * time.Millisecond)
+		case <-time.After(time.Until(deadline)):
+			return errAdminTimeout
+		case <-m.done:
+			return fmt.Errorf("varnishd exited before admin was ready: %w", m.err)
 		}
-		time.Sleep(250 * time.Millisecond)
 	}
 
 	return errAdminTimeout
 }
 
 func (m *Manager) adm(args ...string) (string, error) {
-	cmdArgs := make([]string, 0, len(args)+2)
+	cmdArgs := make([]string, 0, len(args)+4)
 	if m.workDir != "" {
 		cmdArgs = append(cmdArgs, "-n", m.workDir)
 	}
+	// Forward the CLI budget to varnishadm itself: without -t, varnishadm
+	// applies its own default response timeout (5s on Varnish 7.0+), which
+	// would fail any vcl.load whose VCC+cc compile takes longer - on every
+	// reload AND every retry - defeating the generous defaultCLITimeout
+	// chosen precisely for large compiles.
+	cmdArgs = append(cmdArgs, "-t", strconv.Itoa(int(defaultCLITimeout/time.Second)))
 	cmdArgs = append(cmdArgs, args...)
 
 	m.log.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)

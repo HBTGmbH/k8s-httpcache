@@ -602,13 +602,15 @@ affinity: {}
 # -- Topology spread constraints
 topologySpreadConstraints: []
 # -- Termination grace period in seconds. Must cover the WORST-CASE
-# sequential shutdown budget: drain.delay + drain.timeout +
-# broadcast drain (30s) + broadcast shutdown (5s) + varnishncsa stop (5s,
-# when access logging is enabled) + vcl shutdown-timeout (30s) + metrics
-# drain (5s), plus slack. The controller logs a warning at startup when its
-# configured budget exceeds this value (the kubelet would SIGKILL varnishd
-# mid-drain).
-terminationGracePeriodSeconds: 90
+# sequential shutdown budget: shutdown-timeout (30s) + drain.delay (15s) +
+# drain.timeout (0s) + broadcast drain (30s) + broadcast shutdown (5s) +
+# varnishncsa stop (5s, when access logging is enabled) + metrics drain
+# (= shutdown-timeout, 30s), plus slack. With chart defaults that budget is
+# 110s, so the default here is 130 (110 + 20s slack). The controller logs a
+# warning at startup when its configured budget exceeds this value (the
+# kubelet would SIGKILL varnishd mid-drain), and chart-contract-test.sh
+# recomputes the budget from the rendered flags.
+terminationGracePeriodSeconds: 130
 # -- Priority class name for pod scheduling priority
 priorityClassName: ""
 # -- Scheduler name for the pods

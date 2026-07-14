@@ -561,8 +561,8 @@ func TestRedactWriterFlushEmitsFinalPartialLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := buf.String(); got != "dying: "+placeholder {
-		t.Fatalf("flushed output = %q, want redacted final line", got)
+	if got := buf.String(); got != "dying: "+placeholder+"\n" {
+		t.Fatalf("flushed output = %q, want redacted, newline-terminated final line", got)
 	}
 }
 
@@ -679,5 +679,192 @@ func BenchmarkRedactWriterLineNoSecrets(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_, _ = w.Write(line)
+	}
+}
+
+// TestWriterOverflowFlushDoesNotSplitBorderedSecret pins the overflow-flush
+// fix: a COMPLETE single-line secret with a "border" (a proper prefix equal
+// to a proper suffix, e.g. "abcXabc") sitting at the overflow cut used to be
+// split - tailHold only held the border-length suffix, so the secret's head
+// was emitted unredacted and its tail flushed unredacted later, leaking the
+// whole secret across the cut and contradicting the writer's documented
+// "single-line secrets never straddle a flush boundary" guarantee.
+func TestWriterOverflowFlushDoesNotSplitBorderedSecret(t *testing.T) {
+	t.Parallel()
+
+	const secret = "abcSECRETabc" // border: "abc" (len 3)
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{"s": {"k": secret}})
+
+	var out bytes.Buffer
+	w, ok := r.Writer(&out).(interface {
+		io.Writer
+		Flush() error
+	})
+	if !ok {
+		t.Fatal("redacting writer must expose Flush")
+	}
+
+	// One giant newline-free write ending exactly with the complete secret,
+	// large enough to trigger the bounded-buffer overflow flush.
+	payload := strings.Repeat("x", 1<<20) + secret
+	_, err := w.Write([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, secret) {
+		t.Fatal("complete secret leaked in cleartext across the overflow flush cut")
+	}
+	if !strings.Contains(got, placeholder) {
+		t.Fatal("secret was neither leaked nor redacted - output lost data")
+	}
+}
+
+// TestWriterFlushTerminatesPartialLine pins the flush-newline fix: Flush
+// emits a buffered partial line, and without a terminating newline the next
+// writer's first line is appended to the truncated one, merging two log lines.
+func TestWriterFlushTerminatesPartialLine(t *testing.T) {
+	t.Parallel()
+	r := NewRedactor()
+	var out bytes.Buffer
+	w, ok := r.Writer(&out).(interface {
+		io.Writer
+		Flush() error
+	})
+	if !ok {
+		t.Fatal("redacting writer must expose Flush")
+	}
+	_, err := w.Write([]byte("dying mid-line"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Flush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "dying mid-line\n" {
+		t.Errorf("Flush output = %q, want %q (newline-terminated)", got, "dying mid-line\n")
+	}
+}
+
+// TestWriterOverflowPathologicalOverlapHoldsAll covers safeCut's cut==0
+// fallback: with a buffer made entirely of overlapping secret occurrences
+// there is no safe cut, so the overflow flush must emit NOTHING (the buffer
+// keeps growing, matching tailHold's documented worst case) and the eventual
+// Flush must redact everything within one segment.
+func TestWriterOverflowPathologicalOverlapHoldsAll(t *testing.T) {
+	t.Parallel()
+	const secret = "aaaaaa"
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{"s": {"k": secret}})
+
+	var out bytes.Buffer
+	w, ok := r.Writer(&out).(interface {
+		io.Writer
+		Flush() error
+	})
+	if !ok {
+		t.Fatal("redacting writer must expose Flush")
+	}
+
+	payload := strings.Repeat("a", maxRedactBuffer)
+	if _, err := w.Write([]byte(payload)); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("overflow emitted %d bytes although every cut splits a secret occurrence", out.Len())
+	}
+	if err := w.Flush(); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatal("pathological overlapping secrets leaked through the overflow path")
+	}
+	if !strings.Contains(out.String(), placeholder) {
+		t.Fatal("output lost the redacted content entirely")
+	}
+}
+
+// TestWriterFlushEmptyAndErrorBranches covers Flush's empty-buffer early
+// return (second Flush emits nothing) and its inner-writer error path.
+func TestWriterFlushEmptyAndErrorBranches(t *testing.T) {
+	t.Parallel()
+	r := NewRedactor()
+
+	var out bytes.Buffer
+	w, ok := r.Writer(&out).(interface {
+		io.Writer
+		Flush() error
+	})
+	if !ok {
+		t.Fatal("redacting writer must expose Flush")
+	}
+	if _, err := w.Write([]byte("partial")); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	before := out.Len()
+	if err := w.Flush(); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	if out.Len() != before {
+		t.Errorf("second Flush emitted %d extra bytes, want 0", out.Len()-before)
+	}
+
+	errInner := errors.New("disk full")
+	wf, ok := r.Writer(&failWriter{err: errInner}).(interface {
+		io.Writer
+		Flush() error
+	})
+	if !ok {
+		t.Fatal("redacting writer must expose Flush")
+	}
+	if _, err := wf.Write([]byte("partial")); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	flushErr := wf.Flush()
+	if !errors.Is(flushErr, errInner) {
+		t.Errorf("Flush error = %v, want inner %v", flushErr, errInner)
+	}
+}
+
+// TestWriterOverflowNonStraddlingOccurrenceKeepsCut covers safeCut's
+// scan-past branch: an occurrence inside the inspection window that ends
+// exactly AT the cut does not straddle it, so the cut stays and the complete
+// occurrence is redacted within the emitted segment.
+func TestWriterOverflowNonStraddlingOccurrenceKeepsCut(t *testing.T) {
+	t.Parallel()
+	const secret = "abcdef" // no border: prefix "ab" is not a suffix
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{"s": {"k": secret}})
+
+	var out bytes.Buffer
+	w, ok := r.Writer(&out).(interface {
+		io.Writer
+		Flush() error
+	})
+	if !ok {
+		t.Fatal("redacting writer must expose Flush")
+	}
+
+	// Buffer ends with <secret><2-char secret prefix>: tailHold keeps "ab",
+	// putting the cut exactly at the end of the complete occurrence.
+	payload := strings.Repeat("x", maxRedactBuffer-len(secret)-2) + secret + secret[:2]
+	if _, err := w.Write([]byte(payload)); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatal("complete occurrence at the cut boundary leaked unredacted")
+	}
+	if !strings.Contains(out.String(), placeholder) {
+		t.Fatal("complete occurrence at the cut boundary was not redacted in the emitted segment")
 	}
 }

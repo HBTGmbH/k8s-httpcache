@@ -1122,6 +1122,18 @@ func run() int {
 	}
 	defer cleanupVCL()
 
+	// Register signal handling BEFORE the first long-running child is
+	// spawned: an un-notified SIGTERM/SIGINT/SIGHUP terminates the process
+	// with default disposition - no deferred cleanup, varnishd never signaled
+	// or reaped - orphaning a port-holding varnishd whenever this process is
+	// not the container's PID-namespace leader (shared PID namespace, wrapper
+	// entrypoint). A signal arriving between here and the event loop is held
+	// in the channel's buffer and handled at runLoop's first select.
+	// Registration deliberately stays AFTER the initial-endpoint collection:
+	// before any child exists, default signal disposition (immediate exit) is
+	// the desirable behavior for an interrupt during a hung API wait.
+	sigCh := notifySignals()
+
 	err = mgr.Start(initialVCL)
 	if err != nil {
 		slog.Error("varnish start", "error", err)
@@ -1283,9 +1295,6 @@ func run() int {
 			}()
 		}
 	}
-
-	// Signal handling.
-	sigCh := notifySignals()
 
 	// Main event loop with debounce.
 	lc := &loopConfig{
@@ -1488,6 +1497,15 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		templateChanged bool
 		pendingReasons  []string
 
+		// templateSwapped records that rend.Reload() activated a new template
+		// that has not yet been proven by a successful varnishd reload (or by
+		// rendering byte-identical VCL). It is loop state, NOT a handleReload
+		// local: a markRetry between the swap and the proof (e.g. a temp-file
+		// failure) must not forget the swap, or a later varnishd rejection
+		// would never trigger the rollback and the loop would retry the bad
+		// template forever.
+		templateSwapped bool
+
 		// Recovery retry: when a reload fails we arm vclRecovery so the reload
 		// is retried even if no new Kubernetes events arrive. The delay starts
 		// at reloadRecoveryInitial, doubles on each consecutive failure, and is
@@ -1581,7 +1599,6 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		}
 
 		// If the template file changed, try to parse the new version.
-		reloadedTemplate := false
 		if templateChanged {
 			err := lc.rend.Reload()
 			if err != nil {
@@ -1589,7 +1606,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				slog.Error("template parse error, keeping old template", "error", err)
 				emitEvent(lc, v1.EventTypeWarning, "VCLTemplateParseFailed", fmt.Sprintf("Template parse error: %v", err))
 			} else {
-				reloadedTemplate = true
+				templateSwapped = true
 			}
 		}
 
@@ -1603,7 +1620,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			msg := redactedErr(lc.redactor, err)
 			slog.Error("render error", "error", msg)
 			emitEvent(lc, v1.EventTypeWarning, "VCLRenderFailed", "VCL render error: "+msg)
-			if reloadedTemplate {
+			if templateSwapped {
 				// A new template parsed but failed to render. Roll back to the
 				// known-good template and re-render the current inputs with it,
 				// so frontend/backend changes coalesced into this reload still
@@ -1613,6 +1630,8 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				// recovers when new inputs arrive.
 				lc.metrics.VCLRollbacksTotal.Inc()
 				lc.rend.Rollback()
+				// The renderer is back on the proven template; the swap is gone.
+				templateSwapped = false
 				emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
 				if rollbackReload(lc, reasons) {
 					clearPending()
@@ -1631,6 +1650,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		if vclHash == lc.lastVCLHash {
 			slog.Info("VCL unchanged, skipping reload", "reasons", reasons)
 			lc.metrics.VCLReloadsTotal.WithLabelValues("skipped").Inc()
+			// A swapped template that renders byte-identical VCL is proven
+			// equivalent to the active one; nothing left to roll back.
+			templateSwapped = false
 			clearPending()
 
 			return
@@ -1661,7 +1683,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			emitEvent(lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
 			_ = os.Remove(vclPath)
 
-			if !reloadedTemplate {
+			if !templateSwapped {
 				markRetry()
 
 				return
@@ -1672,6 +1694,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// take effect with the old (known-good) template.
 			lc.metrics.VCLRollbacksTotal.Inc()
 			lc.rend.Rollback()
+			templateSwapped = false
 			slog.Warn("rolled back to previous template")
 			emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Rolled back to previous template after reload failure")
 
@@ -1685,6 +1708,9 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		}
 
 		lc.lastVCLHash = vclHash
+		// The swapped template survived a real varnishd reload; it is the
+		// proven template now.
+		templateSwapped = false
 		lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
 		lc.debug("decision", "action", "reload-applied", "reasons", reasons,
 			"frontends", len(lc.latestFrontends), "backends", len(lc.latestBackends))
@@ -2391,7 +2417,10 @@ func buildNCSAArgs(cfg *config.Config) []string {
 		args = append(args, "-q", cfg.VarnishncsaQuery)
 	}
 	if cfg.VarnishncsaOutput != "" {
-		args = append(args, "-w", cfg.VarnishncsaOutput)
+		// -a is required alongside -w: without it varnishncsa TRUNCATES the
+		// output file on every start, so the manager's own crash auto-restart
+		// would silently destroy all previously written access logs.
+		args = append(args, "-w", cfg.VarnishncsaOutput, "-a")
 	}
 
 	return args

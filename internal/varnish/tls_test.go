@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,8 +95,11 @@ func tlsRunFn(active *[]string, nextID *int) func(string, []string) (string, err
 
 func findAdmCall(calls [][]string, sub string) []string {
 	for _, c := range calls {
-		if len(c) >= 2 && c[1] == sub {
-			return c
+		// Normalize away adm()'s leading option pairs (-n/-t) so matching and
+		// the returned slice stay command-relative.
+		norm := append([]string{c[0]}, stripAdmOptions(c[1:])...)
+		if len(norm) >= 2 && norm[1] == sub {
+			return norm
 		}
 	}
 
@@ -104,7 +108,8 @@ func findAdmCall(calls [][]string, sub string) []string {
 
 func hasAdmCall(calls [][]string, args ...string) bool {
 	for _, c := range calls {
-		if len(c) >= 1+len(args) && slices.Equal(c[1:1+len(args)], args) {
+		norm := stripAdmOptions(c[1:])
+		if len(norm) >= len(args) && slices.Equal(norm[:len(args)], args) {
 			return true
 		}
 	}
@@ -697,5 +702,52 @@ func TestLoadCertRotationGaugeCountsDiscard(t *testing.T) {
 	}
 	if got := readMetric(t, m.metrics.TLSCertsActive); got != 1 {
 		t.Errorf("tls_certs_active = %v after rotation, want 1 (gauge must count out the discarded prior cert)", got)
+	}
+}
+
+// TestLoadCertRotationRetriesTransientListFailure pins the list-retry fix: a
+// transient tls.cert.list failure during a rotation used to make the newly
+// committed certificate unidentifiable, so the prior certificate was never
+// discarded - permanently leaking one active certificate in varnishd per
+// occurrence. listCertIDs now retries transient failures.
+func TestLoadCertRotationRetriesTransientListFailure(t *testing.T) {
+	t.Parallel()
+	active := []string{}
+	nextID := 0
+	inner := tlsRunFn(&active, &nextID)
+	var listFailures atomic.Int32
+	r := &mockRunner{runFn: func(name string, args []string) (string, error) {
+		if len(args) > 0 && args[0] == "tls.cert.list" && listFailures.Load() > 0 {
+			listFailures.Add(-1)
+
+			return "", errors.New("CLI communication error (hdr)")
+		}
+
+		return inner(name, args)
+	}}
+	m := newTestManager(r)
+	m.majorVersion.Store(9)
+	t.Cleanup(m.CleanupTLS)
+
+	cert, key := genTestCert(t)
+	err := m.LoadCert("frontend", cert, key, nil)
+	if err != nil {
+		t.Fatalf("initial LoadCert: %v", err)
+	}
+	prior := m.tlsCertIDs["frontend"]
+
+	// Rotation with one transient list failure (first list call fails once).
+	listFailures.Store(1)
+	cert2, key2 := genTestCert(t)
+	err = m.LoadCert("frontend", cert2, key2, nil)
+	if err != nil {
+		t.Fatalf("rotation LoadCert: %v", err)
+	}
+
+	if got := m.tlsCertIDs["frontend"]; got == prior || got == "" {
+		t.Errorf("rotation did not identify the new certificate id (got %q, prior %q)", got, prior)
+	}
+	if !hasAdmCall(r.calls, "tls.cert.discard", prior) {
+		t.Errorf("prior certificate %q never discarded - leaked active cert; calls: %v", prior, r.calls)
 	}
 }

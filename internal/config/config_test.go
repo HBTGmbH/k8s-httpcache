@@ -4339,8 +4339,8 @@ func TestParseAdminTimeoutNeg(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for negative --admin-timeout")
 	}
-	if !strings.Contains(err.Error(), "--admin-timeout must be >= 0") {
-		t.Errorf("error = %q, want substring '--admin-timeout must be >= 0'", err)
+	if !strings.Contains(err.Error(), "--admin-timeout must be > 0") {
+		t.Errorf("error = %q, want substring '--admin-timeout must be > 0'", err)
 	}
 }
 
@@ -4953,5 +4953,129 @@ func TestParseDottedResourceNamesAccepted(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("dotted backend service name must still be rejected")
+	}
+}
+
+// TestParseListenAddrUDSWithOptionSubArgs pins the fix for the name= prefix
+// splitter: an '=' inside varnishd option sub-arguments (user=/group=/mode=,
+// which always follow a comma) or inside a UDS path must not be treated as a
+// listener-name separator.
+func TestParseListenAddrUDSWithOptionSubArgs(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=frontend",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=:6081",
+		"--listen-addr=/run/varnish.sock,PROXY,user=vcache",
+		"--listen-addr=/run/va=r.sock",
+	})
+	if err != nil {
+		t.Fatalf("UDS listeners with '=' sub-args/path must parse, got: %v", err)
+	}
+	if !cfg.ListenAddrs[1].UDS || cfg.ListenAddrs[1].Name != "" {
+		t.Errorf("listener 1 = %+v, want unnamed UDS", cfg.ListenAddrs[1])
+	}
+	if !cfg.ListenAddrs[2].UDS || cfg.ListenAddrs[2].Name != "" {
+		t.Errorf("listener 2 = %+v, want unnamed UDS", cfg.ListenAddrs[2])
+	}
+
+	// Named listeners must keep working.
+	cfg, err = Parse("", []string{
+		"test",
+		"--service-name=frontend",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=http=:8080",
+	})
+	if err != nil {
+		t.Fatalf("named listener must parse, got: %v", err)
+	}
+	if cfg.ListenAddrs[0].Name != "http" {
+		t.Errorf("Name = %q, want %q", cfg.ListenAddrs[0].Name, "http")
+	}
+}
+
+// TestParseDebounceLatencyBucketsRejectsNaN pins the NaN validation fix:
+// NaN <= 0 is false, so NaN slipped through the positivity check and produced
+// an le="NaN" histogram series (two NaNs survive [slices.Compact] and break the
+// scrape entirely).
+func TestParseDebounceLatencyBucketsRejectsNaN(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=frontend",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--debounce-latency-buckets=NaN,0.5",
+	})
+	if err == nil {
+		t.Fatal("expected error for NaN bucket boundary")
+	}
+}
+
+// TestParseAdminTimeoutZeroRejected pins the --admin-timeout validation fix:
+// 0 passed validation but waitForAdmin computes an already-expired deadline,
+// so startup always failed with a misleading timeout error.
+func TestParseAdminTimeoutZeroRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=frontend",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--admin-timeout=0",
+	})
+	if err == nil {
+		t.Fatal("expected error for --admin-timeout=0")
+	}
+	if !strings.Contains(err.Error(), "must be > 0") {
+		t.Errorf("error = %q, want substring 'must be > 0'", err)
+	}
+}
+
+// TestParseNamespacedResourceErrors covers parseNamespacedResource's error
+// branches directly (the happy paths are pinned by
+// TestParseDottedResourceNamesAccepted through full flag parsing).
+func TestParseNamespacedResourceErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		in       string
+		wantErr  bool
+		wantNS   string
+		wantName string
+	}{
+		{"empty ref", "", true, "", ""},
+		{"empty namespace", "/cm", true, "", ""},
+		{"empty name", "ns/", true, "", ""},
+		{"invalid namespace label", "Bad_NS/cm", true, "", ""},
+		{"invalid subdomain in ns form", "ns/bad_name!", true, "", ""},
+		{"invalid bare subdomain", "bad name", true, "", ""},
+		{"valid dotted in ns form", "prod/example.com-tls", false, "prod", "example.com-tls"},
+		{"valid bare dotted", "my.config.map", false, "default", "my.config.map"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ns, name, err := parseNamespacedResource(tt.in, "default")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q, got ns=%q name=%q", tt.in, ns, name)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tt.in, err)
+			}
+			if ns != tt.wantNS || name != tt.wantName {
+				t.Errorf("got %q/%q, want %q/%q", ns, name, tt.wantNS, tt.wantName)
+			}
+		})
 	}
 }

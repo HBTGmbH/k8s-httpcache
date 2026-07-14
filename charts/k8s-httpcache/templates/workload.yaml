@@ -273,7 +273,14 @@ spec:
             {{- if .Values.metrics.varnishstatExport }}
             - --varnishstat-export
             {{- with .Values.metrics.varnishstatExportFilter }}
-            - --varnishstat-export-filter={{ . }}
+            {{- /* The binary disables comma-splitting of slice flags, so a
+                   joined "MAIN,SMA" value would match no counter group and
+                   silently export nothing: render one flag per group. */}}
+            {{- range splitList "," . }}
+            {{- if ne (trim .) "" }}
+            - --varnishstat-export-filter={{ trim . }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- else }}
@@ -283,22 +290,22 @@ spec:
             {{- if .Values.varnishncsa.enabled }}
             - --varnishncsa-enabled
             {{- with .Values.varnishncsa.path }}
-            - --varnishncsa-path={{ . }}
+            - {{ printf "--varnishncsa-path=%s" . | quote }}
             {{- end }}
             {{- with .Values.varnishncsa.format }}
-            - --varnishncsa-format={{ . }}
+            - {{ printf "--varnishncsa-format=%s" . | quote }}
             {{- end }}
             {{- with .Values.varnishncsa.query }}
-            - --varnishncsa-query={{ . }}
+            - {{ printf "--varnishncsa-query=%s" . | quote }}
             {{- end }}
             {{- if .Values.varnishncsa.backend }}
             - --varnishncsa-backend
             {{- end }}
             {{- with .Values.varnishncsa.output }}
-            - --varnishncsa-output={{ . }}
+            - {{ printf "--varnishncsa-output=%s" . | quote }}
             {{- end }}
             {{- with .Values.varnishncsa.prefix }}
-            - --varnishncsa-prefix={{ . }}
+            - {{ printf "--varnishncsa-prefix=%s" . | quote }}
             {{- end }}
             {{- end }}
             {{- /* --- Drain --- */}}

@@ -460,11 +460,30 @@ func (dw *BackendDiscoveryWatcher) startForwardingLocked(ctx context.Context, mb
 // syncServices reconciles the set of active backends against the current list
 // of matching Services.
 func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister corelisters.ServiceLister) {
+	// Hold dw.mu across the lister read AND the reconcile so the two form one
+	// atomic critical section, mirroring every sibling watcher's sync: this
+	// runs concurrently from the informer handler, the NameRegistry kick
+	// goroutine, and Run's explicit startup sync. Without the lock around the
+	// read, a reconcile that completed its List but not yet taken the lock
+	// could apply a STALE service list after a fresher reconcile - re-adding a
+	// deleted Service's backend with a new generation (which defeats the
+	// consumer's removedGen tombstone) or removing a just-added live one. The
+	// lister read is an in-memory lookup, so the critical section stays cheap.
+	dw.mu.Lock()
+
+	// backends is set to nil during shutdown; bail out to avoid nil-map panic.
+	if dw.backends == nil {
+		dw.mu.Unlock()
+
+		return
+	}
+
 	var services []*corev1.Service
 
 	if dw.allNamespaces {
 		all, listErr := lister.List(dw.selector)
 		if listErr != nil {
+			dw.mu.Unlock()
 			dw.log.Error("failed to list Services for discovery", "error", listErr)
 
 			return
@@ -473,6 +492,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 	} else {
 		ns, listErr := lister.Services(dw.namespace).List(dw.selector)
 		if listErr != nil {
+			dw.mu.Unlock()
 			dw.log.Error("failed to list Services for discovery", "namespace", dw.namespace, "error", listErr)
 
 			return
@@ -484,15 +504,6 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 	for _, svc := range services {
 		key := svc.Namespace + "/" + svc.Name
 		current[key] = svc
-	}
-
-	dw.mu.Lock()
-
-	// backends is set to nil during shutdown; bail out to avoid nil-map panic.
-	if dw.backends == nil {
-		dw.mu.Unlock()
-
-		return
 	}
 
 	// addPass adopts every currently-listed Service that is not already managed

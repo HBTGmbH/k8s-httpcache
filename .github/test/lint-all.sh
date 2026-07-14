@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Run all linting checks sequentially, aborting on first failure.
-set -eu
+# pipefail matters for the helm-template pipelines (kubeconform, kube-linter):
+# without it a helm failure feeds empty stdin to a tool that happily exits 0,
+# silently skipping the check.
+set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
@@ -33,7 +36,14 @@ echo "=== nilaway ==="
 nilaway -include-pkgs="k8s-httpcache" -exclude-test-files ./...
 
 echo "=== deadcode ==="
-deadcode -test ./...
+# deadcode always exits 0, even when it reports unreachable code, so its
+# output must be checked explicitly or the gate is vacuous.
+dead="$(deadcode -test ./...)"
+if [ -n "$dead" ]; then
+  printf '%s\n' "$dead"
+  echo "deadcode found unreachable code" >&2
+  exit 1
+fi
 
 echo "=== actionlint ==="
 actionlint
@@ -46,6 +56,9 @@ helm lint --strict charts/k8s-httpcache
 
 echo "=== chart contract checks ==="
 .github/test/chart-contract-test.sh
+
+echo "=== script selftests ==="
+.github/test/script-selftest.sh
 
 echo "=== helm-docs up to date ==="
 # The chart README is generated from values.yaml comments; CI fails when a

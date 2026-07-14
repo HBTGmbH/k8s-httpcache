@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1258,5 +1259,53 @@ func TestForwardStripsHopByHopHeaders(t *testing.T) {
 		if got.Get(h) != "" {
 			t.Errorf("hop-by-hop header %s forwarded to the pod: %q", h, got.Get(h))
 		}
+	}
+}
+
+// TestFanoutSurvivesClientDisconnect pins the fan-out detach fix: binding the
+// per-pod requests to the ORIGINAL client's context meant a client disconnect
+// (or client-side timeout) mid-fan-out cancelled the in-flight pod requests,
+// leaving a PURGE/BAN partially applied across the Varnish fleet and
+// misattributing the abort to the pod as a transport error. Once started, a
+// broadcast must complete fleet-wide, bounded only by ClientTimeout.
+func TestFanoutSurvivesClientDisconnect(t *testing.T) {
+	t.Parallel()
+
+	podHit := make(chan struct{})
+	pod := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(podHit)
+		time.Sleep(300 * time.Millisecond) // long enough for the disconnect to land mid-request
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer pod.Close()
+	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(pod.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.ParseInt(portStr, 10, 32)
+
+	s := New(Options{
+		ClientTimeout: 5 * time.Second,
+		Metrics:       telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+	})
+	s.SetFrontends([]watcher.Frontend{{Name: "pod1", Host: host, Port: int32(port)}})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	req := httptest.NewRequest("PURGE", "http://cache/obj", http.NoBody).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	go func() {
+		<-podHit
+		cancel() // client disconnects mid-fan-out
+	}()
+	s.ServeHTTP(rec, req)
+
+	var results map[string]PodResult
+	decodeErr := json.Unmarshal(rec.Body.Bytes(), &results)
+	if decodeErr != nil {
+		t.Fatalf("decoding response: %v (body %q)", decodeErr, rec.Body.String())
+	}
+	if got := results["pod1"].Status; got != http.StatusOK {
+		t.Errorf("pod result after client disconnect = %+v, want status 200 (fan-out must complete fleet-wide)", results["pod1"])
 	}
 }

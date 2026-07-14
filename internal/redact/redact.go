@@ -185,6 +185,56 @@ func (r *Redactor) tailHold(buf []byte) int {
 	return hold
 }
 
+// safeCut lowers cut until no COMPLETE redaction-target occurrence straddles
+// it. tailHold only guards against a partial secret at the buffer tail (a
+// suffix that is a proper prefix of a target); a complete occurrence whose
+// "border" (a proper prefix equal to a proper suffix, e.g. "abcXabc") ends at
+// the buffer tail would be split by the raw cut - its head emitted with no
+// full match to redact and its tail flushed unredacted later, leaking the
+// whole secret in cleartext across the cut. Only the window around the cut
+// needs scanning. Returns 0 when no safe cut exists (pathologically
+// overlapping occurrences); the caller then emits nothing and lets the buffer
+// grow, matching tailHold's existing worst case.
+func (r *Redactor) safeCut(buf []byte, cut int) int {
+	r.mu.RLock()
+	vals := r.values
+	r.mu.RUnlock()
+
+	for changed := true; changed && cut > 0; {
+		changed = false
+		for _, v := range vals {
+			// An occurrence straddles cut iff it starts in [cut-len(v)+1, cut)
+			// and extends past cut; only that window can contain one.
+			lo := max(0, cut-len(v)+1)
+			hi := min(len(buf), cut+len(v)-1)
+			if lo >= cut {
+				continue
+			}
+			window := buf[lo:hi]
+			from := 0
+			for {
+				idx := bytes.Index(window[from:], []byte(v))
+				if idx < 0 {
+					break
+				}
+				start := lo + from + idx
+				if start < cut && start+len(v) > cut {
+					cut = start
+					changed = true
+
+					break
+				}
+				from += idx + 1
+			}
+			if changed {
+				break
+			}
+		}
+	}
+
+	return cut
+}
+
 // maxRedactBuffer bounds the partial-line buffer. A pathological
 // newline-free stream is flushed once it exceeds this, retaining only the
 // tail that could still be a secret prefix (see tailHold).
@@ -217,7 +267,7 @@ func (w *redactingWriter) Write(p []byte) (int, error) {
 	// suffix that could still be the start of a secret.
 	if len(w.buf) >= maxRedactBuffer {
 		hold := w.redactor.tailHold(w.buf)
-		cut := len(w.buf) - hold
+		cut := w.redactor.safeCut(w.buf, len(w.buf)-hold)
 		if cut > 0 {
 			err := w.emit(w.buf[:cut])
 			rest := copy(w.buf, w.buf[cut:])
@@ -231,12 +281,15 @@ func (w *redactingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Flush redacts and forwards any buffered partial line. Call it once the
-// writing subprocess has exited, so a final unterminated line is not lost.
+// Flush redacts and forwards any buffered partial line, newline-terminated.
+// Call it once the writing subprocess has exited, so a final unterminated
+// line is not lost. The added newline matters: without it, the next writer's
+// first line (e.g. a restarted subprocess) would merge into the truncated one.
 func (w *redactingWriter) Flush() error {
 	if len(w.buf) == 0 {
 		return nil
 	}
+	w.buf = append(w.buf, '\n')
 	err := w.emit(w.buf)
 	w.buf = w.buf[:0]
 

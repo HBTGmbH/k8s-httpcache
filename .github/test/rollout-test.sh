@@ -29,7 +29,10 @@ if [ "$terminated" != "true" ]; then
   exit 1
 fi
 
-kill -INT $OHA_PID
+# oha runs a fixed-length benchmark (-z) and may have exited on its own
+# before the rollout finished; an unguarded kill of the reaped pid would
+# abort the script under set -e before any results are checked.
+kill -INT $OHA_PID 2>/dev/null || true
 wait $OHA_PID || true
 
 echo "Status code distribution:"

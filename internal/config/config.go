@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -166,7 +167,12 @@ func (l *listenAddrFlags) Set(val string) error {
 	spec := ListenAddrSpec{Raw: val}
 
 	rest := val
-	if name, after, ok := strings.Cut(val, "="); ok {
+	// A name= prefix is only a name when the part before '=' could be one:
+	// varnishd option sub-arguments (user=/group=/mode=) always follow a
+	// comma, and UDS paths contain '/' - cutting at the first '=' anywhere
+	// would wrongly split "/run/varnish.sock,PROXY,user=vcache" (or a path
+	// containing '=') and spuriously reject a valid unnamed listener.
+	if name, after, ok := strings.Cut(val, "="); ok && !strings.ContainsAny(name, "/@:,") {
 		spec.Name = name
 		if spec.Name == "" {
 			return fmt.Errorf("--listen-addr %q: %w", val, errEmptyName)
@@ -1343,8 +1349,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			}
 
 			// Validate remaining timeouts (negative causes broken behavior).
-			if c.AdminTimeout < 0 {
-				actionErr = validationError(cmd, "--admin-timeout must be >= 0, got %v", c.AdminTimeout)
+			// 0 is rejected too: unlike the other zero-permitting durations,
+			// AdminTimeout has no "disabled" semantics - waitForAdmin computes
+			// an already-expired deadline and startup always fails with a
+			// misleading timeout error.
+			if c.AdminTimeout <= 0 {
+				actionErr = validationError(cmd, "--admin-timeout must be > 0, got %v", c.AdminTimeout)
 
 				return nil
 			}
@@ -1427,7 +1437,10 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 
 					return nil
 				}
-				if v <= 0 {
+				// NaN must be rejected explicitly: NaN <= 0 is false, so it
+				// would pass the positivity check, survive slices.Compact
+				// (NaN != NaN), and poison the histogram with le="NaN" series.
+				if v <= 0 || math.IsNaN(v) {
 					actionErr = validationError(cmd, "--debounce-latency-buckets: bucket boundaries must be positive, got %v", v)
 
 					return nil

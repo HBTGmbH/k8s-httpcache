@@ -681,3 +681,34 @@ func TestParseVarnishstatStructuralErrorNotSilent(t *testing.T) {
 		})
 	}
 }
+
+// TestParseVarnishstatCounterObjectErrorBranches sweeps the remaining
+// structural-failure branches of parseCounterObject and skipRemainingFields:
+// each malformed document must yield a parse error, never a silent
+// near-empty success.
+func TestParseVarnishstatCounterObjectErrorBranches(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"skip fields: missing value after colon", `{"counters":{"MAIN.bad":{"value":"str","flag":}}}`},
+		{"skip fields: truncated after comma", `{"counters":{"MAIN.bad":{"value":"str",`},
+		{"skip fields: non-string key", `{"counters":{"MAIN.bad":{"value":"str", 12:3}}}`},
+		{"counter: truncated after colon", `{"counters":{"MAIN.x":{"flag":`},
+		{"counter: non-string description", `{"counters":{"MAIN.x":{"description":123}}}`},
+		{"counter: non-string flag", `{"counters":{"MAIN.x":{"flag":[1]}}}`},
+		{"counter: non-string ident", `{"counters":{"MAIN.x":{"ident":{}}}}`},
+		{"counter: unknown field with malformed value", `{"counters":{"MAIN.x":{"weird":<}}}`},
+		{"counter: missing colon after key", `{"counters":{"MAIN.x":{"value" 1}}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			counters, err := parseVarnishstat(tt.data)
+			if err == nil {
+				t.Fatalf("expected a parse error, got nil with %d counters", len(counters))
+			}
+		})
+	}
+}

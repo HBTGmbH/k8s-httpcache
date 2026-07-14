@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"math/big"
@@ -23,6 +24,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4575,13 +4578,26 @@ func TestRunLoop_DrainSecondSignalDuringDelay(t *testing.T) {
 	// Wait just long enough to enter the drainDelay sleep, not for it to elapse.
 	time.Sleep(50 * time.Millisecond)
 	// Second signal during drainDelay - should interrupt and skip the wait.
+	interruptAt := time.Now()
 	sigCh <- syscall.SIGINT
 	waitForForwardedSignal(t, h.mgr)
+	elapsed := time.Since(interruptAt)
 	close(h.mgr.done)
 	<-done
 
 	events := drainEvents(rec)
 	requireEvent(t, events, "DrainStarted", "starting graceful drain")
+
+	// The interruption must be observable, not just survivable: without it,
+	// the full 5s drainDelay elapses (and session polling runs) before the
+	// signal is forwarded - which waitForForwardedSignal's 10s budget would
+	// silently absorb.
+	if elapsed > 2*time.Second {
+		t.Errorf("second signal did not interrupt drainDelay: %v elapsed before signal was forwarded (delay is %v)", elapsed, lc.drainDelay)
+	}
+	if calls := h.mgr.getSessionsCalls(); calls != 0 {
+		t.Errorf("interrupted drain must skip session polling entirely, got %d ActiveSessions calls", calls)
+	}
 
 	result := int(code.Load())
 	if result != 0 {
@@ -5977,7 +5993,7 @@ func TestBuildNCSAArgs(t *testing.T) {
 		{
 			name: "output only",
 			cfg:  config.Config{VarnishncsaOutput: "/var/log/access.log"},
-			want: []string{"-w", "/var/log/access.log"},
+			want: []string{"-w", "/var/log/access.log", "-a"},
 		},
 		{
 			name: "all combined",
@@ -5987,7 +6003,7 @@ func TestBuildNCSAArgs(t *testing.T) {
 				VarnishncsaQuery:   "ReqURL ~ /api",
 				VarnishncsaOutput:  "/var/log/access.log",
 			},
-			want: []string{"-b", "-F", "%h %s", "-q", "ReqURL ~ /api", "-w", "/var/log/access.log"},
+			want: []string{"-b", "-F", "%h %s", "-q", "ReqURL ~ /api", "-w", "/var/log/access.log", "-a"},
 		},
 	}
 	for _, tc := range tests {
@@ -7958,12 +7974,261 @@ func TestRunLoopEmptyTLSUpdateKeepsKeyRedaction(t *testing.T) {
 	// certificate stays active, so its key must stay redacted.
 	h.tlsCertCh <- tlsCertChange{name: "web", data: watcher.TLSCertData{}}
 
-	waitFor(t, func() bool {
-		return red.Redact(keyLine) != keyLine
-	}, "key material still redacted after empty TLS update")
+	// Wait until the event loop has actually PROCESSED the empty update (the
+	// cert debounce fires and LoadCert receives the empty material) - only
+	// then is "still redacted" meaningful. The previous condition
+	// (red.Redact(keyLine) != keyLine) was already true before the update was
+	// consumed, so the test passed even when the empty update wiped the
+	// static redaction targets.
+	waitFor(t, func() bool { return len(h.mgr.getLoadCertCalls()) >= 1 }, "empty TLS update processed by the loop")
+
+	if red.Redact(keyLine) == keyLine {
+		t.Fatal("key material no longer redacted after the empty TLS update was processed")
+	}
 
 	h.sigCh <- syscall.SIGTERM
 	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
 	close(h.mgr.done)
 	<-done
+}
+
+// TestBuildNCSAArgsAppendMode pins the fix for varnishncsa log truncation:
+// -w without -a truncates the output file on every start, so the manager's
+// own crash auto-restart destroys previously written access logs.
+func TestBuildNCSAArgsAppendMode(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{VarnishncsaOutput: "/logs/access.log"}
+	args := buildNCSAArgs(cfg)
+	if !slices.Contains(args, "-a") {
+		t.Errorf("buildNCSAArgs = %v, want -a alongside -w (append, not truncate)", args)
+	}
+	// Without -w there is nothing to append to; -a must not be added.
+	argsNoOutput := buildNCSAArgs(&config.Config{})
+	if slices.Contains(argsNoOutput, "-a") {
+		t.Errorf("buildNCSAArgs without -w = %v, must not contain -a", argsNoOutput)
+	}
+}
+
+// TestRunLoopTemplateRollbackSurvivesTempFileFailure pins the fix for the
+// lost rollback context: when the template-swap reload attempt dies at the
+// temp-file step (markRetry), the recovery retry re-entered handleReload with
+// the local reloadedTemplate flag reset - so a subsequent varnishd rejection
+// of the new template's VCL never triggered Rollback and the loop retried the
+// bad template forever, blocking all future VCL updates.
+//
+// Not parallel: it manipulates TMPDIR via t.Setenv to fail [os.CreateTemp]
+// deterministically on the first attempt.
+func TestRunLoopTemplateRollbackSurvivesTempFileFailure(t *testing.T) {
+	h := newTestHarness()
+
+	// Every render succeeds and yields a fresh VCL body (defeat hash dedup);
+	// varnishd rejects every reload of the new template's VCL.
+	renders := 0
+	h.rend.renderFn = func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error) {
+		renders++
+
+		return fmt.Sprintf("vcl-body-%d", renders), nil
+	}
+	h.mgr.reloadFn = func(string) error { return errors.New("VCL compilation failed") }
+
+	// Break os.CreateTemp for the first attempt: point TMPDIR at a regular
+	// file. Restored explicitly once the first attempt has failed.
+	origTmp := os.Getenv("TMPDIR")
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	err := os.WriteFile(notADir, []byte("x"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", notADir)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	lc := h.loopConfig(h.bcast)
+	lc.reloadRecoveryInitial = 5 * time.Millisecond
+	lc.reloadRecoveryMax = 10 * time.Millisecond
+	done := make(chan struct{})
+	go func() {
+		runLoop(ctx, cancel, lc)
+		close(done)
+	}()
+
+	// Trigger a template change; the swap succeeds, the render succeeds, and
+	// the temp-file write fails -> markRetry.
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool {
+		_, r, _ := h.rend.counts()
+
+		return r >= 1
+	}, "first render attempt")
+
+	// Restore TMPDIR so the recovery retry reaches mgr.Reload, which rejects
+	// the new template's VCL. The fix must remember the earlier template swap
+	// and roll back.
+	t.Setenv("TMPDIR", origTmp)
+
+	waitFor(t, func() bool {
+		_, _, rb := h.rend.counts()
+
+		return rb >= 1
+	}, "rollback after varnishd rejected the swapped template's VCL")
+
+	cancel()
+	h.sigCh <- syscall.SIGTERM
+	close(h.mgr.done)
+	<-done
+}
+
+// TestHelperRunMain is not a real test: it is the subprocess entry point for
+// TestSignalDuringStartupWindowDoesNotOrphanVarnishd. It executes run() with
+// the args passed via environment and exits with run's exit code.
+//
+//nolint:paralleltest // subprocess entry point; parallelism is meaningless and os.Exit ends the process
+func TestHelperRunMain(t *testing.T) {
+	if os.Getenv("GO_TEST_RUN_MAIN") != "1" {
+		t.Skip("helper process entry point; only used as a subprocess")
+	}
+	os.Args = append([]string{"k8s-httpcache"}, strings.Split(os.Getenv("GO_TEST_RUN_ARGS"), "\n")...)
+	os.Exit(run())
+}
+
+// TestSignalDuringStartupWindowDoesNotOrphanVarnishd pins the signal-ordering
+// fix end to end with the real run(): a SIGTERM delivered while startup is
+// still inside waitForAdmin (varnishd already spawned, admin never ready)
+// must not terminate the controller with default disposition - that would
+// skip every reap path and orphan a port-holding varnishd whenever the
+// controller is not the container's PID-namespace leader. With signal
+// registration moved before mgr.Start, the buffered signal lets startup run
+// its normal admin-timeout failure path, which SIGKILLs and reaps varnishd.
+func TestSignalDuringStartupWindowDoesNotOrphanVarnishd(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "varnishd.pid")
+
+	// Fake varnishd: answers -V, then records its pid and sleeps.
+	varnishd := filepath.Join(dir, "varnishd")
+	writeExec(t, varnishd, `#!/bin/sh
+if [ "$1" = "-V" ]; then echo "varnishd (varnish-7.5.0 revision test)"; exit 0; fi
+echo $$ > "`+pidFile+`"
+exec sleep 300
+`)
+	// Fake varnishadm: never ready, so startup sits in waitForAdmin.
+	varnishadm := filepath.Join(dir, "varnishadm")
+	writeExec(t, varnishadm, "#!/bin/sh\nexit 1\n")
+
+	vclPath := filepath.Join(dir, "tpl.vcl")
+	writeFileOrFatal(t, vclPath, "vcl 4.1;\n")
+
+	// Fake kube API: empty EndpointSlice lists; watches hang until the
+	// client goes away.
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("watch") == "true" {
+			<-r.Context().Done()
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"kind":"EndpointSliceList","apiVersion":"discovery.k8s.io/v1","metadata":{"resourceVersion":"1"},"items":[]}`)
+	}))
+	defer apiSrv.Close()
+
+	kubeconfig := filepath.Join(dir, "kubeconfig")
+	writeFileOrFatal(t, kubeconfig, `apiVersion: v1
+kind: Config
+clusters: [{name: t, cluster: {server: `+apiSrv.URL+`}}]
+contexts: [{name: t, context: {cluster: t}}]
+current-context: t
+`)
+
+	args := []string{
+		"--service-name=frontend", "--namespace=default",
+		"--vcl-template=" + vclPath,
+		"--varnishd-path=" + varnishd,
+		"--varnishadm-path=" + varnishadm,
+		"--metrics-addr=none",
+		"--admin-timeout=2s", "--shutdown-timeout=2s", "--startup-timeout=30s",
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperRunMain$") //nolint:gosec // test re-exec of the test binary itself
+	cmd.Env = append(os.Environ(),
+		"GO_TEST_RUN_MAIN=1",
+		"GO_TEST_RUN_ARGS="+strings.Join(args, "\n"),
+		"KUBECONFIG="+kubeconfig,
+		"KUBE_FEATURE_WatchListClient=false",
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	startErr := cmd.Start()
+	if startErr != nil {
+		t.Fatal(startErr)
+	}
+
+	// Wait for the fake varnishd to be running, then SIGTERM the controller
+	// mid-waitForAdmin.
+	var pid int
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		b, readErr := os.ReadFile(pidFile)
+		if readErr == nil {
+			p, parseErr := strconv.Atoi(strings.TrimSpace(string(b)))
+			if parseErr == nil {
+				pid = p
+
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("fake varnishd never started; controller output:\n%s", out.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) }) // never leak the fake varnishd
+
+	sigErr := cmd.Process.Signal(syscall.SIGTERM)
+	if sigErr != nil {
+		t.Fatal(sigErr)
+	}
+
+	err := cmd.Wait()
+	ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok {
+		t.Fatalf("no wait status; err=%v", err)
+	}
+	if ws.Signaled() {
+		t.Errorf("controller died by signal %v (default disposition - signal handler not yet registered); output:\n%s", ws.Signal(), out.String())
+	}
+
+	// The fake varnishd must have been reaped/killed by the controller's
+	// orderly failure path, not left orphaned holding the listen ports.
+	varnishdDead := false
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			varnishdDead = true
+
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !varnishdDead {
+		t.Errorf("fake varnishd (pid %d) still running after controller exit: orphaned child; output:\n%s", pid, out.String())
+	}
+}
+
+// writeExec writes an executable script for subprocess-based tests.
+func writeExec(t *testing.T, path, content string) {
+	t.Helper()
+	err := os.WriteFile(path, []byte(content), 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeFileOrFatal writes content to path or fails the test.
+func writeFileOrFatal(t *testing.T, path, content string) {
+	t.Helper()
+	err := os.WriteFile(path, []byte(content), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
 }

@@ -3893,7 +3893,7 @@ func TestCommentOutImportStdFrom(t *testing.T) {
 	}
 }
 
-// --- Block-comment detection (inBlockComment) ---
+// --- Comment/long-string detection (inCommentOrLongString) ---
 //
 // The drain-injection helpers used to decide "is this match inside a /* */
 // block comment?" with strings.Count(before,"/*")-strings.Count(before,"*/").
@@ -3902,7 +3902,7 @@ func TestCommentOutImportStdFrom(t *testing.T) {
 // `import std;` made the heuristic believe the import was commented out. The
 // tests below pin the comment/string-aware replacement.
 
-func TestInBlockComment(t *testing.T) {
+func TestInCommentOrLongString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
@@ -3922,6 +3922,7 @@ func TestInBlockComment(t *testing.T) {
 		{"nested-looking stars", "/* a * b ** c */import std;", "import", false},
 		{"second block comment open", "/* one */\ncode;\n/* two\nimport std;", "import", true},
 		{"starslash without open is not a comment", "*/ import std;", "import", false},
+		{"inside long string", "sub x { synthetic({\"\nimport std;\n\"}); }", "import", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3930,8 +3931,8 @@ func TestInBlockComment(t *testing.T) {
 			if pos < 0 {
 				t.Fatalf("marker %q not found in vcl", tt.marker)
 			}
-			if got := inBlockComment(tt.vcl, pos); got != tt.want {
-				t.Errorf("inBlockComment(%q, %d) = %v, want %v", tt.vcl, pos, got, tt.want)
+			if got := inCommentOrLongString(tt.vcl, pos); got != tt.want {
+				t.Errorf("inCommentOrLongString(%q, %d) = %v, want %v", tt.vcl, pos, got, tt.want)
 			}
 		})
 	}
@@ -4239,4 +4240,50 @@ func TestBackendBlocksEndStringLiterals(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDrainTokensInsideLongStringsIgnored pins the long-string filtering fix:
+// a line inside a {"..."} long string (e.g. a vcl_synth body) can begin with
+// text that looks exactly like an import/sub/backend/version token, and the
+// line-anchored regexes treated it as structure - suppressing the injected
+// import std (compile failure) or splicing the drain sub INTO the string
+// literal (drain silently inert).
+func TestDrainTokensInsideLongStringsIgnored(t *testing.T) {
+	t.Parallel()
+
+	t.Run("import_std_in_long_string", func(t *testing.T) {
+		t.Parallel()
+		vcl := "vcl 4.1;\nsub vcl_synth { set resp.body = {\"\nimport std;\n\"}; }\n" +
+			"backend origin { .host = \"127.0.0.1\"; }\n"
+		if got := importStdPositions(vcl); len(got) != 0 {
+			t.Errorf("importStdPositions found %d matches inside a long string, want 0", len(got))
+		}
+	})
+
+	t.Run("sub_vcl_deliver_in_long_string", func(t *testing.T) {
+		t.Parallel()
+		vcl := "vcl 4.1;\nsub vcl_synth { set resp.body = {\"\nsub vcl_deliver {\n\"}; }\n" +
+			"backend origin { .host = \"127.0.0.1\"; }\n"
+		if got := firstSubVCLDeliverStart(vcl); got != -1 {
+			t.Errorf("firstSubVCLDeliverStart = %d (inside a long string), want -1", got)
+		}
+	})
+
+	t.Run("backend_in_long_string", func(t *testing.T) {
+		t.Parallel()
+		vcl := "vcl 4.1;\nsub vcl_synth { set resp.body = {\"\nbackend fake {\n\"}; }\n"
+		if got := backendBlocksEnd(vcl); got != 0 {
+			t.Errorf("backendBlocksEnd = %d (matched a fake backend inside a long string), want 0", got)
+		}
+	})
+
+	t.Run("version_line_in_long_string", func(t *testing.T) {
+		t.Parallel()
+		pre := "sub vcl_synth { set resp.body = {\"\nvcl 4.0;\n\"}; }\n"
+		vcl := pre + "vcl 4.1;\n"
+		want := len(vcl)
+		if got := vclVersionEnd(vcl); got != want {
+			t.Errorf("vclVersionEnd = %d, want %d (must skip the version line inside the long string)", got, want)
+		}
+	})
 }

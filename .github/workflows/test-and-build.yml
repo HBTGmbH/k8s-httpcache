@@ -734,6 +734,22 @@ jobs:
         kubectl patch configmap -n ingress-nginx ingress-nginx-controller --type merge -p '{"data":{"upstream-keepalive-timeout":"5"}}' > /dev/null
     - name: Load image into kind
       run: kind load docker-image localhost/k8s-httpcache:test --name test -q
+    - name: Start race log collector
+      # Race leg only: the E2E suite deletes/replaces every controller pod
+      # (drain, rollout, TLS tests), so a post-suite `kubectl logs` of the
+      # surviving pods misses races reported by pods that are already gone.
+      # Poll logs of ALL matching pods into a file for the whole suite; the
+      # "Assert no data races" gate scans this capture in addition to the
+      # live pods.
+      if: ${{ matrix.race }}
+      run: |
+        mkdir -p /tmp/race-logs
+        nohup bash -c 'while true; do
+          kubectl logs --tail=-1 --all-containers --prefix \
+            -l "app in (k8s-httpcache, k8s-httpcache-tls)" >> /tmp/race-logs/all.log 2>/dev/null || true
+          sleep 5
+        done' >/dev/null 2>&1 &
+        echo $! > /tmp/race-logs/collector.pid
     - name: Deploy
       run: kubectl apply -f .github/test/manifest.yaml > /dev/null
     - name: Wait for rollout
@@ -783,15 +799,20 @@ jobs:
       run: .github/test/tls-test.sh
     - name: Assert no data races
       # Race leg only: the -race binary logs "WARNING: DATA RACE" to the pod but
-      # keeps running (default GORACE), so scan all controller logs after the
-      # suite and fail if the detector fired. Runs even if an E2E step failed.
+      # keeps running (default GORACE), so fail if the detector fired anywhere.
+      # The E2E suite deletes/replaces every controller pod, so the still-alive
+      # scan alone would miss races from deleted pods - the background collector
+      # started before Deploy captured those. Runs even if an E2E step failed.
       if: ${{ always() && matrix.race }}
       run: |
-        logs=$(kubectl logs --tail=-1 --all-containers --prefix \
+        kill "$(cat /tmp/race-logs/collector.pid 2>/dev/null)" 2>/dev/null || true
+        live=$(kubectl logs --tail=-1 --all-containers --prefix \
           -l 'app in (k8s-httpcache, k8s-httpcache-tls)' 2>/dev/null || true)
+        collected=$(cat /tmp/race-logs/all.log 2>/dev/null || true)
+        logs=$(printf '%s\n%s' "$live" "$collected")
         if printf '%s' "$logs" | grep -q 'WARNING: DATA RACE'; then
           echo "::error::race detector reported data race(s) during E2E"
-          printf '%s\n' "$logs" | grep -A 40 'WARNING: DATA RACE'
+          printf '%s\n' "$logs" | grep -A 40 -m 5 'WARNING: DATA RACE'
           exit 1
         fi
         echo "No data races detected during E2E."

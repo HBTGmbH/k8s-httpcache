@@ -43,9 +43,11 @@ type Watcher struct {
 	portOverride string // numeric string, port name, or "" = first slice port
 	log          *slog.Logger
 	ch           chan []Endpoint
-	mu           sync.Mutex // protects previous and synced
+	mu           sync.Mutex // protects previous, synced, fqdnWarned and portWarned
 	previous     []Endpoint
 	synced       bool // true after the first send, so the initial state is always delivered
+	fqdnWarned   bool // the FQDN-only warning has been logged (once per watcher)
+	portWarned   bool // the unmatched-port-override warning has been logged (once per watcher)
 }
 
 // New creates a new EndpointSlice watcher. portOverride selects which port to
@@ -144,26 +146,59 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	// in steady state a dual-stack Service's slices appear and disappear
 	// together, so the family never flaps.
 	family := discoveryv1.AddressTypeIPv6
+	sawIP := false
+	sawFQDN := false
 	for _, slice := range epSlices {
-		if slice.AddressType == discoveryv1.AddressTypeIPv4 {
+		switch slice.AddressType {
+		case discoveryv1.AddressTypeIPv4:
 			family = discoveryv1.AddressTypeIPv4
-
-			break
+			sawIP = true
+		case discoveryv1.AddressTypeIPv6:
+			sawIP = true
+		case discoveryv1.AddressTypeFQDN:
+			sawFQDN = true
 		}
 	}
+	// FQDN slices are deliberately not served (pinned intent: only IP
+	// families are supported), but dropping them SILENTLY would leave an
+	// FQDN-only Service inexplicably empty - warn once so the operator can
+	// tell misconfiguration from an empty Service.
+	if sawFQDN && !sawIP && !w.fqdnWarned {
+		w.fqdnWarned = true
+		w.log.Warn("Service publishes only FQDN-type EndpointSlices, which are not supported; emitting no endpoints",
+			"namespace", w.namespace, "service", w.serviceName)
+	}
 
-	var endpoints []Endpoint
+	var endpoints, servingTerminating []Endpoint
 	for _, slice := range epSlices {
 		if slice.AddressType != family {
 			continue
 		}
 
 		port := resolvePort(slice.Ports, w.portOverride)
+		// A named override that matches nothing (e.g. the port was renamed on
+		// the Service at runtime; startup validation only catches impossible
+		// names) resolves every endpoint to port 0 - warn once instead of
+		// silently rendering backends on port 0.
+		if port == 0 && w.portOverride != "" && !w.portWarned {
+			w.portWarned = true
+			w.log.Warn("port override matches no port in the EndpointSlice; endpoints resolve to port 0",
+				"namespace", w.namespace, "service", w.serviceName, "override", w.portOverride)
+		}
 
 		for _, ep := range slice.Endpoints {
 			// Ready == nil means "unknown"; the EndpointSlice spec
 			// instructs consumers to interpret unknown as ready.
-			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
+			ready := ep.Conditions.Ready == nil || *ep.Conditions.Ready
+			// Serving-and-terminating endpoints are kept in a separate set:
+			// when NO endpoint is ready (a rolling restart's final phase),
+			// traffic falls back to them - matching kube-proxy's
+			// ProxyTerminatingEndpoints behavior - instead of rendering an
+			// empty backend list.
+			fallback := !ready &&
+				ep.Conditions.Serving != nil && *ep.Conditions.Serving &&
+				ep.Conditions.Terminating != nil && *ep.Conditions.Terminating
+			if !ready && !fallback {
 				continue
 			}
 			name := ""
@@ -184,34 +219,37 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 					forZones = append(forZones, h.Name)
 				}
 			}
-			for _, addr := range ep.Addresses {
-				endpoints = append(endpoints, Endpoint{
-					Host:     addr,
-					Port:     port,
-					Name:     name,
-					Zone:     zone,
-					NodeName: nodeName,
-					ForZones: forZones,
-				})
+			// Only the first address is used: discovery/v1 defines no
+			// semantics for additional addresses (kube-proxy ignores them),
+			// and emitting one Endpoint per address would duplicate .Name -
+			// the exact duplicate-backend condition the dual-stack handling
+			// above documents as breaking vcl.load.
+			if len(ep.Addresses) == 0 {
+				continue
+			}
+			e := Endpoint{
+				Host:     ep.Addresses[0],
+				Port:     port,
+				Name:     name,
+				Zone:     zone,
+				NodeName: nodeName,
+				ForZones: forZones,
+			}
+			if ready {
+				endpoints = append(endpoints, e)
+			} else {
+				servingTerminating = append(servingTerminating, e)
 			}
 		}
 	}
 
-	slices.SortFunc(endpoints, func(a, b Endpoint) int {
-		if c := cmp.Compare(a.Host, b.Host); c != 0 {
-			return c
-		}
+	if len(endpoints) == 0 && len(servingTerminating) > 0 {
+		w.log.Debug("no ready endpoints, falling back to serving-terminating endpoints",
+			"namespace", w.namespace, "service", w.serviceName, "count", len(servingTerminating))
+		endpoints = servingTerminating
+	}
 
-		return cmp.Compare(a.Port, b.Port)
-	})
-
-	// The same endpoint can transiently appear in more than one slice during
-	// EndpointSlice rebalancing; the API docs require consumers to
-	// deduplicate. The list is sorted by (Host, Port), so duplicates are
-	// adjacent.
-	endpoints = slices.CompactFunc(endpoints, func(a, b Endpoint) bool {
-		return a.Host == b.Host && a.Port == b.Port
-	})
+	endpoints = canonicalizeEndpoints(endpoints)
 
 	if w.synced && EndpointsEqual(endpoints, w.previous) {
 		return
@@ -233,6 +271,40 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	w.previous = endpoints
 
 	coalescingSend(w.ch, endpoints)
+}
+
+// canonicalizeEndpoints sorts endpoints into a total order and deduplicates
+// same-(Host,Port) entries (the same endpoint can transiently appear in more
+// than one slice during EndpointSlice rebalancing; the API docs require
+// consumers to deduplicate). The sort covers EVERY field, not just (Host,
+// Port): with a partial order the dedup survivor's metadata (Zone, Name,
+// ForZones) would depend on lister iteration order, making EndpointsEqual
+// flap across syncs of an unchanged store and causing spurious
+// endpoint-change deliveries.
+func canonicalizeEndpoints(endpoints []Endpoint) []Endpoint {
+	slices.SortFunc(endpoints, func(a, b Endpoint) int {
+		if c := cmp.Compare(a.Host, b.Host); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Port, b.Port); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Zone, b.Zone); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.NodeName, b.NodeName); c != 0 {
+			return c
+		}
+
+		return slices.Compare(a.ForZones, b.ForZones)
+	})
+
+	return slices.CompactFunc(endpoints, func(a, b Endpoint) bool {
+		return a.Host == b.Host && a.Port == b.Port
+	})
 }
 
 // resolvePort picks the port number from the EndpointSlice ports list.

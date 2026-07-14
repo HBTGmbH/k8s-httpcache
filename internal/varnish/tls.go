@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // tlsMinMajorVersion is the lowest cache major version with native TLS support.
@@ -195,12 +196,32 @@ func (m *Manager) CleanupTLS() {
 	m.tlsCertDir = ""
 }
 
+// tlsListAttempts and tlsListRetryDelay bound listCertIDs' retries. A
+// transient tls.cert.list failure during a rotation makes the just-committed
+// certificate unidentifiable, and the prior certificate is then never
+// discarded - a permanent active-cert leak in varnishd per occurrence - so a
+// short retry is worth blocking the event loop a few hundred milliseconds.
+const (
+	tlsListAttempts   = 3
+	tlsListRetryDelay = 100 * time.Millisecond
+)
+
 // listCertIDs returns the set of active TLS certificate ids reported by
-// `tls.cert.list`, or an error when the listing itself failed. Callers must
-// not treat a failed listing as an empty set: LoadCert's before/after diff
-// would misidentify the committed certificate id.
+// `tls.cert.list`, retrying transient failures, or an error when every
+// attempt failed. Callers must not treat a failed listing as an empty set:
+// LoadCert's before/after diff would misidentify the committed certificate id.
 func (m *Manager) listCertIDs() (map[string]struct{}, error) {
-	resp, err := m.adm("tls.cert.list")
+	var resp string
+	var err error
+	for attempt := range tlsListAttempts {
+		if attempt > 0 {
+			time.Sleep(tlsListRetryDelay)
+		}
+		resp, err = m.adm("tls.cert.list")
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("tls.cert.list: %w", err)
 	}

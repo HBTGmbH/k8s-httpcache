@@ -244,11 +244,16 @@ Usage: {{ include "k8s-httpcache.foreignNamespaces" . }}
 {{- end }}
 
 {{/*
-Whether the ClusterRole for node access should be created.
+Whether the ClusterRole should be created. In "auto" mode it is needed for
+either of two independent reasons: the node lookup for zone auto-detection
+(when template.zone is not set explicitly), or cluster-wide Service /
+EndpointSlice watches (when any backendDiscovery entry sets allNamespaces) -
+without the latter the all-namespace watch is Forbidden and the pod crash
+loops at the startup timeout.
 */}}
 {{- define "k8s-httpcache.createClusterRole" -}}
 {{- if and .Values.rbac.create (not (eq (toString .Values.rbac.createClusterRole) "false")) }}
-  {{- if or (eq (toString .Values.rbac.createClusterRole) "true") (and (eq (toString .Values.rbac.createClusterRole) "auto") (not .Values.template.zone)) }}
+  {{- if or (eq (toString .Values.rbac.createClusterRole) "true") (and (eq (toString .Values.rbac.createClusterRole) "auto") (or (not .Values.template.zone) (include "k8s-httpcache.discoveryAllNamespaces" .))) }}
     {{- true }}
   {{- end }}
 {{- end }}

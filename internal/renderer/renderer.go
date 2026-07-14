@@ -291,7 +291,7 @@ var vclVersionRe = regexp.MustCompile(`(?m)^[\t ]*vcl\s+[\d.]+\s*;\s*\n?`)
 // std.healthy call.
 func vclVersionEnd(vcl string) int {
 	for _, loc := range vclVersionRe.FindAllStringIndex(vcl, -1) {
-		if inBlockComment(vcl, loc[0]) {
+		if inCommentOrLongString(vcl, loc[0]) {
 			continue
 		}
 
@@ -305,18 +305,21 @@ func vclVersionEnd(vcl string) int {
 // and trailing newline) so it can be identified in user VCL.
 var importStdRe = regexp.MustCompile(`(?m)^[\t ]*import\s+std\s*;\s*\n?`)
 
-// inBlockComment reports whether byte offset pos in vcl lies inside a /* */
-// block comment. It performs a single left-to-right scan that also recognises
-// // and # line comments and "..." / {"..."} string literals, so a "/*" or
-// "*/" appearing inside a line comment (e.g. "# proxies /api/*") or a string
-// literal does not corrupt the result. A naive delimiter tally (counting "/*"
-// minus "*/" in the prefix) would miscount those and wrongly treat real code
-// (a later "import std;", "backend", or "sub vcl_deliver") as commented out.
+// inCommentOrLongString reports whether byte offset pos in vcl lies inside a
+// /* */ block comment OR a {"..."} long string - both contexts where a
+// line-anchored token match (import std, backend, sub vcl_deliver, vcl X.Y;)
+// is literal text, not structure: a long string (e.g. a vcl_synth body) can
+// contain lines that begin with any of those tokens, and treating one as
+// structure would suppress the injected import std or splice the drain sub
+// INTO the string literal. The single left-to-right scan also recognises //
+// and # line comments and "..." string literals, so a "/*" or "*/" appearing
+// inside them does not corrupt the result; a naive delimiter tally would
+// miscount those and wrongly treat real code as commented out.
 //
 // Callers pass pos = the start offset of a regex match, which is always at a
 // line boundary (the patterns are anchored with (?m)^), so pos never falls in
 // the middle of a token or string.
-func inBlockComment(vcl string, pos int) bool {
+func inCommentOrLongString(vcl string, pos int) bool {
 	const (
 		stNormal     = iota
 		stBlock      // inside /* */
@@ -365,7 +368,7 @@ func inBlockComment(vcl string, pos int) bool {
 		}
 	}
 
-	return state == stBlock
+	return state == stBlock || state == stLongString
 }
 
 // importStdPositions returns the [start, end) byte offsets of all top-level
@@ -374,7 +377,7 @@ func importStdPositions(vcl string) [][2]int {
 	locs := importStdRe.FindAllStringIndex(vcl, -1)
 	var result [][2]int
 	for _, loc := range locs {
-		if inBlockComment(vcl, loc[0]) {
+		if inCommentOrLongString(vcl, loc[0]) {
 			continue // inside a block comment - keep it
 		}
 		result = append(result, [2]int{loc[0], loc[1]})
@@ -425,7 +428,7 @@ func backendBlockEnds(vcl string) []int {
 	var ends []int
 	for _, loc := range locs {
 		// Skip matches inside /* */ block comments.
-		if inBlockComment(vcl, loc[0]) {
+		if inCommentOrLongString(vcl, loc[0]) {
 			continue
 		}
 
@@ -535,7 +538,7 @@ var subVCLDeliverRe = regexp.MustCompile(`(?m)^[\t ]*sub\s+vcl_deliver\s*\{`)
 // comments), or -1 if there is none.
 func firstSubVCLDeliverStart(vcl string) int {
 	for _, loc := range subVCLDeliverRe.FindAllStringIndex(vcl, -1) {
-		if inBlockComment(vcl, loc[0]) {
+		if inCommentOrLongString(vcl, loc[0]) {
 			continue // inside a block comment
 		}
 

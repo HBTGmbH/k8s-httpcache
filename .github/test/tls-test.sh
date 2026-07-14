@@ -27,7 +27,13 @@ cleanup() {
   fi
   kubectl delete -f "$MANIFEST" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   kubectl delete secret "$SECRET" -n "$NS" --ignore-not-found >/dev/null 2>&1 || true
-  [ -n "$certdir" ] && rm -rf "$certdir"
+  # if-form, not `[ ... ] && rm`: as the trap's last command, a false test
+  # would make cleanup() - and therefore the whole script - exit 1 on every
+  # path where certdir was never created (e.g. the version skip), turning a
+  # graceful SKIP into a CI failure.
+  if [ -n "$certdir" ]; then
+    rm -rf "$certdir"
+  fi
 }
 trap cleanup EXIT
 

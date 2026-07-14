@@ -1396,3 +1396,242 @@ func TestCoalescingSendSerializedConverges(t *testing.T) {
 		t.Errorf("consumer converged to %d, want %d (latest serialised send must survive coalescing)", maxSeen, total)
 	}
 }
+
+// TestCanonicalizeEndpointsDeterministic pins the dedup-determinism fix: when
+// the same (Host,Port) appears in multiple slices with differing metadata,
+// the surviving endpoint must not depend on lister iteration order — a
+// nondeterministic survivor makes EndpointsEqual flap across syncs of an
+// unchanged store, causing spurious endpoint-change deliveries and reloads.
+func TestCanonicalizeEndpointsDeterministic(t *testing.T) {
+	t.Parallel()
+	a := Endpoint{Host: "10.0.0.1", Port: 80, Name: "pod-a", Zone: "eu-west-1a"}
+	b := Endpoint{Host: "10.0.0.1", Port: 80, Name: "pod-a", Zone: ""} // same addr, older slice without zone
+
+	got1 := canonicalizeEndpoints([]Endpoint{a, b})
+	got2 := canonicalizeEndpoints([]Endpoint{b, a})
+	if !EndpointsEqual(got1, got2) {
+		t.Fatalf("survivor depends on input order:\n first order: %+v\n reversed order: %+v", got1, got2)
+	}
+	if len(got1) != 1 {
+		t.Fatalf("expected 1 endpoint after dedup, got %d", len(got1))
+	}
+}
+
+// TestRunMultiAddressEndpointEmitsSingleEndpoint pins the multi-address fix:
+// discovery/v1 defines no semantics for addresses beyond the first (kube-proxy
+// ignores them), and emitting one Endpoint per address produces duplicate
+// .Name values - the exact duplicate-backend condition the dual-stack handling
+// documents as breaking vcl.load.
+func TestRunMultiAddressEndpointEmitsSingleEndpoint(t *testing.T) {
+	t.Parallel()
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.0.0.1", "10.0.0.99"},
+				Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+				TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(slice)
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint (first address only), got %d: %v", len(eps), eps)
+	}
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("Host = %q, want first address 10.0.0.1", eps[0].Host)
+	}
+}
+
+// TestRunServingTerminatingFallback pins the zero-ready fallback: when no
+// endpoint is ready but serving-and-terminating endpoints exist (a rolling
+// restart's final phase), traffic should fall back to them - matching
+// kube-proxy's ProxyTerminatingEndpoints behavior (GA since 1.28) - instead
+// of rendering an empty backend list. With any ready endpoint present,
+// terminating ones stay excluded (pinned by TestRunFiltersNonReadyEndpoints).
+func TestRunServingTerminatingFallback(t *testing.T) {
+	t.Parallel()
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{
+				Addresses: []string{"10.0.0.1"},
+				Conditions: discoveryv1.EndpointConditions{
+					Ready:       new(false),
+					Serving:     new(true),
+					Terminating: new(true),
+				},
+				TargetRef: &corev1.ObjectReference{Name: "pod-draining"},
+			},
+			{
+				Addresses: []string{"10.0.0.2"},
+				Conditions: discoveryv1.EndpointConditions{
+					Ready:       new(false),
+					Serving:     new(false),
+					Terminating: new(true),
+				},
+				TargetRef: &corev1.ObjectReference{Name: "pod-dead"},
+			},
+		},
+		[]discoveryv1.EndpointPort{
+			{Name: new("http"), Port: new(int32(8080))},
+		},
+	)
+
+	clientset := fake.NewClientset(slice)
+	w := New(clientset, "default", "svc", "")
+	ctx := t.Context()
+	go func() { _ = w.Run(ctx) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 1 {
+		t.Fatalf("expected 1 endpoint (serving-terminating fallback), got %d: %v", len(eps), eps)
+	}
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("Host = %q, want serving endpoint 10.0.0.1", eps[0].Host)
+	}
+}
+
+// staticSliceLister serves a fixed set of EndpointSlices for direct sync() tests.
+type staticSliceLister struct{ items []*discoveryv1.EndpointSlice }
+
+func (l *staticSliceLister) List(labels.Selector) ([]*discoveryv1.EndpointSlice, error) {
+	return l.items, nil
+}
+
+func (l *staticSliceLister) EndpointSlices(string) discoverylisters.EndpointSliceNamespaceLister {
+	return &staticSliceNamespaceLister{items: l.items}
+}
+
+type staticSliceNamespaceLister struct{ items []*discoveryv1.EndpointSlice }
+
+func (l *staticSliceNamespaceLister) List(labels.Selector) ([]*discoveryv1.EndpointSlice, error) {
+	return l.items, nil
+}
+
+func (*staticSliceNamespaceLister) Get(string) (*discoveryv1.EndpointSlice, error) {
+	return nil, nil //nolint:nilnil // unused stub method; Watcher.sync only calls List
+}
+
+// TestSyncFQDNOnlyWarnsOnce pins the FQDN observability fix: FQDN-type slices
+// stay unserved (pinned by TestRunFiltersNonIPv4v6AddressTypes), but an
+// FQDN-only Service must log a warning - exactly once - instead of appearing
+// inexplicably empty. HEAD had no FQDN diagnostics at all.
+func TestSyncFQDNOnlyWarnsOnce(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	fqdnSlice := makeEndpointSlice("svc-fqdn",
+		discoveryv1.AddressTypeFQDN,
+		[]discoveryv1.Endpoint{{
+			Addresses:  []string{"my-host.example.com"},
+			Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+		}},
+		[]discoveryv1.EndpointPort{{Name: new("http"), Port: new(int32(8080))}},
+	)
+
+	w := New(fake.NewClientset(), "default", "svc", "")
+	w.log = slog.New(slog.NewTextHandler(&buf, nil))
+	lister := &staticSliceLister{items: []*discoveryv1.EndpointSlice{fqdnSlice}}
+
+	w.sync(lister)
+	if !strings.Contains(buf.String(), "FQDN") {
+		t.Fatalf("expected FQDN warning on first sync, got log: %q", buf.String())
+	}
+
+	buf.Reset()
+	w.sync(lister)
+	if strings.Contains(buf.String(), "FQDN") {
+		t.Errorf("FQDN warning must be logged only once, got repeat: %q", buf.String())
+	}
+}
+
+// TestSyncNamedPortNoMatchWarnsOnce pins the silent-port-0 observability fix:
+// a named port override that matches nothing in the EndpointSlice (e.g. the
+// port was renamed on the Service at runtime) resolves every endpoint to port
+// 0 - which must be warned about, once, instead of silently rendering
+// backends on port 0.
+func TestSyncNamedPortNoMatchWarnsOnce(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{{
+			Addresses:  []string{"10.0.0.1"},
+			Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+		}},
+		[]discoveryv1.EndpointPort{{Name: new("http"), Port: new(int32(8080))}},
+	)
+
+	w := New(fake.NewClientset(), "default", "svc", "grpc") // override matches nothing
+	w.log = slog.New(slog.NewTextHandler(&buf, nil))
+	lister := &staticSliceLister{items: []*discoveryv1.EndpointSlice{slice}}
+
+	w.sync(lister)
+	if !strings.Contains(buf.String(), "port 0") {
+		t.Fatalf("expected a port-0 warning for an unmatched named port override, got log: %q", buf.String())
+	}
+	buf.Reset()
+	w.sync(lister)
+	if strings.Contains(buf.String(), "port 0") {
+		t.Errorf("port-0 warning must be logged only once, got repeat: %q", buf.String())
+	}
+}
+
+// TestSyncNamedPortNoMatchWarnsWithEmptyPortsList extends the port-0 warning
+// to the empty-Ports corner: a slice that carries no ports at all combined
+// with a named override also resolves endpoints to port 0 and must warn.
+func TestSyncNamedPortNoMatchWarnsWithEmptyPortsList(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{{
+			Addresses:  []string{"10.0.0.1"},
+			Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+		}},
+		nil, // no ports at all
+	)
+
+	w := New(fake.NewClientset(), "default", "svc", "grpc")
+	w.log = slog.New(slog.NewTextHandler(&buf, nil))
+	w.sync(&staticSliceLister{items: []*discoveryv1.EndpointSlice{slice}})
+	if !strings.Contains(buf.String(), "port 0") {
+		t.Fatalf("expected a port-0 warning for a named override against an empty Ports list, got: %q", buf.String())
+	}
+}
+
+// TestCanonicalizeEndpointsTiebreakers exercises every comparator tiebreak
+// branch: for each metadata field, two same-(Host,Port) endpoints differing
+// only in that field must yield the same survivor regardless of input order.
+func TestCanonicalizeEndpointsTiebreakers(t *testing.T) {
+	t.Parallel()
+	base := Endpoint{Host: "10.0.0.1", Port: 80, Name: "pod", Zone: "z", NodeName: "n", ForZones: []string{"z"}}
+	variants := map[string]Endpoint{
+		"Name":     {Host: "10.0.0.1", Port: 80, Name: "pod-b", Zone: "z", NodeName: "n", ForZones: []string{"z"}},
+		"Zone":     {Host: "10.0.0.1", Port: 80, Name: "pod", Zone: "z2", NodeName: "n", ForZones: []string{"z"}},
+		"NodeName": {Host: "10.0.0.1", Port: 80, Name: "pod", Zone: "z", NodeName: "n2", ForZones: []string{"z"}},
+		"ForZones": {Host: "10.0.0.1", Port: 80, Name: "pod", Zone: "z", NodeName: "n", ForZones: []string{"z", "z2"}},
+	}
+	for field, other := range variants {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			got1 := canonicalizeEndpoints([]Endpoint{base, other})
+			got2 := canonicalizeEndpoints([]Endpoint{other, base})
+			if len(got1) != 1 || len(got2) != 1 {
+				t.Fatalf("expected 1 endpoint after dedup, got %d and %d", len(got1), len(got2))
+			}
+			if !EndpointsEqual(got1, got2) {
+				t.Errorf("survivor depends on input order for differing %s:\n first: %+v\n second: %+v", field, got1, got2)
+			}
+		})
+	}
+}

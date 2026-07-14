@@ -2872,3 +2872,59 @@ func TestDiscoveryCrossWatcherNameHandoff(t *testing.T) {
 		}
 	}
 }
+
+// blockingServiceLister blocks inside List until released, so a test can
+// observe whether syncServices holds dw.mu across the lister read.
+type blockingServiceLister struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (l *blockingServiceLister) List(labels.Selector) ([]*corev1.Service, error) {
+	close(l.entered)
+	<-l.release
+
+	return nil, nil
+}
+
+func (*blockingServiceLister) Services(_ string) corelisters.ServiceNamespaceLister {
+	return nil
+}
+
+// TestDiscoverySyncServicesReadsUnderLock asserts syncServices performs the
+// lister read while holding dw.mu, mirroring TestWatcherSyncReadsUnderLock:
+// syncServices runs concurrently from the informer handler, the NameRegistry
+// kick goroutine, and Run's explicit startup sync. A reconcile that completed
+// its List but not yet taken the lock can apply a STALE service list after a
+// fresher reconcile - resurrecting a deleted backend (its re-add gen defeats
+// the consumer's tombstone) or removing a live one.
+func TestDiscoverySyncServicesReadsUnderLock(t *testing.T) {
+	t.Parallel()
+
+	dw := NewBackendDiscoveryWatcher(fake.NewClientset(), "", true, labels.Everything(), "", nil)
+	lister := &blockingServiceLister{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		dw.syncServices(t.Context(), lister)
+		close(done)
+	}()
+
+	select {
+	case <-lister.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for syncServices to enter the lister read")
+	}
+
+	if dw.mu.TryLock() {
+		dw.mu.Unlock()
+		close(lister.release)
+		<-done
+		t.Fatal("dw.mu not held during the lister read: a stale reconcile can apply an outdated service list after a fresher one")
+	}
+	close(lister.release)
+	<-done
+}
