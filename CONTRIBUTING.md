@@ -8,9 +8,12 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [Docker](https://docs.docker.com/get-docker/)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [golangci-lint](https://golangci-lint.run/welcome/install/)
+- [nilaway](https://github.com/uber-go/nilaway) for nil-panic static analysis
 - [hadolint](https://github.com/hadolint/hadolint) for Dockerfile linting
 - [Helm](https://helm.sh/docs/intro/install/) for chart linting
+- [kubeconform](https://github.com/yannh/kubeconform) for schema-validating the rendered manifests
 - [kube-linter](https://docs.kubelinter.io/) for linting the rendered chart manifests
+- [helm-docs](https://github.com/norwoodj/helm-docs) for regenerating the chart README from values.yaml comments
 - [pint](https://cloudflare.github.io/pint/) for linting the chart's Prometheus alert rules
 - [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning
 - [shfmt](https://github.com/mvdan/sh) for shell script formatting
