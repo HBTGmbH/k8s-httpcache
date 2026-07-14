@@ -4853,3 +4853,105 @@ func TestParseTemplateDelimsIdenticalRejected(t *testing.T) {
 		t.Errorf("error = %q, want the delimiters-must-differ message", err)
 	}
 }
+
+// TestParseBackendPortOverflowRejected pins the fix for out-of-range numeric
+// ports: an all-digit port that overflows int32 (strconv.ErrRange) must be
+// rejected as out of range, not silently reclassified as a named port (which
+// could never match and would resolve every endpoint to port 0 at runtime).
+func TestParseBackendPortOverflowRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=frontend",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend=api:my-svc:99999999999",
+	})
+	if err == nil {
+		t.Fatal("expected error for out-of-range numeric port")
+	}
+	if !strings.Contains(err.Error(), "port out of range") {
+		t.Errorf("error = %q, want substring 'port out of range'", err)
+	}
+}
+
+// TestParseBackendInvalidPortNameRejected pins the companion fix: non-numeric
+// port strings must be valid Kubernetes port names (IANA_SVC_NAME); an
+// impossible name would silently resolve every endpoint to port 0.
+func TestParseBackendInvalidPortNameRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	for _, port := range []string{"my_port", "80:extra"} {
+		_, err := Parse("", []string{
+			"test",
+			"--service-name=frontend",
+			"--namespace=default",
+			"--vcl-template=" + vcl,
+			"--backend=api:my-svc:" + port,
+		})
+		if err == nil {
+			t.Fatalf("expected error for invalid port name %q", port)
+		}
+		if !strings.Contains(err.Error(), "invalid port name") {
+			t.Errorf("port %q: error = %q, want substring 'invalid port name'", port, err)
+		}
+	}
+}
+
+// TestParseBackendSelectorPortValidation mirrors the two backend port fixes
+// for the --backend-selector port suffix.
+func TestParseBackendSelectorPortValidation(t *testing.T) {
+	t.Parallel()
+	_, err := parseBackendSelector("app=web:99999999999", "default")
+	if err == nil || !strings.Contains(err.Error(), "port out of range") {
+		t.Errorf("overflow port: error = %v, want 'port out of range'", err)
+	}
+	_, err = parseBackendSelector("app=web:my_port", "default")
+	if err == nil || !strings.Contains(err.Error(), "invalid port name") {
+		t.Errorf("invalid port name: error = %v, want 'invalid port name'", err)
+	}
+}
+
+// TestParseDottedResourceNamesAccepted pins the fix for ConfigMap/Secret name
+// validation: their names are RFC 1123 DNS subdomains (dots allowed), not DNS
+// labels - e.g. cert-manager's "example.com-tls". Service names keep the
+// stricter no-dot label rule.
+func TestParseDottedResourceNamesAccepted(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	cfg, err := Parse("", []string{
+		"test",
+		"--service-name=frontend",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=https=:8443,https",
+		"--values=tuning:my.config.map",
+		"--secrets=auth:prod/tokens.v2",
+		"--tls-cert=web:prod/example.com-tls",
+	})
+	if err != nil {
+		t.Fatalf("dotted ConfigMap/Secret names must be accepted, got: %v", err)
+	}
+	if got := cfg.Values[0].ConfigMapName; got != "my.config.map" {
+		t.Errorf("ConfigMapName = %q, want %q", got, "my.config.map")
+	}
+	if got := cfg.Secrets[0].SecretName; got != "tokens.v2" {
+		t.Errorf("SecretName = %q, want %q", got, "tokens.v2")
+	}
+	if got, ns := cfg.TLSCerts[0].SecretName, cfg.TLSCerts[0].Namespace; got != "example.com-tls" || ns != "prod" {
+		t.Errorf("TLSCert = %s/%s, want prod/example.com-tls", ns, got)
+	}
+
+	// Service names keep the stricter DNS-label rule: dots stay rejected.
+	_, err = Parse("", []string{
+		"test",
+		"--service-name=frontend",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--backend=api:my.svc",
+	})
+	if err == nil {
+		t.Fatal("dotted backend service name must still be rejected")
+	}
+}

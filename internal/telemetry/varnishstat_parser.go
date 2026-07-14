@@ -397,9 +397,15 @@ func parseHex4(b string) (int, bool) {
 }
 
 // parseCounterObject parses a single counter object: {"value":N, "flag":"c", ...}.
-// Returns the counter and true on success, or zero value and false if the
-// counter should be skipped (e.g. non-numeric value).
-func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
+// Returns (counter, true, nil) on success and (zero, false, nil) when the
+// counter should be skipped but the object was fully consumed (e.g. a
+// non-numeric value) - the skip-bad-keep-good path. Structural failures
+// (truncated or malformed JSON) return a non-nil error instead: on those
+// paths s.pos is left mid-object, and a false-without-error return would let
+// parseCounterMap consume this object's closing '}' as the MAP's closing
+// brace and silently report a truncated scrape as a successful (near-empty)
+// one.
+func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool, error) {
 	s.pos++ // skip '{'
 
 	var c varnishstatCounter
@@ -409,21 +415,25 @@ func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
 	for {
 		s.skipWhitespace()
 		if s.pos >= len(s.data) {
-			return c, false
+			return c, false, errUnterminatedObject
 		}
 		if s.data[s.pos] == '}' {
 			s.pos++
 			if !hasValue {
-				return c, false
+				return c, false, nil
 			}
 			fVal, err := strconv.ParseFloat(numStr, 64)
 			if err != nil {
-				return c, false
+				// Deliberate skip, not an error: scanNumber accepts lenient
+				// forms ParseFloat rejects (e.g. "1e"), and the object has
+				// been fully consumed here, so dropping just this counter is
+				// safe - the skip-bad-keep-good path.
+				return c, false, nil //nolint:nilerr // see comment above
 			}
 			c.Value = fVal
 			c.RawValue = numStr
 
-			return c, true
+			return c, true, nil
 		}
 		if s.data[s.pos] == ',' {
 			s.pos++
@@ -433,17 +443,17 @@ func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
 		// Read field name.
 		keyStr, err := s.scanString()
 		if err != nil {
-			return c, false
+			return c, false, err
 		}
 
 		err = s.expectByte(':')
 		if err != nil {
-			return c, false
+			return c, false, err
 		}
 
 		s.skipWhitespace()
 		if s.pos >= len(s.data) {
-			return c, false
+			return c, false, errUnterminatedObject
 		}
 
 		// Dispatch on field name.
@@ -451,7 +461,7 @@ func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
 		case "value":
 			numStr, hasValue, err = s.parseCounterValue()
 			if err != nil {
-				return c, false
+				return c, false, err
 			}
 			if !hasValue {
 				return s.skipRemainingFields(c)
@@ -461,7 +471,7 @@ func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
 		case "flag":
 			flagStr, scanErr := s.scanString()
 			if scanErr != nil {
-				return c, false
+				return c, false, scanErr
 			}
 			if interned, ok := internedFlags[flagStr]; ok {
 				c.Flag = interned
@@ -473,14 +483,14 @@ func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
 		case "description":
 			c.Description, err = s.scanString()
 			if err != nil {
-				return c, false
+				return c, false, err
 			}
 
 			continue
 		case "ident":
 			c.Ident, err = s.scanString()
 			if err != nil {
-				return c, false
+				return c, false, err
 			}
 
 			continue
@@ -488,7 +498,7 @@ func (s *jsonScanner) parseCounterObject() (varnishstatCounter, bool) {
 			// Unknown field - skip its value.
 			err = s.skipValue()
 			if err != nil {
-				return c, false
+				return c, false, err
 			}
 		}
 	}
@@ -517,16 +527,18 @@ func (s *jsonScanner) parseCounterValue() (string, bool, error) {
 // skipRemainingFields consumes the rest of the current object (after a
 // non-numeric value was encountered) and returns ok=false so the counter
 // is skipped. This handles V6-style entries like "MAIN.bad": "string".
-func (s *jsonScanner) skipRemainingFields(c varnishstatCounter) (varnishstatCounter, bool) {
+// Structural failures return a non-nil error for the same position-integrity
+// reason documented on parseCounterObject.
+func (s *jsonScanner) skipRemainingFields(c varnishstatCounter) (varnishstatCounter, bool, error) {
 	for {
 		s.skipWhitespace()
 		if s.pos >= len(s.data) {
-			return c, false
+			return c, false, errUnterminatedObject
 		}
 		if s.data[s.pos] == '}' {
 			s.pos++
 
-			return c, false
+			return c, false, nil
 		}
 		if s.data[s.pos] == ',' {
 			s.pos++
@@ -535,17 +547,17 @@ func (s *jsonScanner) skipRemainingFields(c varnishstatCounter) (varnishstatCoun
 		// Skip key.
 		_, err := s.scanString()
 		if err != nil {
-			return c, false
+			return c, false, err
 		}
 
 		err = s.expectByte(':')
 		if err != nil {
-			return c, false
+			return c, false, err
 		}
 
 		err = s.skipValue()
 		if err != nil {
-			return c, false
+			return c, false, err
 		}
 	}
 }
@@ -591,7 +603,10 @@ func (s *jsonScanner) parseCounterMap(skipKey func(string) bool) (map[string]var
 				return nil, err
 			}
 		case s.pos < len(s.data) && s.data[s.pos] == '{':
-			counter, ok := s.parseCounterObject()
+			counter, ok, cntErr := s.parseCounterObject()
+			if cntErr != nil {
+				return nil, fmt.Errorf("counter %q: %w", keyStr, cntErr)
+			}
 			if ok {
 				result[keyStr] = counter
 			}

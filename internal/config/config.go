@@ -19,6 +19,7 @@ import (
 
 	cli "github.com/urfave/cli/v3"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // DefaultDebounceLatencyBuckets are the default histogram bucket boundaries
@@ -67,17 +68,19 @@ const (
 )
 
 var (
-	errEmptyName          = errors.New("empty name")
-	errInvalidFormat      = errors.New("invalid format")
-	errInvalidPort        = errors.New("invalid port")
-	errPortOutOfRange     = errors.New("port out of range")
-	errEmptyField         = errors.New("empty required field")
-	errEmptyServiceRef    = errors.New("empty service reference")
-	errInvalidDNSLabel    = errors.New("invalid RFC 1123 DNS label")
-	errEmptySelector      = errors.New("empty selector")
-	errListenAddrNotFound = errors.New("does not match any --listen-addr name")
-	errListenAddrUDS      = errors.New("is a unix domain socket listener; the broadcast fan-out targets pods over TCP and needs a port")
-	errNoHTTPSListener    = errors.New("requires a --listen-addr with the 'https' protocol (e.g. --listen-addr=https=:8443,https)")
+	errEmptyName           = errors.New("empty name")
+	errInvalidFormat       = errors.New("invalid format")
+	errInvalidPort         = errors.New("invalid port")
+	errPortOutOfRange      = errors.New("port out of range")
+	errEmptyField          = errors.New("empty required field")
+	errEmptyServiceRef     = errors.New("empty service reference")
+	errInvalidDNSLabel     = errors.New("invalid RFC 1123 DNS label")
+	errInvalidDNSSubdomain = errors.New("invalid RFC 1123 DNS subdomain")
+	errInvalidPortName     = errors.New("invalid port name")
+	errEmptySelector       = errors.New("empty selector")
+	errListenAddrNotFound  = errors.New("does not match any --listen-addr name")
+	errListenAddrUDS       = errors.New("is a unix domain socket listener; the broadcast fan-out targets pods over TCP and needs a port")
+	errNoHTTPSListener     = errors.New("requires a --listen-addr with the 'https' protocol (e.g. --listen-addr=https=:8443,https)")
 )
 
 // hasHTTPSListener reports whether any listen address declares the "https"
@@ -301,6 +304,32 @@ func (v *valuesDirFlags) Set(val string) error {
 	return nil
 }
 
+// validatePortOverride validates a --backend / --backend-selector port
+// override, which is either a port number or a Kubernetes port name. An
+// all-digit string that overflows int32 must be rejected as out of range
+// rather than falling through to the named-port path: it can never match a
+// port name, so it would silently resolve every endpoint to port 0 at
+// runtime. Non-numeric values are checked against the Kubernetes port-name
+// rules (IANA_SVC_NAME) for the same reason - an impossible name like
+// "my_port" could never match an EndpointSlice port.
+func validatePortOverride(port string) error {
+	p, parseErr := strconv.ParseInt(port, 10, 32)
+	switch {
+	case parseErr == nil:
+		if p < 1 || p > 65535 {
+			return errPortOutOfRange
+		}
+	case errors.Is(parseErr, strconv.ErrRange):
+		return errPortOutOfRange
+	default:
+		if errs := validation.IsValidPortName(port); len(errs) > 0 {
+			return fmt.Errorf("%q: %s: %w", port, strings.Join(errs, "; "), errInvalidPortName)
+		}
+	}
+
+	return nil
+}
+
 // backendFlags implements a parser for repeatable --backend flags.
 type backendFlags []BackendSpec
 
@@ -325,12 +354,9 @@ func (b *backendFlags) Set(val string) error {
 		if parts[2] == "" {
 			return fmt.Errorf("--backend %q: empty port: %w", val, errEmptyField)
 		}
-		// If it looks numeric, validate the range.
-		p, parseErr := strconv.ParseInt(parts[2], 10, 32)
-		if parseErr == nil {
-			if p <= 0 || p > 65535 {
-				return fmt.Errorf("--backend %q: %w", val, errPortOutOfRange)
-			}
+		err := validatePortOverride(parts[2])
+		if err != nil {
+			return fmt.Errorf("--backend %q: %w", val, err)
 		}
 		spec.Port = parts[2]
 	}
@@ -465,6 +491,40 @@ func parseNamespacedService(s, defaultNS string) (string, string, error) {
 	}
 
 	return namespace, service, nil
+}
+
+// parseNamespacedResource splits an optional "namespace/name" reference to a
+// namespaced resource whose name follows the RFC 1123 DNS SUBDOMAIN rule that
+// Kubernetes applies to ConfigMap and Secret names: dot-separated labels, up
+// to 253 characters (e.g. cert-manager's "example.com-tls"). It must not be
+// merged with parseNamespacedService, which keeps the stricter DNS-label rule
+// that applies to Service names (no dots, 63 chars).
+func parseNamespacedResource(s, defaultNS string) (string, string, error) {
+	if s == "" {
+		return "", "", errEmptyServiceRef
+	}
+	namespace, name, hasSep := strings.Cut(s, "/")
+	if !hasSep {
+		if len(validation.IsDNS1123Subdomain(s)) > 0 {
+			return "", "", fmt.Errorf("resource name %q: %w", s, errInvalidDNSSubdomain)
+		}
+
+		return defaultNS, s, nil
+	}
+	if namespace == "" {
+		return "", "", fmt.Errorf("%q: empty namespace: %w", s, errEmptyField)
+	}
+	if name == "" {
+		return "", "", fmt.Errorf("%q: empty resource name: %w", s, errEmptyField)
+	}
+	if !isValidDNSLabel(namespace) {
+		return "", "", fmt.Errorf("namespace %q in %q: %w", namespace, s, errInvalidDNSLabel)
+	}
+	if len(validation.IsDNS1123Subdomain(name)) > 0 {
+		return "", "", fmt.Errorf("resource name %q in %q: %w", name, s, errInvalidDNSSubdomain)
+	}
+
+	return namespace, name, nil
 }
 
 // ErrHelp is returned by Parse when --help is shown. The caller should
@@ -1548,7 +1608,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				}
 				seenValues[v.Name] = true
 
-				ns, cm, err := parseNamespacedService(v.ConfigMapName, c.Namespace)
+				ns, cm, err := parseNamespacedResource(v.ConfigMapName, c.Namespace)
 				if err != nil {
 					actionErr = validationError(cmd, "--values %q: %v", v.Name, err)
 
@@ -1578,7 +1638,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				}
 				seenSecrets[s.Name] = true
 
-				ns, sec, err := parseNamespacedService(s.SecretName, c.Namespace)
+				ns, sec, err := parseNamespacedResource(s.SecretName, c.Namespace)
 				if err != nil {
 					actionErr = validationError(cmd, "--secrets %q: %v", s.Name, err)
 
@@ -1608,7 +1668,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				}
 				seenTLSCerts[tc.Name] = true
 
-				ns, sec, err := parseNamespacedService(tc.SecretName, c.Namespace)
+				ns, sec, err := parseNamespacedResource(tc.SecretName, c.Namespace)
 				if err != nil {
 					actionErr = validationError(cmd, "--tls-cert %q: %v", tc.Name, err)
 
@@ -1770,11 +1830,9 @@ func parseBackendSelector(raw, defaultNS string) (BackendSelectorSpec, error) {
 		if portStr == "" {
 			return BackendSelectorSpec{}, fmt.Errorf("empty port suffix: %w", errEmptyField)
 		}
-		p, parseErr := strconv.ParseInt(portStr, 10, 32)
-		if parseErr == nil {
-			if p < 1 || p > 65535 {
-				return BackendSelectorSpec{}, fmt.Errorf("%s: %w", portStr, errPortOutOfRange)
-			}
+		portErr := validatePortOverride(portStr)
+		if portErr != nil {
+			return BackendSelectorSpec{}, fmt.Errorf("%s: %w", portStr, portErr)
 		}
 		spec.Port = portStr
 		rest = rest[:idx]

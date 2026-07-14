@@ -4165,3 +4165,78 @@ backend second {
 		t.Fatalf("import std; at %d appears after the drain sub at %d - the VCL cannot compile:\n%s", importIdx, deliverIdx, out)
 	}
 }
+
+// TestVCLVersionEndSkipsBlockComment verifies vclVersionEnd ignores a version
+// line inside a /* */ block comment (e.g. a template header carrying a
+// commented-out old version line). Matching it would make both injection
+// paths splice "import std;" inside the comment, leaving no active import for
+// the drain sub's std.healthy call.
+func TestVCLVersionEndSkipsBlockComment(t *testing.T) {
+	t.Parallel()
+	commented := "/*\nvcl 4.0;\n*/\n"
+	vcl := commented + "vcl 4.1;\nbackend origin { .host = \"127.0.0.1\"; }\n"
+	want := len(commented + "vcl 4.1;\n")
+	if got := vclVersionEnd(vcl); got != want {
+		t.Errorf("vclVersionEnd = %d, want %d (must skip the commented-out version line)", got, want)
+	}
+}
+
+// TestInjectDrainVCLVersionLineInComment is the end-to-end companion of
+// TestVCLVersionEndSkipsBlockComment: the injected import std must land after
+// the block comment, not inside it.
+func TestInjectDrainVCLVersionLineInComment(t *testing.T) {
+	t.Parallel()
+	vcl := "/*\nvcl 4.0;\n*/\nvcl 4.1;\n" +
+		"backend origin { .host = \"127.0.0.1\"; }\n" +
+		"sub vcl_deliver { set resp.http.X = \"1\"; }\n"
+	out, _ := injectDrainVCL(vcl, "drain_flag")
+	importIdx := strings.Index(out, "import std;")
+	commentClose := strings.Index(out, "*/")
+	if importIdx < 0 {
+		t.Fatalf("no import std injected:\n%s", out)
+	}
+	if importIdx < commentClose {
+		t.Errorf("import std injected inside the block comment (import at %d, comment closes at %d):\n%s",
+			importIdx, commentClose, out)
+	}
+}
+
+// TestBackendBlocksEndStringLiterals verifies the brace scanner treats the
+// contents of "..." and {"..."} literals as inert text: a brace inside a
+// probe URL must not close the block early, and a # inside a string must not
+// swallow the real closing braces as a line comment. Either error splices the
+// drain VCL inside the user's backend block.
+func TestBackendBlocksEndStringLiterals(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		vcl  string
+	}{
+		{
+			name: "closing_brace_inside_probe_url",
+			vcl: "vcl 4.1;\nbackend origin {\n .host=\"127.0.0.1\";\n" +
+				" .probe = { .url = \"/a}b\"; }\n}\n",
+		},
+		{
+			name: "hash_inside_string",
+			vcl:  "vcl 4.1;\nbackend origin { .host = \"127.0.0.1/#\"; .probe = { .url = \"/\"; } }\n",
+		},
+		{
+			name: "open_brace_inside_string",
+			vcl:  "vcl 4.1;\nbackend origin { .host = \"127.0.0.1\"; .probe = { .url = \"/a{b\"; } }\n",
+		},
+		{
+			name: "long_string_with_brace",
+			vcl:  "vcl 4.1;\nbackend origin { .host = \"127.0.0.1\"; .probe = { .request = {\"GET /} HTTP/1.1\"}; } }\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			want := len(tt.vcl) // every input ends exactly at its backend block's closing brace + newline
+			if got := backendBlocksEnd(tt.vcl); got != want {
+				t.Errorf("backendBlocksEnd = %d, want %d\nvcl:\n%s", got, want, tt.vcl)
+			}
+		})
+	}
+}

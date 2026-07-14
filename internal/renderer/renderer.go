@@ -282,15 +282,23 @@ func (r *Renderer) logger() *slog.Logger {
 // leading whitespace and trailing newline).
 var vclVersionRe = regexp.MustCompile(`(?m)^[\t ]*vcl\s+[\d.]+\s*;\s*\n?`)
 
-// vclVersionEnd returns the byte offset just past the "vcl X.Y;" line.
-// If no version line is found it returns 0.
+// vclVersionEnd returns the byte offset just past the first "vcl X.Y;" line
+// that is not inside a /* */ block comment. If no such line is found it
+// returns 0. The comment filter matters: a commented-out old version line
+// (e.g. a template header carrying "/* vcl 4.0; */") would otherwise be
+// matched first, and both drain-injection paths would splice "import std;"
+// inside the comment - leaving no active import for the drain sub's
+// std.healthy call.
 func vclVersionEnd(vcl string) int {
-	loc := vclVersionRe.FindStringIndex(vcl)
-	if loc == nil {
-		return 0
+	for _, loc := range vclVersionRe.FindAllStringIndex(vcl, -1) {
+		if inBlockComment(vcl, loc[0]) {
+			continue
+		}
+
+		return loc[1]
 	}
 
-	return loc[1]
+	return 0
 }
 
 // importStdRe matches an "import std;" line (with optional leading whitespace
@@ -426,6 +434,31 @@ func backendBlockEnds(vcl string) []int {
 		depth := 1
 		end := openBrace + 1
 		for i := openBrace + 1; i < len(vcl); i++ {
+			// Skip {"..."} long strings: braces, quotes, and comment markers
+			// inside them are literal text, not structure.
+			if vcl[i] == '{' && i+1 < len(vcl) && vcl[i+1] == '"' {
+				rel := strings.Index(vcl[i+2:], `"}`)
+				if rel < 0 {
+					break // unclosed long string, stop scanning
+				}
+				i = i + 2 + rel + 1 // skip past `"}`
+
+				continue
+			}
+			// Skip "..." string literals: a brace inside a string (e.g. a
+			// probe .url = "/a}b") must not change the depth, and a # or //
+			// inside a string must not swallow the rest of the line as a
+			// comment - either would end the block at the wrong offset and
+			// splice the drain VCL inside the user's backend block.
+			if vcl[i] == '"' {
+				rel := strings.IndexByte(vcl[i+1:], '"')
+				if rel < 0 {
+					break // unclosed string, stop scanning
+				}
+				i = i + 1 + rel // advance to the closing quote
+
+				continue
+			}
 			// Skip /* */ block comments.
 			if i+1 < len(vcl) && vcl[i] == '/' && vcl[i+1] == '*' {
 				rel := strings.Index(vcl[i+2:], "*/")

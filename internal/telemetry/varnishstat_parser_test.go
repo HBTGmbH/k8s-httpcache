@@ -227,7 +227,10 @@ func TestParseCounterObjectAllFields(t *testing.T) {
 	t.Parallel()
 	data := `{"value": 42, "flag": "c", "description": "Cache hits", "ident": "s0"}`
 	s := &jsonScanner{data: data}
-	c, ok := s.parseCounterObject()
+	c, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -252,7 +255,10 @@ func TestParseCounterObjectReversedFields(t *testing.T) {
 	t.Parallel()
 	data := `{"ident": "x", "description": "D", "flag": "g", "value": 99}`
 	s := &jsonScanner{data: data}
-	c, ok := s.parseCounterObject()
+	c, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -274,7 +280,10 @@ func TestParseCounterObjectMinimalFields(t *testing.T) {
 	t.Parallel()
 	data := `{"value": 7, "flag": "a", "description": ""}`
 	s := &jsonScanner{data: data}
-	c, ok := s.parseCounterObject()
+	c, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -290,7 +299,10 @@ func TestParseCounterObjectUnknownFields(t *testing.T) {
 	t.Parallel()
 	data := `{"value": 5, "flag": "c", "description": "", "format": "integer", "extra": true}`
 	s := &jsonScanner{data: data}
-	c, ok := s.parseCounterObject()
+	c, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -303,7 +315,10 @@ func TestParseCounterObjectNonNumericValue(t *testing.T) {
 	t.Parallel()
 	data := `{"value": "not a number", "flag": "c", "description": ""}`
 	s := &jsonScanner{data: data}
-	_, ok := s.parseCounterObject()
+	_, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if ok {
 		t.Fatal("expected ok=false for non-numeric value")
 	}
@@ -313,7 +328,10 @@ func TestParseCounterObjectNullValue(t *testing.T) {
 	t.Parallel()
 	data := `{"value": null, "flag": "c", "description": ""}`
 	s := &jsonScanner{data: data}
-	_, ok := s.parseCounterObject()
+	_, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if ok {
 		t.Fatal("expected ok=false for null value")
 	}
@@ -323,7 +341,10 @@ func TestParseCounterObjectMaxUint64(t *testing.T) {
 	t.Parallel()
 	data := `{"value": 18446744073709551615, "flag": "b", "description": "Happy"}`
 	s := &jsonScanner{data: data}
-	c, ok := s.parseCounterObject()
+	c, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -499,7 +520,10 @@ func TestParseCounterObjectFloatValue(t *testing.T) {
 	t.Parallel()
 	data := `{"value": 3.14, "flag": "g", "description": "float test"}`
 	s := &jsonScanner{data: data}
-	c, ok := s.parseCounterObject()
+	c, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -567,7 +591,10 @@ func TestInternedFlags(t *testing.T) {
 	t.Parallel()
 	data := `{"value": 1, "flag": "c", "description": ""}`
 	s := &jsonScanner{data: data}
-	c, ok := s.parseCounterObject()
+	c, ok, err := s.parseCounterObject()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -614,5 +641,43 @@ func TestParseVarnishstatNestingDepthBounded(t *testing.T) {
 	_, err := parseVarnishstatV7(input)
 	if !errors.Is(err, errNestingTooDeep) {
 		t.Fatalf("err = %v, want errNestingTooDeep for 2000-deep nesting", err)
+	}
+}
+
+// TestParseVarnishstatStructuralErrorNotSilent pins the fix for structural
+// failures inside a counter object: parseCounterObject used to return
+// ok=false with the scanner position left before the counter's closing '}',
+// which parseCounterMap then consumed as the MAP's closing brace - reporting
+// a truncated/corrupt document as a successful (near-empty) scrape with a nil
+// error. Structural corruption must surface as a parse error; only
+// fully-consumed skippable counters (non-numeric values) are dropped
+// silently.
+func TestParseVarnishstatStructuralErrorNotSilent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "v7_trailing_comma_in_counter",
+			data: `{"counters":{"MAIN.bad":{"value":1,},"MAIN.good":{"value":2,"flag":"c"}}}`,
+		},
+		{
+			name: "v6_missing_field_value",
+			data: `{"MAIN.bad":{"flag":},"MAIN.good":{"value":2,"flag":"c"}}`,
+		},
+		{
+			name: "v7_truncated_counter_object",
+			data: `{"counters":{"MAIN.bad":{"value":1`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			counters, err := parseVarnishstat(tt.data)
+			if err == nil {
+				t.Fatalf("expected a parse error, got nil with %d counters (silent data loss)", len(counters))
+			}
+		})
 	}
 }
