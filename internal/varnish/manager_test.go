@@ -107,6 +107,70 @@ const varnishdVersionOutput = "varnishd (varnish-7.6.1 revision abc123)"
 
 // --- tests ---
 
+// TestAdmQuotesWhitespaceArgs pins that adm() CLI-quotes its arguments:
+// varnishadm joins argv with spaces WITHOUT quoting before handing the line
+// to varnishd's CLI tokenizer, so a temp-VCL path under a whitespace TMPDIR
+// must arrive pre-quoted as one CLI token or every vcl.load fails.
+func TestAdmQuotesWhitespaceArgs(t *testing.T) {
+	t.Parallel()
+
+	r := &mockRunner{runFn: func(string, []string) (string, error) { return "200", nil }}
+	m := newTestManager(r)
+
+	_, err := m.adm("vcl.load", "kv_reload_1", "/tmp/with space/f.vcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.adm("ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	load := r.calls[0]
+	want := `"/tmp/with space/f.vcl"`
+	if got := load[len(load)-1]; got != want {
+		t.Errorf("vcl.load path arg = %q, want CLI-quoted %q", got, want)
+	}
+	ping := r.calls[1]
+	if got := ping[len(ping)-1]; got != "ping" {
+		t.Errorf("ping arg = %q, want unquoted %q", got, "ping")
+	}
+}
+
+// TestCLIQuote pins the quoting rules for varnishd's VAV CLI tokenizer.
+func TestCLIQuote(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"vcl name unchanged", "kv_reload_1", "kv_reload_1"},
+		{"plain path unchanged", "/tmp/a.vcl", "/tmp/a.vcl"},
+		{"command unchanged", "ping", "ping"},
+		{"space quoted", "/tmp/with space/f.vcl", `"/tmp/with space/f.vcl"`},
+		{"tab escaped", "a\tb", `"a\tb"`},
+		{"newline escaped", "a\nb", `"a\nb"`},
+		{"carriage return escaped", "a\rb", `"a\rb"`},
+		{"double quote escaped", `a"b`, `"a\"b"`},
+		{"backslash escaped", `a\b`, `"a\\b"`},
+		{"empty string quoted", "", `""`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := cliQuote(tt.in); got != tt.want {
+				t.Errorf("cliQuote(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStartArgs(t *testing.T) {
 	t.Parallel()
 	var gotName string

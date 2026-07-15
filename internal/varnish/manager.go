@@ -922,6 +922,41 @@ func (m *Manager) waitForAdmin(timeout time.Duration) error {
 	return errAdminTimeout
 }
 
+// cliQuote returns s quoted for varnishd's CLI line tokenizer when it
+// contains characters that would otherwise split or corrupt the command
+// line. varnishadm joins its argv with spaces WITHOUT quoting (upstream
+// varnishadm.c: "XXX: We should really CLI-quote these"), so an argument
+// like a temp-VCL path under a whitespace TMPDIR must be pre-quoted here or
+// varnishd parses it as multiple parameters and the command fails. The
+// escapes used (\\ \" \n \r \t) are the ones varnishd's VAV tokenizer
+// understands. Safe arguments are returned byte-identical.
+func cliQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\n\r\"\\") {
+		return s
+	}
+
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"', '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+
+	return b.String()
+}
+
 func (m *Manager) adm(args ...string) (string, error) {
 	cmdArgs := make([]string, 0, len(args)+4)
 	if m.workDir != "" {
@@ -933,7 +968,11 @@ func (m *Manager) adm(args ...string) (string, error) {
 	// reload AND every retry - defeating the generous defaultCLITimeout
 	// chosen precisely for large compiles.
 	cmdArgs = append(cmdArgs, "-t", strconv.Itoa(int(defaultCLITimeout/time.Second)))
-	cmdArgs = append(cmdArgs, args...)
+	// CLI-quote only the CLI-line arguments, never the -n/-t option pairs
+	// above: those are real varnishadm argv, not part of the joined CLI line.
+	for _, a := range args {
+		cmdArgs = append(cmdArgs, cliQuote(a))
+	}
 
 	m.log.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
 
