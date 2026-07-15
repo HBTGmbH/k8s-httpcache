@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.1](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.2.0...k8s-httpcache-v1.2.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* fail fast on monitors without metrics port, close VBE generation-scan blind spot ([b330412](https://github.com/HBTGmbH/k8s-httpcache/commit/b33041295802ff2a4bc266c0cb796eb67b10f2a3))
+* issues across the controller, chart, and CI ([f0a7f9d](https://github.com/HBTGmbH/k8s-httpcache/commit/f0a7f9dcbffd6102d60e8ff6b2ae39c82cde0f93))
+* race conditions and correctness issues ([7956b59](https://github.com/HBTGmbH/k8s-httpcache/commit/7956b59c7a736976f8109c9665cfa195b963020d))
+* race in collectInitialState ([4f082f7](https://github.com/HBTGmbH/k8s-httpcache/commit/4f082f7928ebb10139052266cd9c6166df453244))
+* re-generate Helm chart README and add linting step ([e534afa](https://github.com/HBTGmbH/k8s-httpcache/commit/e534afaecf85fe9bd5df65c2b9121896f3bfbbd9))
+* values-map race, rollback-to-unproven-template, VBE series flapping, Inf buckets, fullnameOverride ([b3320b9](https://github.com/HBTGmbH/k8s-httpcache/commit/b3320b9ead5adc60bf366ed264d9930d89db7a0b))
+* wire contract gates into CI, require HPA scaling target, close template-watch startup gap ([a572871](https://github.com/HBTGmbH/k8s-httpcache/commit/a572871d2d31638cfbf146e6dc9904203ef787ff))
+
 ## [1.2.0](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.1.0...k8s-httpcache-v1.2.0) (2026-06-27)
 
 
