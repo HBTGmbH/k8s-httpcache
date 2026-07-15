@@ -1,4 +1,7 @@
 {{- if .Values.autoscaling.enabled -}}
+{{- if not (or .Values.autoscaling.targetCPU .Values.autoscaling.targetMemory) }}
+{{- fail "autoscaling.enabled requires autoscaling.targetCPU and/or autoscaling.targetMemory: without a target the HPA renders a null metrics list and falls back to an implicit 80% CPU default that only works with CPU requests set" }}
+{{- end }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

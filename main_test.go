@@ -169,7 +169,7 @@ func TestWatchFileDetectsChange(t *testing.T) {
 
 	ctx := t.Context()
 
-	ch := watchFile(ctx, path, 50*time.Millisecond)
+	ch := watchFile(ctx, path, 50*time.Millisecond, nil)
 
 	// No sleep-based synchronisation with the watcher's baseline read: keep
 	// writing DISTINCT contents until a change fires. Whatever content the
@@ -209,7 +209,7 @@ func TestWatchFileNoChangeNoNotification(t *testing.T) {
 
 	ctx := t.Context()
 
-	ch := watchFile(ctx, path, 50*time.Millisecond)
+	ch := watchFile(ctx, path, 50*time.Millisecond, nil)
 
 	// No modification - should not receive anything.
 	select {
@@ -231,7 +231,7 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 	_ = f.Close()
 
 	ctx, cancel := context.WithCancel(t.Context())
-	ch := watchFile(ctx, path, 50*time.Millisecond)
+	ch := watchFile(ctx, path, 50*time.Millisecond, nil)
 
 	// Cancel the context immediately.
 	cancel()
@@ -249,6 +249,63 @@ func TestWatchFileStopsOnContextCancel(t *testing.T) {
 		t.Fatal("unexpected notification after context cancel")
 	case <-time.After(300 * time.Millisecond):
 		// OK - goroutine stopped
+	}
+}
+
+// TestWatchFileBaselineDetectsChangeBeforeWatchStart pins the startup gap fix:
+// run() parses the template (renderer.New) minutes before startTemplateWatch
+// establishes the poller, so a template change landing in that window must be
+// detected against the baseline captured at parse time - not silently absorbed
+// into a fresh read taken when the poller starts.
+func TestWatchFileBaselineDetectsChangeBeforeWatchStart(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "template.vcl")
+	err := os.WriteFile(path, []byte("content-0"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate run(): the baseline is captured when the renderer reads the
+	// template.
+	baseline, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The file changes BEFORE the watch goroutine starts - inside the
+	// startup window between renderer.New and startTemplateWatch.
+	err = os.WriteFile(path, []byte("content-1"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := watchFile(t.Context(), path, 10*time.Millisecond, baseline)
+
+	select {
+	case <-ch:
+		// OK - the pre-watch change was detected against the baseline.
+	case <-time.After(2 * time.Second):
+		t.Fatal("template change between the renderer's read and watch start was silently absorbed")
+	}
+}
+
+// TestWatchFileBaselineUnchangedNoNotification is the companion guard: a
+// baseline matching the on-disk content must not produce a spurious event.
+func TestWatchFileBaselineUnchangedNoNotification(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "template.vcl")
+	err := os.WriteFile(path, []byte("content-0"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := watchFile(t.Context(), path, 10*time.Millisecond, baseline)
+
+	select {
+	case <-ch:
+		t.Fatal("spurious notification for an unchanged file")
+	case <-time.After(300 * time.Millisecond):
+		// OK - no notification
 	}
 }
 
@@ -2374,7 +2431,7 @@ func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
 	_ = f.Close()
 
 	ctx := t.Context()
-	watchCh := watchFile(ctx, path, 50*time.Millisecond)
+	watchCh := watchFile(ctx, path, 50*time.Millisecond, nil)
 
 	// Wait a tick so the watcher reads the initial content.
 	time.Sleep(100 * time.Millisecond)
@@ -4637,7 +4694,7 @@ func TestWatchFileContextCancelDuringPoll(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	ch := watchFile(ctx, path, 10*time.Millisecond)
+	ch := watchFile(ctx, path, 10*time.Millisecond, nil)
 
 	// Let the goroutine enter the polling loop and tick at least once.
 	time.Sleep(50 * time.Millisecond)
@@ -4670,7 +4727,7 @@ func TestWatchFileNonBlockingSendDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ch := watchFile(t.Context(), path, 10*time.Millisecond)
+	ch := watchFile(t.Context(), path, 10*time.Millisecond, nil)
 
 	// First change - fills the channel (buffer size 1).
 	err = os.WriteFile(path, []byte("v2"), 0o644)
@@ -4718,7 +4775,7 @@ func TestWatchFileReadError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ch := watchFile(t.Context(), path, 10*time.Millisecond)
+	ch := watchFile(t.Context(), path, 10*time.Millisecond, nil)
 
 	// Synchronize with the watcher goroutine by writing distinct content
 	// until a change is detected. This replaces a fragile time.Sleep that
@@ -4783,7 +4840,7 @@ func TestWatchFileNonBlockingSendDefaultStrict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ch := watchFile(t.Context(), path, 5*time.Millisecond)
+	ch := watchFile(t.Context(), path, 5*time.Millisecond, nil)
 
 	// Write many changes without reading. The channel buffer is 1, so after
 	// the first detection all subsequent sends hit the default branch.
@@ -7212,7 +7269,7 @@ func TestRunLoop_FrontendChangeWithBroadcastDisabled(t *testing.T) {
 func TestStartTemplateWatch_DisabledCreatesNothing(t *testing.T) { //nolint:paralleltest // goleak must run in isolation
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
-	ch := startTemplateWatch(t.Context(), &config.Config{FileWatch: false})
+	ch := startTemplateWatch(t.Context(), &config.Config{FileWatch: false}, nil)
 	if ch != nil {
 		t.Error("expected nil template channel when --file-watch is disabled")
 	}
@@ -7292,7 +7349,7 @@ func TestStartTemplateWatch_EnabledChannelAndCleanup(t *testing.T) { //nolint:pa
 		FileWatch:                true,
 		VCLTemplate:              tmpl,
 		VCLTemplateWatchInterval: 10 * time.Millisecond,
-	})
+	}, nil)
 	if ch == nil {
 		t.Fatal("expected a non-nil template channel when --file-watch is enabled")
 	}

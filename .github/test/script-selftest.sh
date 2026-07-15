@@ -38,4 +38,14 @@ else
   echo "deadcode not installed; skipping deadcode selftest"
 fi
 
+echo "=== script selftest: custom gate scripts are wired into CI ==="
+# chart-contract-test.sh and this selftest are the only lint-all.sh checks a
+# stock linter cannot replace; if the CI lint job drops them, chart-vs-code
+# drift lands green on main. Pin their workflow wiring here.
+workflow=.github/workflows/test-and-build.yml
+grep -qE '^\s*run: \.github/test/chart-contract-test\.sh' "$workflow" ||
+  fail "chart-contract-test.sh is not invoked by ${workflow}; the chart-vs-code contract gate only runs locally"
+grep -qE '^\s*run: \.github/test/script-selftest\.sh' "$workflow" ||
+  fail "script-selftest.sh is not invoked by ${workflow}; the script selftest gate only runs locally"
+
 echo "All script selftests passed."

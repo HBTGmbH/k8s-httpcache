@@ -149,4 +149,24 @@ port="$(helm template "$CHART" "${IMG[@]}" --set serviceMonitor.enabled=true \
 [ "$port" = "http-m" ] ||
   fail "ServiceMonitor with default metrics.enabled should scrape http-m, got ${port}"
 
+echo "=== chart contract: autoscaling requires an explicit scaling target ==="
+# With no targetCPU/targetMemory the rendered HPA has a null metrics list and
+# silently falls back to the API server's implicit 80%-CPU default (which
+# additionally needs CPU requests to do anything); that must fail at render
+# time instead.
+if helm template "$CHART" "${IMG[@]}" --set autoscaling.enabled=true \
+  >/dev/null 2>&1; then
+  fail "autoscaling.enabled without a scaling target rendered instead of failing"
+fi
+cpu="$(helm template "$CHART" "${IMG[@]}" --set autoscaling.enabled=true \
+  --set autoscaling.targetCPU=80 --show-only templates/hpa.yaml |
+  awk '/averageUtilization:/ {print $2; exit}')"
+[ "$cpu" = "80" ] ||
+  fail "autoscaling.targetCPU=80 did not render an 80% utilization target, got ${cpu}"
+mem="$(helm template "$CHART" "${IMG[@]}" --set autoscaling.enabled=true \
+  --set autoscaling.targetMemory=70 --show-only templates/hpa.yaml |
+  awk '/name: memory/ {found=1} found && /averageUtilization:/ {print $2; exit}')"
+[ "$mem" = "70" ] ||
+  fail "autoscaling.targetMemory=70 alone did not render a memory target, got ${mem}"
+
 echo "All chart contract checks passed."

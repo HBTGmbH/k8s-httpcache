@@ -821,6 +821,14 @@ func run() int {
 		slog.Info("varnishstat prometheus exporter enabled", "filter", cfg.VarnishstatExportFilter)
 	}
 
+	// Capture the template-watch baseline BEFORE the renderer reads the
+	// template: startTemplateWatch only starts polling after awaitInitial and
+	// varnishd startup (minutes later), and a template change landing in that
+	// window must fire a change event instead of being silently absorbed into
+	// a fresh baseline read. A read error leaves the baseline nil; renderer.New
+	// fails fast on the same file right below.
+	templateBaseline, _ := os.ReadFile(cfg.VCLTemplate)
+
 	// Parse VCL template.
 	rend, err := renderer.New(cfg.VCLTemplate, cfg.TemplateDelimLeft, cfg.TemplateDelimRight, cfg.TemplateFuncs)
 	if err != nil {
@@ -1185,7 +1193,7 @@ func run() int {
 	}
 
 	// Watch VCL template file for changes (only when --file-watch is enabled).
-	templateCh := startTemplateWatch(ctx, cfg)
+	templateCh := startTemplateWatch(ctx, cfg, templateBaseline)
 
 	// Fan-in backend watcher updates to a single channel.
 	var backendCh chan backendChange
@@ -2268,15 +2276,18 @@ func valuesChan(ch chan valuesChange) <-chan valuesChange {
 }
 
 // startTemplateWatch returns a channel signalling VCL template file changes, or
-// nil (and starts no goroutine) when --file-watch is disabled.
-func startTemplateWatch(ctx context.Context, cfg *config.Config) <-chan struct{} {
+// nil (and starts no goroutine) when --file-watch is disabled. baseline is the
+// template content change detection starts from - run() captures it before the
+// renderer's parse, so an edit landing between the parse and the (much later)
+// watch start still fires an event.
+func startTemplateWatch(ctx context.Context, cfg *config.Config, baseline []byte) <-chan struct{} {
 	if !cfg.FileWatch {
 		slog.Info("VCL template file watching disabled (--file-watch=false); --values-dir is controlled independently")
 
 		return nil
 	}
 
-	return watchFile(ctx, cfg.VCLTemplate, cfg.VCLTemplateWatchInterval)
+	return watchFile(ctx, cfg.VCLTemplate, cfg.VCLTemplateWatchInterval, baseline)
 }
 
 // startValuesDirWatchers creates a FileValuesWatcher per --values-dir. The polling
@@ -2631,15 +2642,21 @@ func writeInitialVCLFile(contents string) (string, func(), error) {
 }
 
 // watchFile polls a file for content changes and sends on the returned channel
-// when a change is detected. The goroutine exits when ctx is cancelled.
-func watchFile(ctx context.Context, path string, interval time.Duration) <-chan struct{} {
+// when a change is detected. baseline, when non-nil, is the content the caller
+// already acted on: change detection starts from it, so a change landing
+// before the goroutine's first poll still fires. A nil baseline falls back to
+// a fresh read when polling starts. The goroutine exits when ctx is cancelled.
+func watchFile(ctx context.Context, path string, interval time.Duration, baseline []byte) <-chan struct{} {
 	path = filepath.Clean(path)
 	ch := make(chan struct{}, 1)
 
 	go func() {
-		// path is the operator-configured --vcl-template, validated at startup, not
-		// request-derived input.
-		last, _ := os.ReadFile(path) //nolint:gosec // trusted operator-configured path
+		last := baseline
+		if last == nil {
+			// path is the operator-configured --vcl-template, validated at startup, not
+			// request-derived input.
+			last, _ = os.ReadFile(path) //nolint:gosec // trusted operator-configured path
+		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
