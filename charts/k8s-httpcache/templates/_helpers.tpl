@@ -7,9 +7,14 @@ Expand the name of the chart.
 
 {{/*
 Create a default fully qualified app name.
+Precedence: fullnameOverride > nameOverride > release name.
 */}}
 {{- define "k8s-httpcache.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
 {{- .Values.nameOverride | default .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- end }}
 {{- end }}
 
 {{/*

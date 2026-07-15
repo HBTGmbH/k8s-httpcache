@@ -146,9 +146,11 @@ func New(templatePath, delimLeft, delimRight, templateFuncs string) (*Renderer, 
 }
 
 // Reload re-reads and re-parses the template file from disk.
-// On success the internal template is replaced and the previous template is
-// kept so that Rollback can restore it. On parse failure the active template
-// is not changed.
+// On success the internal template is replaced; the last proven template
+// (see Commit) is kept so that Rollback can restore it. Back-to-back Reloads
+// without an intervening Commit keep the same rollback baseline — a swap that
+// was never proven must not become the template Rollback restores. On parse
+// failure the active template is not changed.
 func (r *Renderer) Reload() error {
 	raw, err := os.ReadFile(r.templatePath)
 	if err != nil {
@@ -160,7 +162,11 @@ func (r *Renderer) Reload() error {
 		return fmt.Errorf("parsing template %s: %w", r.templatePath, err)
 	}
 
-	r.prev = r.tmpl
+	if r.prev == nil {
+		// No unproven swap in flight: the active template is the proven
+		// baseline Rollback restores.
+		r.prev = r.tmpl
+	}
 	r.tmpl = tmpl
 	// A freshly loaded template may have a different drain-placement layout;
 	// allow the once-per-template warning to fire again for it.
@@ -169,8 +175,16 @@ func (r *Renderer) Reload() error {
 	return nil
 }
 
-// Rollback reverts to the template that was active before the last successful
-// Reload. It is a no-op if there is no previous template.
+// Commit marks the active template as proven — varnishd accepted its rendered
+// VCL, or the output was byte-identical to the running config — and discards
+// the rollback baseline. It is a no-op when no unproven swap is in flight.
+func (r *Renderer) Commit() {
+	r.prev = nil
+}
+
+// Rollback reverts to the last proven template (the one active before the
+// unproven Reload swap(s), see Commit). It is a no-op if there is no unproven
+// swap in flight.
 func (r *Renderer) Rollback() {
 	if r.prev != nil {
 		r.tmpl = r.prev
@@ -217,8 +231,8 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 	err := r.tmpl.Execute(&buf, templateData{
 		Frontends: frontends,
 		Backends:  backendsAny,
-		Values:    toAnyMap(values),
-		Secrets:   toAnyMap(secrets),
+		Values:    deepCopyTemplateMap(values),
+		Secrets:   deepCopyTemplateMap(secrets),
 		LocalZone: r.localZone,
 	})
 	if err != nil {

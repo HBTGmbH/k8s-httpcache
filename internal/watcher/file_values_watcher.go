@@ -46,6 +46,9 @@ func NewFileValuesWatcher(dir string, interval time.Duration) *FileValuesWatcher
 }
 
 // Changes returns the channel on which directory data updates are delivered.
+// The delivered map is also retained by the watcher as its dedup baseline and
+// compared with [reflect.DeepEqual] on the poller goroutine: consumers must
+// treat it as read-only (copy before mutating).
 func (w *FileValuesWatcher) Changes() <-chan map[string]any {
 	return w.ch
 }

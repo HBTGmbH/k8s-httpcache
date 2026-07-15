@@ -129,8 +129,9 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 
 	ch <- prometheus.MustNewConstMetric(c.parseFailuresDesc, prometheus.CounterValue, c.parseFailures)
 
-	// Only keep counters from the most recent VCL reload.
-	latestReload := newestVBEReloadTag(counters)
+	// Only keep backend counters from the newest VCL generation; older
+	// generations of the same backend would collapse to duplicate label sets.
+	latestReload := newestVBEGeneration(counters)
 
 	// Stack-allocated label buffers reused each iteration.
 	var keyBuf, valBuf [3]string
@@ -190,10 +191,11 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 // desc cache on label-cardinality mismatches.
 //
 // The dedup matters because duplicate samples fail the ENTIRE registry Gather
-// (HTTP 500 on /metrics): a foreign-named VCL generation coexisting with the
-// controller's (e.g. a manual varnishreload names VCLs reload_<ts>, which the
-// kv_reload_-only staleness filter cannot order) yields the same backend under
-// two generations, normalizing to identical labels. First occurrence wins.
+// (HTTP 500 on /metrics). Coexisting VCL generations - the usual duplicate
+// source - are already resolved deterministically by newestVBEGeneration, so
+// this is the safety net for whatever residual duplicates remain (e.g. a
+// generation with no .happy counter that the generation scan cannot see).
+// First occurrence wins.
 //
 // Using the non-panicking NewConstMetric keeps a scrape robust: a counter that
 // disagrees with the cached desc's label cardinality is dropped rather than
@@ -280,33 +282,92 @@ func compareReloadTags(a, b string) int {
 	return cmp.Compare(a, b)
 }
 
-// newestVBEReloadTag scans counter names for VBE.kv_reload_<tag> prefixes and
-// returns the one from the most recent VCL reload (numeric tags compared
-// numerically). Returns "" when no reload prefixes exist.
-func newestVBEReloadTag(counters map[string]varnishstatCounter) string {
-	latest := ""
-	latestSuffix := ""
+// compareForeignGenerations orders non-kv VCL generation names: "boot" ranks
+// oldest; anything else compares by its reload tag (the name with a
+// "reload_" prefix stripped) via the numeric-aware compareReloadTags, with a
+// full-string tie-break. Cross-convention recency is not knowable from names
+// alone, so this is a heuristic - but any deterministic choice beats a
+// per-scrape random winner, and the next controller reload (kv_reload_*)
+// supersedes all foreign generations anyway.
+func compareForeignGenerations(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a == "boot" {
+		return -1
+	}
+	if b == "boot" {
+		return 1
+	}
+	if c := compareReloadTags(strings.TrimPrefix(a, "reload_"), strings.TrimPrefix(b, "reload_")); c != 0 {
+		return c
+	}
+
+	return cmp.Compare(a, b)
+}
+
+// newestVBEGeneration returns the "VBE.<generation>" prefix of the VCL
+// generation whose backend counters should be exported, or "" when no
+// generation filtering is needed.
+//
+// Controller reloads are named kv_reload_<tag>: when any exist the newest one
+// wins (numeric tags compared numerically) - every foreign generation (boot,
+// a manual varnishreload's reload_<ts>) is superseded by it. Without
+// kv_reload_ generations a single generation needs no filtering, but two or
+// more (e.g. boot plus a manual varnishreload) collapse to duplicate label
+// sets where the emitOnce dedup would pick a map-iteration-order - that is,
+// per-scrape random - winner, so the newest is picked deterministically
+// instead.
+func newestVBEGeneration(counters map[string]varnishstatCounter) string {
+	latest := ""       // "VBE.kv_reload_<tag>" of the newest controller reload
+	latestSuffix := "" // its <tag>
+	foreign := ""      // newest non-kv generation name (e.g. "boot", "reload_<ts>")
+	foreignMultiple := false
 	for key := range counters {
-		if !strings.HasPrefix(key, vbeReloadTag) {
-			continue
-		}
 		if !strings.HasSuffix(key, ".happy") {
 			continue
 		}
-		// Extract "VBE.kv_reload_<tag>" before the next dot.
-		tail := key[len(vbeReloadTag):]
-		sep := strings.Index(tail, ".")
-		if sep < 0 {
+		if strings.HasPrefix(key, vbeReloadTag) {
+			// Extract "VBE.kv_reload_<tag>" before the next dot.
+			tail := key[len(vbeReloadTag):]
+			sep := strings.Index(tail, ".")
+			if sep < 0 {
+				continue
+			}
+			suffix := tail[:sep]
+			if latest == "" || compareReloadTags(suffix, latestSuffix) > 0 {
+				latest = key[:len(vbeReloadTag)+sep]
+				latestSuffix = suffix
+			}
+
 			continue
 		}
-		suffix := tail[:sep]
-		if latest == "" || compareReloadTags(suffix, latestSuffix) > 0 {
-			latest = key[:len(vbeReloadTag)+sep]
-			latestSuffix = suffix
+		if !strings.HasPrefix(key, "VBE.") {
+			continue
+		}
+		gen, _, ok := strings.Cut(key[len("VBE."):], ".")
+		if !ok || gen == foreign {
+			continue
+		}
+		if foreign == "" {
+			foreign = gen
+
+			continue
+		}
+		foreignMultiple = true
+		if compareForeignGenerations(gen, foreign) > 0 {
+			foreign = gen
 		}
 	}
 
-	return latest
+	if latest != "" {
+		return latest
+	}
+	if foreignMultiple {
+		return "VBE." + foreign
+	}
+
+	return ""
 }
 
 // isStaleBackendCounter reports whether a counter belongs to a VBE

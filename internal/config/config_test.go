@@ -5079,3 +5079,28 @@ func TestParseNamespacedResourceErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestParseDebounceLatencyBucketsRejectsInfinite pins the +Inf validation:
+// [strconv.ParseFloat] accepts "Inf"/"Infinity" (any case, optional sign), +Inf
+// passes the positivity check, and client_golang strips a trailing +Inf
+// bucket - so an Inf-only list would leave the debounce-latency histogram
+// with zero finite buckets.
+func TestParseDebounceLatencyBucketsRejectsInfinite(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	for _, buckets := range []string{"Inf", "+Inf", "inf", "Infinity", "0.1,Inf", "-Inf"} {
+		t.Run(buckets, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse("", []string{
+				"test",
+				"--service-name=frontend",
+				"--namespace=default",
+				"--vcl-template=" + vcl,
+				"--debounce-latency-buckets=" + buckets,
+			})
+			if err == nil {
+				t.Fatalf("expected error for infinite bucket boundary %q", buckets)
+			}
+		})
+	}
+}

@@ -844,7 +844,7 @@ func TestMapGroupName(t *testing.T) {
 	}
 }
 
-func TestNewestVBEReloadTag(t *testing.T) {
+func TestNewestVBEGeneration(t *testing.T) {
 	t.Parallel()
 
 	counters := map[string]varnishstatCounter{
@@ -854,13 +854,13 @@ func TestNewestVBEReloadTag(t *testing.T) {
 		"MAIN.uptime":                          {},
 	}
 
-	got := newestVBEReloadTag(counters)
+	got := newestVBEGeneration(counters)
 	if got != "VBE.kv_reload_2" {
-		t.Errorf("newestVBEReloadTag() = %q, want VBE.kv_reload_2", got)
+		t.Errorf("newestVBEGeneration() = %q, want VBE.kv_reload_2", got)
 	}
 }
 
-func TestNewestVBEReloadTagNoReload(t *testing.T) {
+func TestNewestVBEGenerationNoReload(t *testing.T) {
 	t.Parallel()
 
 	counters := map[string]varnishstatCounter{
@@ -868,9 +868,9 @@ func TestNewestVBEReloadTagNoReload(t *testing.T) {
 		"MAIN.uptime": {},
 	}
 
-	got := newestVBEReloadTag(counters)
+	got := newestVBEGeneration(counters)
 	if got != "" {
-		t.Errorf("newestVBEReloadTag() = %q, want empty", got)
+		t.Errorf("newestVBEGeneration() = %q, want empty", got)
 	}
 }
 
@@ -2143,7 +2143,7 @@ func BenchmarkParseVarnishstatV6(b *testing.B) {
 	}
 }
 
-func TestNewestVBEReloadTagNumericOrdering(t *testing.T) {
+func TestNewestVBEGenerationNumericOrdering(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -2183,8 +2183,8 @@ func TestNewestVBEReloadTagNumericOrdering(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := newestVBEReloadTag(tt.counters); got != tt.want {
-				t.Errorf("newestVBEReloadTag() = %q, want %q", got, tt.want)
+			if got := newestVBEGeneration(tt.counters); got != tt.want {
+				t.Errorf("newestVBEGeneration() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -2456,5 +2456,107 @@ func TestCollectDescCacheSelfHeals(t *testing.T) {
 	}
 	if !found {
 		t.Error("varnish_main_sessions permanently lost after one malformed scrape (descCache poisoned)")
+	}
+}
+
+// TestVarnishstatCollectorVBEManualReloadDeterministicNewestWins pins the
+// duplicate-generation winner: with two live VCL generations for the same
+// backend and NO controller (kv_reload_*) generation - boot plus a manual
+// varnishreload - both normalize to identical labels, and the newest
+// generation must win every scrape rather than a per-scrape
+// map-iteration-order coin flip (which reads as counter resets in rate()).
+func TestVarnishstatCollectorVBEManualReloadDeterministicNewestWins(t *testing.T) {
+	t.Parallel()
+
+	jsonOutput := `{"version":1,"counters":{
+		"VBE.boot.default(10.0.0.1,,80).happy": {"value":1,"flag":"b","description":"Happy health probes","ident":"boot.default(10.0.0.1,,80)"},
+		"VBE.boot.default(10.0.0.1,,80).req": {"value":1,"flag":"c","description":"Backend requests sent","ident":"boot.default(10.0.0.1,,80)"},
+		"VBE.reload_1.default(10.0.0.1,,80).happy": {"value":1,"flag":"b","description":"Happy health probes","ident":"reload_1.default(10.0.0.1,,80)"},
+		"VBE.reload_1.default(10.0.0.1,,80).req": {"value":7,"flag":"c","description":"Backend requests sent","ident":"reload_1.default(10.0.0.1,,80)"}
+	}}`
+	fn := func() (string, int, error) { return jsonOutput, 7, nil }
+	c := NewVarnishstatCollector(fn, nil)
+
+	for scrape := range 50 {
+		families := collectMetrics(t, c)
+		fam := findFamily(families, "varnish_backend_req")
+		if fam == nil {
+			t.Fatalf("scrape %d: missing varnish_backend_req", scrape)
+		}
+		if n := len(fam.GetMetric()); n != 1 {
+			t.Fatalf("scrape %d: got %d varnish_backend_req series, want 1", scrape, n)
+		}
+		if v := fam.GetMetric()[0].GetCounter().GetValue(); v != 7 {
+			t.Fatalf("scrape %d: varnish_backend_req = %v, want 7 (the newest generation, reload_1)", scrape, v)
+		}
+	}
+}
+
+func TestNewestVBEGenerationForeignFallback(t *testing.T) {
+	t.Parallel()
+
+	happy := func(gens ...string) map[string]varnishstatCounter {
+		counters := map[string]varnishstatCounter{"MAIN.uptime": {}}
+		for _, g := range gens {
+			counters["VBE."+g+".be(1.2.3.4,,80).happy"] = varnishstatCounter{}
+		}
+
+		return counters
+	}
+
+	tests := []struct {
+		name     string
+		counters map[string]varnishstatCounter
+		want     string
+	}{
+		{
+			// A single generation needs no filtering.
+			name:     "boot only",
+			counters: happy("boot"),
+			want:     "",
+		},
+		{
+			name:     "no VBE counters",
+			counters: map[string]varnishstatCounter{"MAIN.uptime": {}},
+			want:     "",
+		},
+		{
+			// Manual varnishreload next to boot: the reload is newer.
+			name:     "boot vs manual reload",
+			counters: happy("boot", "reload_1"),
+			want:     "VBE.reload_1",
+		},
+		{
+			name:     "numeric foreign reload tags",
+			counters: happy("reload_9", "reload_10"),
+			want:     "VBE.reload_10",
+		},
+		{
+			name:     "timestamp foreign reload tags",
+			counters: happy("boot", "reload_20240101_120000", "reload_20240102_080000"),
+			want:     "VBE.reload_20240102_080000",
+		},
+		{
+			// Any custom vcl.load name beats boot.
+			name:     "boot vs custom name",
+			counters: happy("boot", "mycustom"),
+			want:     "VBE.mycustom",
+		},
+		{
+			// A controller generation supersedes every foreign one.
+			name:     "kv_reload priority",
+			counters: happy("kv_reload_2", "reload_9999", "boot"),
+			want:     "VBE.kv_reload_2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := newestVBEGeneration(tt.counters); got != tt.want {
+				t.Errorf("newestVBEGeneration() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

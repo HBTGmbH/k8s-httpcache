@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"text/template"
 
@@ -4286,4 +4288,181 @@ func TestDrainTokensInsideLongStringsIgnored(t *testing.T) {
 			t.Errorf("vclVersionEnd = %d, want %d (must skip the version line inside the long string)", got, want)
 		}
 	})
+}
+
+// pristineMutationValues builds the input for the mutating-template tests
+// fresh on every call, so post-render state can be compared against an
+// untouched instance.
+func pristineMutationValues() map[string]map[string]any {
+	return map[string]map[string]any{
+		"cfg": {
+			"nested": map[string]any{"a": "b"},
+			"list":   []any{map[string]any{"idx": "0"}},
+		},
+	}
+}
+
+func TestRender_MutatingTemplateDoesNotCorruptInputs(t *testing.T) {
+	t.Parallel()
+	// set/unset/merge mutate their map argument in place. The maps handed to
+	// the template are shared with the watchers' dedup baselines and the event
+	// loop's latestValues/latestSecrets, so mutations must never leak back:
+	// identical inputs must render identical output, and the inputs must be
+	// untouched afterwards.
+	tmpl := `<< $c := index .Values "cfg" >>` +
+		`<< $n := add (default 0 (get $c "count")) 1 >>` +
+		`<< $_ := set $c "count" $n >>` +
+		`<< $_ := set (index $c "list" 0) "seen" "yes" >>` +
+		`<< $_ := set (index .Secrets "creds") "leaked" "x" >>` +
+		`count=<< $n >>`
+	for _, funcs := range []string{"sprig", "sprout"} {
+		t.Run(funcs, func(t *testing.T) {
+			t.Parallel()
+			path := writeTempTemplate(t, tmpl)
+			r, err := New(path, "<<", ">>", funcs)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			values := pristineMutationValues()
+			secrets := map[string]map[string]any{"creds": {"token": "s3cr3t"}}
+			first, err := r.Render(nil, nil, values, secrets)
+			if err != nil {
+				t.Fatalf("first render error: %v", err)
+			}
+			second, err := r.Render(nil, nil, values, secrets)
+			if err != nil {
+				t.Fatalf("second render error: %v", err)
+			}
+			if first != second {
+				t.Errorf("identical inputs rendered differently, mutation leaked into shared maps\nfirst:  %q\nsecond: %q", first, second)
+			}
+			if !strings.Contains(first, "count=1") {
+				t.Errorf("expected count=1 in output, got: %q", first)
+			}
+			if !reflect.DeepEqual(values, pristineMutationValues()) {
+				t.Errorf("values mutated by render: %#v", values)
+			}
+			wantSecrets := map[string]map[string]any{"creds": {"token": "s3cr3t"}}
+			if !reflect.DeepEqual(secrets, wantSecrets) {
+				t.Errorf("secrets mutated by render: %#v", secrets)
+			}
+		})
+	}
+}
+
+func TestRender_NoRaceWithConcurrentBaselineDeepEqual(t *testing.T) {
+	t.Parallel()
+	// Models the production race shape: a values watcher retains the published
+	// map as its dedup baseline and compares freshly-parsed syncs against it
+	// with reflect.DeepEqual on the informer goroutine (sendLocked), while the
+	// event loop executes a template whose sprig `set` mutates the same map in
+	// place. Run under -race this must stay clean.
+	path := writeTempTemplate(t, `<< $_ := set (index .Values "cfg") "k" "v" >>ok`)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	baseline := map[string]any{"nested": map[string]any{"a": "b"}} // retained by the watcher AND published
+	fresh := map[string]any{"nested": map[string]any{"a": "b"}}    // a later sync's parse result: equal but distinct
+	values := map[string]map[string]any{"cfg": baseline}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = reflect.DeepEqual(fresh, baseline)
+			}
+		}
+	})
+	for range 200 {
+		_, err = r.Render(nil, nil, values, nil)
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+	}
+	close(done)
+	wg.Wait()
+}
+
+func TestReload_PreservesProvenTemplateAcrossUnprovenSwaps(t *testing.T) {
+	t.Parallel()
+	path := writeTempTemplate(t, `P`)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// First swap: parses fine but is never proven (no Commit).
+	err = os.WriteFile(path, []byte(`A`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.Reload()
+	if err != nil {
+		t.Fatalf("reload to A: %v", err)
+	}
+	// Second swap while the first is still unproven: the proven baseline P
+	// must survive.
+	err = os.WriteFile(path, []byte(`B`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.Reload()
+	if err != nil {
+		t.Fatalf("reload to B: %v", err)
+	}
+	r.Rollback()
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "P" {
+		t.Errorf("rollback rendered %q, want the proven template output \"P\"", out)
+	}
+}
+
+func TestCommit_MakesActiveTemplateTheRollbackBaseline(t *testing.T) {
+	t.Parallel()
+	path := writeTempTemplate(t, `P`)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	err = os.WriteFile(path, []byte(`A`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.Reload()
+	if err != nil {
+		t.Fatalf("reload to A: %v", err)
+	}
+	r.Commit() // A is proven now.
+	err = os.WriteFile(path, []byte(`B`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.Reload()
+	if err != nil {
+		t.Fatalf("reload to B: %v", err)
+	}
+	r.Rollback()
+	out, err := r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "A" {
+		t.Errorf("rollback rendered %q, want the committed template output \"A\"", out)
+	}
+	// Commit and Rollback with no swap in flight are no-ops.
+	r.Commit()
+	r.Rollback()
+	out, err = r.Render(nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if out != "A" {
+		t.Errorf("render after no-op Commit/Rollback = %q, want \"A\"", out)
+	}
 }

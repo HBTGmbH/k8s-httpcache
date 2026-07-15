@@ -42,6 +42,9 @@ func NewConfigMapWatcher(clientset kubernetes.Interface, namespace, name string)
 }
 
 // Changes returns the channel on which ConfigMap data updates are delivered.
+// The delivered map is also retained by the watcher as its dedup baseline and
+// compared with [reflect.DeepEqual] on the informer goroutine: consumers must
+// treat it as read-only (copy before mutating).
 func (w *ConfigMapWatcher) Changes() <-chan map[string]any {
 	return w.ch
 }

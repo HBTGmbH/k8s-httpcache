@@ -341,9 +341,11 @@ type mockRenderer struct {
 	renderFn       func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error)
 	renderToFileFn func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error)
 	rollbackFn     func()
+	commitFn       func()
 	reloadCount    int
 	renderCount    int
 	rollbackCount  int
+	commitCount    int
 	lastBackends   map[string]renderer.BackendGroup
 }
 
@@ -394,6 +396,23 @@ func (m *mockRenderer) Rollback() {
 	if fn != nil {
 		fn()
 	}
+}
+
+func (m *mockRenderer) Commit() {
+	m.mu.Lock()
+	m.commitCount++
+	fn := m.commitFn
+	m.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+func (m *mockRenderer) commits() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.commitCount
 }
 
 func (m *mockRenderer) counts() (int, int, int) {
@@ -8231,4 +8250,176 @@ func writeFileOrFatal(t *testing.T, path, content string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// spyRenderer wraps a real *renderer.Renderer and counts Reload calls, so
+// loop tests can synchronize on template swaps while exercising the real
+// rollback-baseline bookkeeping that mockRenderer stubs out.
+type spyRenderer struct {
+	*renderer.Renderer
+
+	mu      sync.Mutex
+	reloads int
+}
+
+func (s *spyRenderer) Reload() error {
+	err := s.Renderer.Reload()
+	s.mu.Lock()
+	s.reloads++
+	s.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("spy: %w", err)
+	}
+
+	return nil
+}
+
+func (s *spyRenderer) reloadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.reloads
+}
+
+// TestRunLoopSecondTemplateChangeDuringUnprovenSwapRollsBackToProven pins the
+// rollback baseline across back-to-back template swaps: template A is swapped
+// in but never proven (its temp-VCL write fails), then template B is swapped
+// in on top. When varnishd rejects B's VCL, the loop must roll back to the
+// proven template P — not to the unproven A — or it can never converge back
+// to a working config.
+func TestRunLoopSecondTemplateChangeDuringUnprovenSwapRollsBackToProven(t *testing.T) {
+	h := newTestHarness()
+
+	// A real renderer: the regression lives in Reload/Rollback baseline
+	// bookkeeping, which mockRenderer stubs out.
+	tmplPath := filepath.Join(t.TempDir(), "template.vcl")
+	writeFileOrFatal(t, tmplPath, "vcl-P")
+	realRend, err := renderer.New(tmplPath, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rend := &spyRenderer{Renderer: realRend}
+
+	// varnishd accepts only the proven template P's VCL.
+	var mu sync.Mutex
+	var acceptedP bool
+	h.mgr.reloadFn = func(path string) error {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading rendered VCL: %w", err)
+		}
+		if strings.Contains(string(body), "vcl-P") {
+			mu.Lock()
+			acceptedP = true
+			mu.Unlock()
+
+			return nil
+		}
+
+		return errors.New("VCL compilation failed")
+	}
+
+	// Break os.CreateTemp so reload attempts fail before reaching mgr.Reload:
+	// point TMPDIR at a regular file.
+	origTmp := os.Getenv("TMPDIR")
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	writeFileOrFatal(t, notADir, "x")
+	t.Setenv("TMPDIR", notADir)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	lc := h.loopConfig(h.bcast)
+	lc.rend = rend
+	lc.reloadRecoveryInitial = 5 * time.Millisecond
+	lc.reloadRecoveryMax = 10 * time.Millisecond
+	done := make(chan struct{})
+	go func() {
+		runLoop(ctx, cancel, lc)
+		close(done)
+	}()
+
+	// Swap to template A; the render succeeds but the temp-VCL write fails,
+	// leaving the swap unproven with a recovery retry pending.
+	writeFileOrFatal(t, tmplPath, "vcl-A")
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool { return rend.reloadCount() >= 1 }, "first template swap")
+
+	// Swap to template B while A is still unproven.
+	writeFileOrFatal(t, tmplPath, "vcl-B")
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool { return rend.reloadCount() >= 2 }, "second template swap")
+
+	// Let attempts reach varnishd again: B's VCL is rejected, and the loop
+	// must roll back to proven P and converge on a successful reload.
+	t.Setenv("TMPDIR", origTmp)
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return acceptedP
+	}, "reload converging on the proven template's VCL")
+
+	cancel()
+	h.sigCh <- syscall.SIGTERM
+	close(h.mgr.done)
+	<-done
+}
+
+// TestRunLoopCommitCalledOnProofSitesOnly asserts the renderer's rollback
+// baseline is committed exactly when a swap is proven — a successful varnishd
+// reload or a byte-identical render — and never on a failure path.
+func TestRunLoopCommitCalledOnProofSitesOnly(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var mu sync.Mutex
+	renderBody := "vcl-const"
+	var reloadErr error
+	h.rend.renderFn = func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return renderBody, nil
+	}
+	h.mgr.reloadFn = func(string) error {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return reloadErr
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	lc := h.loopConfig(h.bcast)
+	done := make(chan struct{})
+	go func() {
+		runLoop(ctx, cancel, lc)
+		close(done)
+	}()
+
+	// A successful varnishd reload proves the swap.
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool { return h.rend.commits() >= 1 }, "commit after successful reload")
+
+	// A byte-identical render proves the swap without a reload.
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool { return h.rend.commits() >= 2 }, "commit after hash-identical skip")
+
+	// A rejected reload rolls back and must not commit.
+	mu.Lock()
+	renderBody = "vcl-other"
+	reloadErr = errors.New("VCL compilation failed")
+	mu.Unlock()
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool {
+		_, _, rb := h.rend.counts()
+
+		return rb >= 1
+	}, "rollback after rejected reload")
+	if got := h.rend.commits(); got != 2 {
+		t.Errorf("commit count after rejected reload = %d, want 2", got)
+	}
+
+	cancel()
+	h.sigCh <- syscall.SIGTERM
+	close(h.mgr.done)
+	<-done
 }

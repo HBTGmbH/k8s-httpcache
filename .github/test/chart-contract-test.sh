@@ -116,4 +116,20 @@ echo "$ncsa" | grep -qF -- '--varnishncsa-format={\"time\":\"%t\",\"host\":\"%h\
 echo "$ncsa" | grep -qF -- '--varnishncsa-prefix=ncsa: "' ||
   fail "trailing space in varnishncsa.prefix stripped by unquoted rendering"
 
+echo "=== chart contract: fullnameOverride names the rendered resources ==="
+# values.yaml and the README document fullnameOverride; the fullname helper
+# must honor it (precedence: fullnameOverride > nameOverride > release name).
+name="$(helm template "$CHART" "${IMG[@]}" --set fullnameOverride=custom-full \
+  --show-only templates/service.yaml | awk '/^  name:/ {print $2; exit}')"
+[ "$name" = "custom-full" ] ||
+  fail "fullnameOverride ignored: Service name is ${name}, want custom-full"
+name="$(helm template "$CHART" "${IMG[@]}" --set fullnameOverride=custom-full \
+  --set nameOverride=other --show-only templates/service.yaml | awk '/^  name:/ {print $2; exit}')"
+[ "$name" = "custom-full" ] ||
+  fail "fullnameOverride must win over nameOverride: Service name is ${name}, want custom-full"
+name="$(helm template "$CHART" "${IMG[@]}" --set nameOverride=other \
+  --show-only templates/service.yaml | awk '/^  name:/ {print $2; exit}')"
+[ "$name" = "other" ] ||
+  fail "nameOverride fullname fallback broken: Service name is ${name}, want other"
+
 echo "All chart contract checks passed."

@@ -1440,8 +1440,12 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				// NaN must be rejected explicitly: NaN <= 0 is false, so it
 				// would pass the positivity check, survive slices.Compact
 				// (NaN != NaN), and poison the histogram with le="NaN" series.
-				if v <= 0 || math.IsNaN(v) {
-					actionErr = validationError(cmd, "--debounce-latency-buckets: bucket boundaries must be positive, got %v", v)
+				// +Inf likewise: strconv.ParseFloat accepts "Inf"/"Infinity"
+				// (any case, optional sign), and prometheus strips a trailing
+				// +Inf bucket, so an Inf-only list would leave the histogram
+				// with zero finite buckets.
+				if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+					actionErr = validationError(cmd, "--debounce-latency-buckets: bucket boundaries must be positive finite numbers, got %v", v)
 
 					return nil
 				}

@@ -67,6 +67,7 @@ type vclRenderer interface {
 	Reload() error
 	Render(frontends []watcher.Frontend, backends map[string]renderer.BackendGroup, values, secrets map[string]map[string]any) (string, error)
 	RenderToFile(frontends []watcher.Frontend, backends map[string]renderer.BackendGroup, values, secrets map[string]map[string]any) (string, error)
+	Commit()
 	Rollback()
 }
 
@@ -1653,6 +1654,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			// A swapped template that renders byte-identical VCL is proven
 			// equivalent to the active one; nothing left to roll back.
 			templateSwapped = false
+			lc.rend.Commit()
 			clearPending()
 
 			return
@@ -1711,6 +1713,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		// The swapped template survived a real varnishd reload; it is the
 		// proven template now.
 		templateSwapped = false
+		lc.rend.Commit()
 		lc.metrics.VCLReloadsTotal.WithLabelValues("success").Inc()
 		lc.debug("decision", "action", "reload-applied", "reasons", reasons,
 			"frontends", len(lc.latestFrontends), "backends", len(lc.latestBackends))
