@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.4](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.2.3...v1.2.4) (2026-07-15)
+
+
+### Bug Fixes
+
+* CLI-quote varnishadm arguments so whitespace paths survive the CLI line ([f4a5c67](https://github.com/HBTGmbH/k8s-httpcache/commit/f4a5c674673f4c4aa6451e65856987a7b9e1364d))
+* correct VCL drain-injection parsing, port validation, and varnishstat error handling ([33ac07f](https://github.com/HBTGmbH/k8s-httpcache/commit/33ac07f22ad2c048f4ee46a1fb13c7f1b6cf2cae))
+* fail fast on monitors without metrics port, close VBE generation-scan blind spot ([b330412](https://github.com/HBTGmbH/k8s-httpcache/commit/b33041295802ff2a4bc266c0cb796eb67b10f2a3))
+* honor --shutdown-timeout=0 as "wait indefinitely" instead of instant SIGKILL ([c69b789](https://github.com/HBTGmbH/k8s-httpcache/commit/c69b7898fef5c6df1efffcaf36c1e7d462446a25))
+* issues across the controller, chart, and CI ([f0a7f9d](https://github.com/HBTGmbH/k8s-httpcache/commit/f0a7f9dcbffd6102d60e8ff6b2ae39c82cde0f93))
+* race conditions and correctness issues ([7956b59](https://github.com/HBTGmbH/k8s-httpcache/commit/7956b59c7a736976f8109c9665cfa195b963020d))
+* re-generate Helm chart README and add linting step ([e534afa](https://github.com/HBTGmbH/k8s-httpcache/commit/e534afaecf85fe9bd5df65c2b9121896f3bfbbd9))
+* values-map race, rollback-to-unproven-template, VBE series flapping, Inf buckets, fullnameOverride ([b3320b9](https://github.com/HBTGmbH/k8s-httpcache/commit/b3320b9ead5adc60bf366ed264d9930d89db7a0b))
+* wire contract gates into CI, require HPA scaling target, close template-watch startup gap ([a572871](https://github.com/HBTGmbH/k8s-httpcache/commit/a572871d2d31638cfbf146e6dc9904203ef787ff))
+
 ## [1.2.3](https://github.com/HBTGmbH/k8s-httpcache/compare/v1.2.2...v1.2.3) (2026-06-30)
 
 
