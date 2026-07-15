@@ -1,4 +1,4 @@
 {
   ".": "1.2.4",
-  "charts/k8s-httpcache": "1.2.0"
+  "charts/k8s-httpcache": "1.2.1"
 }
