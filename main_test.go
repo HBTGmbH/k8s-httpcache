@@ -6579,6 +6579,130 @@ func TestRunLoop_TombstoneSweepBoundsRemovedGen(t *testing.T) {
 	}
 }
 
+// TestRunLoop_TombstoneSweepSilentWhenIdle pins that an idle sweep - one with no
+// tombstones to evict and none retained - logs nothing. The ticker fires on a
+// fixed interval regardless of churn, so an unconditional log line would emit a
+// contentless "evicted=0 remaining=0" heartbeat forever on a quiet cluster. The
+// TTL is set far below the wait so many ticks are guaranteed to have fired.
+func TestRunLoop_TombstoneSweepSilentWhenIdle(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.log = logger
+	lc.backendTombstoneTTL = 20 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// An add creates no tombstone (only removals do), so removedGen stays empty
+	// while the loop is demonstrably alive and the sweep ticker keeps firing.
+	h.backendCh <- backendChange{
+		name:      "web",
+		endpoints: []watcher.Endpoint{{Host: "10.0.1.1", Port: 8080, Name: "pod-0"}},
+		gen:       1,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+	time.Sleep(200 * time.Millisecond)
+
+	// Shut the loop down so its goroutine stops writing before we read the buffer.
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+
+	if out := buf.String(); strings.Contains(out, "tombstone-sweep") {
+		t.Errorf("idle sweep must not log; got:\n%s", out)
+	}
+}
+
+// TestRunLoop_TombstoneSweepLogsEviction is the other half of
+// [TestRunLoop_TombstoneSweepSilentWhenIdle]: silencing the idle tick must not
+// silence a sweep that actually did something. A swept tombstone is still
+// reported, so the diagnostic survives where it carries information.
+func TestRunLoop_TombstoneSweepLogsEviction(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.log = logger
+	lc.backendTombstoneTTL = 20 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Add then remove a discovered backend at gen 5: the removal records
+	// removedGen["svc"] = {gen: 5}, which the sweep must later evict and report.
+	h.backendCh <- backendChange{
+		name:      "svc",
+		endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 80, Name: "svc-0"}},
+		gen:       5,
+	}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "reload after add")
+	h.backendCh <- backendChange{name: "svc", removed: true, gen: 5}
+	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "reload after removal")
+
+	// A lower-gen re-add is dropped by the gen-5 tombstone until the sweep evicts
+	// it, so an accepted re-add proves the eviction happened. Resend on a generous
+	// deadline rather than sleeping a fixed amount, so the test does not depend on
+	// the sweep ticker firing within a fixed window on slow/overloaded CI.
+	swept := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		h.backendCh <- backendChange{
+			name:      "svc",
+			endpoints: []watcher.Endpoint{{Host: "10.0.9.9", Port: 80, Name: "svc-1"}},
+			gen:       1,
+		}
+		time.Sleep(15 * time.Millisecond)
+		if h.mgr.getReloadCount() >= 3 {
+			swept = true
+
+			break
+		}
+	}
+	if !swept {
+		t.Fatal("low-gen re-add was never accepted; the tombstone sweep did not evict the entry")
+	}
+
+	// Shut the loop down so its goroutine stops writing before we read the buffer.
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"kind=tombstone-sweep", "evicted=1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sweep that evicted a tombstone must log %q; got:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunLoop_BackendLabelsPassedToRenderer(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()

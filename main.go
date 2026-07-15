@@ -1946,7 +1946,13 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 
 		case <-tombstoneSweep:
 			evicted := sweepExpiredTombstones(removedGen, time.Now(), lc.backendTombstoneTTL)
-			lc.debug("event", "kind", "tombstone-sweep", "evicted", evicted, "remaining", len(removedGen))
+			// The ticker fires on a fixed interval whether or not there is
+			// anything to sweep, so stay silent when there is no state to
+			// report: on a cluster without backend churn an unconditional log
+			// would emit a contentless "evicted=0 remaining=0" line forever.
+			if evicted > 0 || len(removedGen) > 0 {
+				lc.debug("event", "kind", "tombstone-sweep", "evicted", evicted, "remaining", len(removedGen))
+			}
 
 		case <-vclRecovery.channel():
 			// fired clears the timer reference before retrying. On failure
