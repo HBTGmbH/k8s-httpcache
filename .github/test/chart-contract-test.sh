@@ -132,4 +132,21 @@ name="$(helm template "$CHART" "${IMG[@]}" --set nameOverride=other \
 [ "$name" = "other" ] ||
   fail "nameOverride fullname fallback broken: Service name is ${name}, want other"
 
+echo "=== chart contract: monitors require the http-m metrics port ==="
+# ServiceMonitor/PodMonitor scrape the named port http-m, which only exists
+# when metrics.enabled is true; the combination must fail at render time
+# instead of silently producing a scrape config for a nonexistent port.
+if helm template "$CHART" "${IMG[@]}" --set metrics.enabled=false \
+  --set serviceMonitor.enabled=true >/dev/null 2>&1; then
+  fail "serviceMonitor.enabled with metrics.enabled=false rendered instead of failing"
+fi
+if helm template "$CHART" "${IMG[@]}" --set metrics.enabled=false \
+  --set podMonitor.enabled=true >/dev/null 2>&1; then
+  fail "podMonitor.enabled with metrics.enabled=false rendered instead of failing"
+fi
+port="$(helm template "$CHART" "${IMG[@]}" --set serviceMonitor.enabled=true \
+  --show-only templates/servicemonitor.yaml | awk '/- port:/ {print $3; exit}')"
+[ "$port" = "http-m" ] ||
+  fail "ServiceMonitor with default metrics.enabled should scrape http-m, got ${port}"
+
 echo "All chart contract checks passed."

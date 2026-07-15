@@ -1,5 +1,8 @@
 {{- if .Values.podMonitor.enabled -}}
 {{- /* Alternative to the ServiceMonitor - scrapes pods directly. Enable only one. */}}
+{{- if not .Values.metrics.enabled }}
+{{- fail "podMonitor.enabled requires metrics.enabled=true: the PodMonitor scrapes the 'http-m' metrics port, which is only created when metrics.enabled is true" }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

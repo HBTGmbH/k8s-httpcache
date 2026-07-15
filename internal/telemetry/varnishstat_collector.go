@@ -192,10 +192,9 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 //
 // The dedup matters because duplicate samples fail the ENTIRE registry Gather
 // (HTTP 500 on /metrics). Coexisting VCL generations - the usual duplicate
-// source - are already resolved deterministically by newestVBEGeneration, so
-// this is the safety net for whatever residual duplicates remain (e.g. a
-// generation with no .happy counter that the generation scan cannot see).
-// First occurrence wins.
+// source - are already resolved deterministically by newestVBEGeneration
+// (which sees a generation through any of its VBE counters), so this is the
+// safety net for whatever residual duplicates remain. First occurrence wins.
 //
 // Using the non-panicking NewConstMetric keeps a scrape robust: a counter that
 // disagrees with the cached desc's label cardinality is dropped rather than
@@ -324,7 +323,7 @@ func newestVBEGeneration(counters map[string]varnishstatCounter) string {
 	foreign := ""      // newest non-kv generation name (e.g. "boot", "reload_<ts>")
 	foreignMultiple := false
 	for key := range counters {
-		if !strings.HasSuffix(key, ".happy") {
+		if !strings.HasPrefix(key, "VBE.") {
 			continue
 		}
 		if strings.HasPrefix(key, vbeReloadTag) {
@@ -340,9 +339,6 @@ func newestVBEGeneration(counters map[string]varnishstatCounter) string {
 				latestSuffix = suffix
 			}
 
-			continue
-		}
-		if !strings.HasPrefix(key, "VBE.") {
 			continue
 		}
 		gen, _, ok := strings.Cut(key[len("VBE."):], ".")

@@ -1,4 +1,7 @@
 {{- if .Values.serviceMonitor.enabled -}}
+{{- if not .Values.metrics.enabled }}
+{{- fail "serviceMonitor.enabled requires metrics.enabled=true: the ServiceMonitor scrapes the 'http-m' metrics port, which is only created when metrics.enabled is true" }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

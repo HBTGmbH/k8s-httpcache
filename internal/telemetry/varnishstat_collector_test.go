@@ -2492,6 +2492,37 @@ func TestVarnishstatCollectorVBEManualReloadDeterministicNewestWins(t *testing.T
 	}
 }
 
+// TestVarnishstatCollectorVBENoHappyGenerationDeterministicNewestWins pins the
+// duplicate-generation winner when the newest generation exposes no .happy
+// counter at all: the generation scan must still see it (through any of its
+// counters), so the newest generation wins every scrape instead of a
+// per-scrape map-iteration-order coin flip between the duplicate label sets.
+func TestVarnishstatCollectorVBENoHappyGenerationDeterministicNewestWins(t *testing.T) {
+	t.Parallel()
+
+	jsonOutput := `{"version":1,"counters":{
+		"VBE.boot.default(10.0.0.1,,80).happy": {"value":1,"flag":"b","description":"Happy health probes","ident":"boot.default(10.0.0.1,,80)"},
+		"VBE.boot.default(10.0.0.1,,80).req": {"value":1,"flag":"c","description":"Backend requests sent","ident":"boot.default(10.0.0.1,,80)"},
+		"VBE.reload_1.default(10.0.0.1,,80).req": {"value":7,"flag":"c","description":"Backend requests sent","ident":"reload_1.default(10.0.0.1,,80)"}
+	}}`
+	fn := func() (string, int, error) { return jsonOutput, 7, nil }
+	c := NewVarnishstatCollector(fn, nil)
+
+	for scrape := range 50 {
+		families := collectMetrics(t, c)
+		fam := findFamily(families, "varnish_backend_req")
+		if fam == nil {
+			t.Fatalf("scrape %d: missing varnish_backend_req", scrape)
+		}
+		if n := len(fam.GetMetric()); n != 1 {
+			t.Fatalf("scrape %d: got %d varnish_backend_req series, want 1", scrape, n)
+		}
+		if v := fam.GetMetric()[0].GetCounter().GetValue(); v != 7 {
+			t.Fatalf("scrape %d: varnish_backend_req = %v, want 7 (the newest generation, reload_1)", scrape, v)
+		}
+	}
+}
+
 func TestNewestVBEGenerationForeignFallback(t *testing.T) {
 	t.Parallel()
 
@@ -2499,6 +2530,13 @@ func TestNewestVBEGenerationForeignFallback(t *testing.T) {
 		counters := map[string]varnishstatCounter{"MAIN.uptime": {}}
 		for _, g := range gens {
 			counters["VBE."+g+".be(1.2.3.4,,80).happy"] = varnishstatCounter{}
+		}
+
+		return counters
+	}
+	withReq := func(counters map[string]varnishstatCounter, gens ...string) map[string]varnishstatCounter {
+		for _, g := range gens {
+			counters["VBE."+g+".be(1.2.3.4,,80).req"] = varnishstatCounter{}
 		}
 
 		return counters
@@ -2547,6 +2585,20 @@ func TestNewestVBEGenerationForeignFallback(t *testing.T) {
 			name:     "kv_reload priority",
 			counters: happy("kv_reload_2", "reload_9999", "boot"),
 			want:     "VBE.kv_reload_2",
+		},
+		{
+			// A generation must be visible to the scan through ANY of its
+			// counters, not just .happy.
+			name:     "foreign generation without happy counter",
+			counters: withReq(happy("boot"), "reload_5"),
+			want:     "VBE.reload_5",
+		},
+		{
+			// A newest controller generation without .happy must still win;
+			// picking the older one would filter the LIVE generation as stale.
+			name:     "kv generation without happy counter",
+			counters: withReq(happy("kv_reload_2"), "kv_reload_3"),
+			want:     "VBE.kv_reload_3",
 		},
 	}
 
