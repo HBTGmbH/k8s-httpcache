@@ -4,6 +4,6 @@
   "private": true,
   "description": "Pinned markdownlint-cli used by the Markdown lint CI step (see ../workflows/test-and-build.yml). Install with `npm ci`.",
   "devDependencies": {
-    "markdownlint-cli": "0.49.0"
+    "markdownlint-cli": "0.49.1"
   }
 }

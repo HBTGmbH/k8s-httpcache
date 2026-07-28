@@ -107,16 +107,16 @@ jobs:
       id: go-test-coverage
       with:
         path: ~/go/bin/go-test-coverage
-        key: go-test-coverage-2.18.8
+        key: go-test-coverage-2.19.0
     - name: Install go-test-coverage
       if: steps.go-test-coverage.outputs.cache-hit != 'true'
-      run: go install github.com/vladopajic/go-test-coverage/v2@v2.18.8
+      run: go install github.com/vladopajic/go-test-coverage/v2@v2.19.0
     - name: Save go-test-coverage
       if: steps.go-test-coverage.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/go/bin/go-test-coverage
-        key: go-test-coverage-2.18.8
+        key: go-test-coverage-2.19.0
     - name: Run tests with coverage
       run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
     - name: Display coverage
@@ -190,7 +190,7 @@ jobs:
           ~/go/bin/deadcode
           ~/go/bin/nilaway
           ~/go/bin/shfmt
-        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260707193443-5c662b71f232-shfmt-3.13.1
+        key: analysis-tools-govulncheck-1.6.0-deadcode-0.48.0-nilaway-20260728022246-eeeb1603aad0-shfmt-3.13.1
     - name: Install analysis tools
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -198,9 +198,9 @@ jobs:
         needs.changes.outputs.ci == 'true') &&
         steps.analysis-tools.outputs.cache-hit != 'true'
       run: |
-        go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
-        go install golang.org/x/tools/cmd/deadcode@v0.47.0
-        go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260707193443-5c662b71f232
+        go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+        go install golang.org/x/tools/cmd/deadcode@v0.48.0
+        go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260728022246-eeeb1603aad0
         go install mvdan.cc/sh/v3/cmd/shfmt@v3.13.1
     - name: Save analysis tools
       if: >-
@@ -215,7 +215,7 @@ jobs:
           ~/go/bin/deadcode
           ~/go/bin/nilaway
           ~/go/bin/shfmt
-        key: analysis-tools-govulncheck-1.5.0-deadcode-0.47.0-nilaway-20260707193443-5c662b71f232-shfmt-3.13.1
+        key: analysis-tools-govulncheck-1.6.0-deadcode-0.48.0-nilaway-20260728022246-eeeb1603aad0-shfmt-3.13.1
     - name: Run govulncheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -494,7 +494,7 @@ jobs:
       id: pint
       with:
         path: ~/tools/pint
-        key: pint-0.86.0-linux-amd64
+        key: pint-0.87.0-linux-amd64
     - name: Install pint
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -503,7 +503,7 @@ jobs:
         steps.pint.outputs.cache-hit != 'true'
       run: |
         mkdir -p ~/tools
-        curl -sfL https://github.com/cloudflare/pint/releases/download/v0.86.0/pint-0.86.0-linux-amd64.tar.gz \
+        curl -sfL https://github.com/cloudflare/pint/releases/download/v0.87.0/pint-0.87.0-linux-amd64.tar.gz \
           | tar -xz -C ~/tools pint-linux-amd64
         mv ~/tools/pint-linux-amd64 ~/tools/pint
         chmod +x ~/tools/pint
@@ -516,7 +516,7 @@ jobs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools/pint
-        key: pint-0.86.0-linux-amd64
+        key: pint-0.87.0-linux-amd64
     - name: Pint (Prometheus rules)
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -700,7 +700,7 @@ jobs:
       id: test-tools
       with:
         path: ~/tools
-        key: test-tools-hurl-8.0.1-oha-1.14.0
+        key: test-tools-hurl-8.0.1-oha-1.15.0
     - name: Install tools
       if: steps.test-tools.outputs.cache-hit != 'true'
       run: |
@@ -708,14 +708,14 @@ jobs:
         curl -sfL -o /tmp/hurl.deb https://github.com/Orange-OpenSource/hurl/releases/download/8.0.1/hurl_8.0.1_amd64.deb
         dpkg-deb -x /tmp/hurl.deb /tmp/hurl
         cp /tmp/hurl/usr/bin/* ~/tools/
-        curl -sfL -o ~/tools/oha https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64
+        curl -sfL -o ~/tools/oha https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64
         chmod +x ~/tools/oha
     - name: Save test tools
       if: steps.test-tools.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools
-        key: test-tools-hurl-8.0.1-oha-1.14.0
+        key: test-tools-hurl-8.0.1-oha-1.15.0
     - name: Add tools to PATH
       run: echo "$HOME/tools" >> "$GITHUB_PATH"
     - name: Build test image
