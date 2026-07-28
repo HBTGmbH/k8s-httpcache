@@ -1,5 +1,34 @@
 package renderer
 
+import (
+	"slices"
+
+	"github.com/HBTGmbH/k8s-httpcache/internal/watcher"
+)
+
+// copyEndpoints returns a per-render copy of eps in which every endpoint owns
+// its own ForZones slice. Template functions may mutate a []string argument in
+// place - sprig/sprout sortAlpha hands its argument straight to [sort.Strings]
+// without copying it - and the endpoint slices reaching the template are the
+// very slices the endpoint watchers retain as their EndpointsEqual dedup
+// baselines (read on the informer goroutine) and the event loop keeps as
+// latestFrontends/latestBackends. Sorting one in place would therefore be an
+// unsynchronised write racing the informer's comparison, and would leave the
+// baseline permanently out of order so every later sync of an unchanged store
+// reported "changed". Copying per render keeps such mutations render-local.
+func copyEndpoints(eps []watcher.Endpoint) []watcher.Endpoint {
+	if eps == nil {
+		return nil
+	}
+	out := make([]watcher.Endpoint, len(eps))
+	for i, ep := range eps {
+		ep.ForZones = slices.Clone(ep.ForZones)
+		out[i] = ep
+	}
+
+	return out
+}
+
 // deepCopyTemplateMap converts a per-source values/secrets map to the
 // map[string]any shape templates consume, deep-copying every nested
 // map[string]any and []any. Sprig/sprout dict helpers (set, unset, merge)

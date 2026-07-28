@@ -753,34 +753,37 @@ func TestWriterFlushTerminatesPartialLine(t *testing.T) {
 	}
 }
 
-// TestWriterOverflowPathologicalOverlapHoldsAll covers safeCut's cut==0
-// fallback: with a buffer made entirely of overlapping secret occurrences
-// there is no safe cut, so the overflow flush must emit NOTHING (the buffer
-// keeps growing, matching tailHold's documented worst case) and the eventual
-// Flush must redact everything within one segment.
-func TestWriterOverflowPathologicalOverlapHoldsAll(t *testing.T) {
+// TestWriterOverflowPathologicalOverlapCollapsesToPlaceholder covers
+// safeCut's cut==0 fallback: with a buffer made entirely of overlapping
+// secret occurrences there is no safe cut, so the overflow flush must collapse
+// the unsplittable head to a single placeholder. It may neither emit the head
+// verbatim (that leaks a secret split across the cut) nor keep it buffered
+// (that is what made maxRedactBuffer bound nothing), and the eventual Flush
+// must still redact what is left.
+func TestWriterOverflowPathologicalOverlapCollapsesToPlaceholder(t *testing.T) {
 	t.Parallel()
 	const secret = "aaaaaa"
 	r := NewRedactor()
 	r.Update(map[string]map[string]any{"s": {"k": secret}})
 
 	var out bytes.Buffer
-	w, ok := r.Writer(&out).(interface {
-		io.Writer
-		Flush() error
-	})
+	rw, ok := r.Writer(&out).(*redactingWriter)
 	if !ok {
-		t.Fatal("redacting writer must expose Flush")
+		t.Fatal("Writer must return *redactingWriter")
 	}
 
 	payload := strings.Repeat("a", maxRedactBuffer)
-	if _, err := w.Write([]byte(payload)); err != nil { //nolint:noinlineerr // sequential test steps
+	if _, err := rw.Write([]byte(payload)); err != nil { //nolint:noinlineerr // sequential test steps
 		t.Fatal(err)
 	}
-	if out.Len() != 0 {
-		t.Fatalf("overflow emitted %d bytes although every cut splits a secret occurrence", out.Len())
+	if out.String() != placeholder {
+		t.Fatalf("overflow emitted %q, want a single %q for the unsplittable head", out.String(), placeholder)
 	}
-	if err := w.Flush(); err != nil { //nolint:noinlineerr // sequential test steps
+	// Only tailHold's suffix ("aaaaa", one short of the secret) may remain.
+	if len(rw.buf) >= len(secret) {
+		t.Fatalf("overflow retained %d bytes, want < %d - the head was not dropped", len(rw.buf), len(secret))
+	}
+	if err := rw.Flush(); err != nil { //nolint:noinlineerr // sequential test steps
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), secret) {
@@ -788,6 +791,32 @@ func TestWriterOverflowPathologicalOverlapHoldsAll(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), placeholder) {
 		t.Fatal("output lost the redacted content entirely")
+	}
+}
+
+// TestWriterOverflowCollapseErrorPropagatesAndTrims covers the collapse
+// path's error branch: when the inner writer fails the error must reach the
+// caller AND the unsplittable head must still be dropped - keeping it would
+// reinstate the unbounded growth the collapse exists to prevent, for a stream
+// whose sink is failing anyway.
+func TestWriterOverflowCollapseErrorPropagatesAndTrims(t *testing.T) {
+	t.Parallel()
+	const secret = "aaaaaa"
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{"s": {"k": secret}})
+
+	errInner := errors.New("disk full")
+	rw, ok := r.Writer(&failWriter{err: errInner}).(*redactingWriter)
+	if !ok {
+		t.Fatal("Writer must return *redactingWriter")
+	}
+
+	_, err := rw.Write([]byte(strings.Repeat("a", maxRedactBuffer)))
+	if !errors.Is(err, errInner) {
+		t.Errorf("Write error = %v, want inner %v", err, errInner)
+	}
+	if len(rw.buf) >= len(secret) {
+		t.Fatalf("overflow retained %d bytes after a failed collapse, want < %d", len(rw.buf), len(secret))
 	}
 }
 
@@ -866,5 +895,142 @@ func TestWriterOverflowNonStraddlingOccurrenceKeepsCut(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), placeholder) {
 		t.Fatal("complete occurrence at the cut boundary was not redacted in the emitted segment")
+	}
+}
+
+// recordingWriter records the payload of every Write/WriteString call it
+// receives. It implements [io.StringWriter] on purpose: [os.Stdout] and
+// [os.Stderr] do too, so [strings.Replacer] takes the same code path against
+// it as it does in production.
+type recordingWriter struct {
+	writes []string
+}
+
+func (w *recordingWriter) Write(p []byte) (int, error) {
+	w.writes = append(w.writes, string(p))
+
+	return len(p), nil
+}
+
+func (w *recordingWriter) WriteString(s string) (int, error) {
+	w.writes = append(w.writes, s)
+
+	return len(s), nil
+}
+
+// TestWriterEmitsSegmentInASingleWrite pins per-line write atomicity: every
+// emitted segment must reach the inner writer in exactly ONE Write call.
+// Streaming the replaced output through [strings.Replacer.WriteString] instead
+// emitted a matching line as 2k+1 separate writes (pre-match text,
+// placeholder, remainder...). The inner writer is the shared [os.Stdout] /
+// [os.Stderr], written concurrently by the controller's own slog handler and
+// by one os/exec copy goroutine per subprocess stream; [os.File.Write] is
+// atomic per call, so splitting a line into fragments lets another writer's
+// complete record land in the middle of it, corrupting both lines.
+func TestWriterEmitsSegmentInASingleWrite(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		secrets map[string]any
+		line    string
+		want    string
+	}{
+		{
+			name:    "no targets configured",
+			secrets: nil,
+			line:    "GET /x HTTP/1.1 200 12\n",
+			want:    "GET /x HTTP/1.1 200 12\n",
+		},
+		{
+			name:    "targets configured but no match",
+			secrets: map[string]any{"t": "topsecretvalue"},
+			line:    "GET /x HTTP/1.1 200 12\n",
+			want:    "GET /x HTTP/1.1 200 12\n",
+		},
+		{
+			name:    "one match",
+			secrets: map[string]any{"t": "topsecretvalue"},
+			line:    "GET /x?t=topsecretvalue HTTP/1.1 200 12\n",
+			want:    "GET /x?t=[REDACTED] HTTP/1.1 200 12\n",
+		},
+		{
+			name:    "two matches",
+			secrets: map[string]any{"t": "topsecretvalue", "u": "othersecretvalue"},
+			line:    "GET /x?t=topsecretvalue&u=othersecretvalue HTTP/1.1 200 12\n",
+			want:    "GET /x?t=[REDACTED]&u=[REDACTED] HTTP/1.1 200 12\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := NewRedactor()
+			if tt.secrets != nil {
+				r.Update(map[string]map[string]any{"app": tt.secrets})
+			}
+
+			rec := &recordingWriter{}
+			if _, err := r.Writer(rec).Write([]byte(tt.line)); err != nil { //nolint:noinlineerr // sequential test steps
+				t.Fatal(err)
+			}
+			if len(rec.writes) != 1 {
+				t.Fatalf("inner writer saw %d writes %q, want exactly 1 - a torn line lets a concurrent writer splice into it", len(rec.writes), rec.writes)
+			}
+			if rec.writes[0] != tt.want {
+				t.Errorf("emitted %q, want %q", rec.writes[0], tt.want)
+			}
+		})
+	}
+}
+
+// TestWriterOverflowBoundsBufferWithSelfOverlappingSecret pins the memory
+// bound the overflow branch exists to enforce. With a self-overlapping target
+// ("aaaaaa", e.g. the base64 of an all-zero key) every candidate cut splits a
+// complete occurrence, so safeCut legitimately returns 0. The overflow branch
+// used to emit nothing in that case and fall through, leaving the buffer
+// untouched: a newline-free stream then grew it 1:1 with the stream (8 MiB
+// streamed -> 8 MiB buffered, not one byte forwarded) and every subsequent
+// Write re-scanned the whole buffer, making the total cost quadratic.
+func TestWriterOverflowBoundsBufferWithSelfOverlappingSecret(t *testing.T) {
+	t.Parallel()
+
+	const (
+		secret = "aaaaaa"
+		chunk  = 32 << 10 // os/exec's copy loop delivers 32 KiB chunks
+		total  = 8 << 20
+	)
+	r := NewRedactor()
+	r.Update(map[string]map[string]any{"s": {"k": secret}})
+
+	var out bytes.Buffer
+	w, ok := r.Writer(&out).(*redactingWriter)
+	if !ok {
+		t.Fatal("Writer must return *redactingWriter")
+	}
+
+	block := bytes.Repeat([]byte("a"), chunk)
+	for written := 0; written < total; written += chunk {
+		if _, err := w.Write(block); err != nil { //nolint:noinlineerr // sequential test steps
+			t.Fatal(err)
+		}
+	}
+
+	// The retained partial line must stay within the documented bound plus at
+	// most the chunk that pushed it over.
+	if limit := maxRedactBuffer + chunk; len(w.buf) > limit {
+		t.Fatalf("buffered %d bytes after streaming %d newline-free bytes, want <= %d - maxRedactBuffer bounds nothing", len(w.buf), total, limit)
+	}
+	if out.Len() == 0 {
+		t.Fatal("nothing forwarded after streaming 8 MiB past the buffer bound")
+	}
+	if bytes.Contains(out.Bytes(), []byte(secret)) {
+		t.Fatal("secret leaked in cleartext while bounding the buffer")
+	}
+	if err := w.Flush(); err != nil { //nolint:noinlineerr // sequential test steps
+		t.Fatal(err)
+	}
+	if bytes.Contains(out.Bytes(), []byte(secret)) {
+		t.Fatal("secret leaked in cleartext across the final Flush")
 	}
 }

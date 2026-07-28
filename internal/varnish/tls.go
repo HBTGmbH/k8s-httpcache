@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -38,6 +39,21 @@ var (
 // the previous substring match would have counted as ids - corrupting the
 // before/after diff LoadCert uses to identify the committed certificate).
 var tlsCertIDRe = regexp.MustCompile(`^cert\d+$`)
+
+// maxPendingDiscards bounds the retry queue of superseded certificate ids
+// whose tls.cert.discard has not succeeded. Entries leave the queue as soon
+// as a discard succeeds or varnishd stops listing the id, so it only grows
+// while discards keep failing; the cap keeps a permanently undiscardable id
+// from growing it without bound.
+const maxPendingDiscards = 8
+
+// pendingDiscard is a superseded certificate id awaiting a successful
+// tls.cert.discard, remembered together with the logical certificate name it
+// belonged to so a retry can be attributed in the logs.
+type pendingDiscard struct {
+	name string
+	id   string
+}
 
 // TLSSupported reports whether the detected cache daemon supports native TLS
 // (Varnish/Vinyl major version >= 9). DetectVersion must have run first.
@@ -144,19 +160,14 @@ func (m *Manager) LoadCert(name string, cert, key, ca []byte) error {
 	// Discard the certificate this name previously used (rotation). Only when
 	// we positively identified a distinct new id, so we never discard the cert
 	// we just committed.
-	activeCerts := len(after)
 	if newID != "" && prior != "" && prior != newID {
-		_, discardErr := m.tlsOp("discard", "tls.cert.discard", prior)
-		if discardErr != nil {
-			m.log.Warn("failed to discard previous TLS certificate", logKeyCert, name, "id", prior, "error", discardErr)
-		} else {
-			// The post-commit listing still contained the prior certificate;
-			// count it out so the gauge reflects the post-discard state
-			// (setting the gauge from len(after) alone would overcount by one
-			// until the next rotation).
-			activeCerts--
-		}
+		m.queueDiscard(name, prior)
 	}
+	// The post-commit listing still contains every certificate discarded
+	// here; count those out so the gauge reflects the post-discard state
+	// (setting it from len(after) alone would overcount until the next
+	// rotation).
+	activeCerts := len(after) - m.discardQueued(after, afterErr == nil)
 	if afterErr == nil {
 		m.metrics.TLSCertsActive.Set(float64(activeCerts))
 	}
@@ -196,6 +207,55 @@ func (m *Manager) CleanupTLS() {
 	m.tlsCertDir = ""
 }
 
+// queueDiscard records a superseded certificate id for discard. The id must
+// be queued rather than discarded once and forgotten: LoadCert records the
+// new id for the name before discarding the prior one, so a discard failure
+// that dropped the id would leak that certificate for the lifetime of the
+// varnishd process - still resident, and still the fallback presented to
+// handshakes that carry no matching SNI. Callers must hold tlsMu.
+func (m *Manager) queueDiscard(name, id string) {
+	if slices.ContainsFunc(m.tlsPendingDiscards, func(p pendingDiscard) bool { return p.id == id }) {
+		return
+	}
+	if len(m.tlsPendingDiscards) >= maxPendingDiscards {
+		m.log.Warn("TLS certificate discard backlog full, dropping the oldest id",
+			logKeyCert, m.tlsPendingDiscards[0].name, "id", m.tlsPendingDiscards[0].id)
+		m.tlsPendingDiscards = m.tlsPendingDiscards[1:]
+	}
+	m.tlsPendingDiscards = append(m.tlsPendingDiscards, pendingDiscard{name: name, id: id})
+}
+
+// discardQueued attempts tls.cert.discard for every queued id, keeping the
+// ones that still fail for the next rotation, and returns how many ids that
+// the post-commit listing still contained were discarded (the caller's gauge
+// counts those out). Ids varnishd no longer lists are dropped without a CLI
+// call: a discard that did reach varnishd is flushed by the next commit, so
+// retrying it could only ever fail with "ID not found". A failed discard is
+// never fatal to the rotation. Callers must hold tlsMu.
+func (m *Manager) discardQueued(after map[string]struct{}, afterOK bool) int {
+	kept := m.tlsPendingDiscards[:0]
+	discarded := 0
+	for _, p := range m.tlsPendingDiscards {
+		_, listed := after[p.id]
+		if afterOK && !listed {
+			continue
+		}
+		_, err := m.tlsOp("discard", "tls.cert.discard", p.id)
+		if err != nil {
+			m.log.Warn("failed to discard previous TLS certificate", logKeyCert, p.name, "id", p.id, "error", err)
+			kept = append(kept, p)
+
+			continue
+		}
+		if listed {
+			discarded++
+		}
+	}
+	m.tlsPendingDiscards = kept
+
+	return discarded
+}
+
 // tlsListAttempts and tlsListRetryDelay bound listCertIDs' retries. A
 // transient tls.cert.list failure during a rotation makes the just-committed
 // certificate unidentifiable, and the prior certificate is then never
@@ -217,7 +277,7 @@ func (m *Manager) listCertIDs() (map[string]struct{}, error) {
 		if attempt > 0 {
 			time.Sleep(tlsListRetryDelay)
 		}
-		resp, err = m.adm("tls.cert.list")
+		resp, err = m.admRaw("tls.cert.list")
 		if err == nil {
 			break
 		}

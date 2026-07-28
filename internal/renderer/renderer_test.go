@@ -2,13 +2,16 @@ package renderer
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"text/template"
+	"time"
 
 	"github.com/HBTGmbH/k8s-httpcache/internal/watcher"
 
@@ -4290,6 +4293,11 @@ func TestDrainTokensInsideLongStringsIgnored(t *testing.T) {
 	})
 }
 
+// funcLibs lists the template function libraries [New] accepts. Behaviour that
+// must hold for both (both ship in-place-mutating helpers) is table-driven
+// over it.
+var funcLibs = []string{"sprig", "sprout"}
+
 // pristineMutationValues builds the input for the mutating-template tests
 // fresh on every call, so post-render state can be compared against an
 // untouched instance.
@@ -4315,7 +4323,7 @@ func TestRender_MutatingTemplateDoesNotCorruptInputs(t *testing.T) {
 		`<< $_ := set (index $c "list" 0) "seen" "yes" >>` +
 		`<< $_ := set (index .Secrets "creds") "leaked" "x" >>` +
 		`count=<< $n >>`
-	for _, funcs := range []string{"sprig", "sprout"} {
+	for _, funcs := range funcLibs {
 		t.Run(funcs, func(t *testing.T) {
 			t.Parallel()
 			path := writeTempTemplate(t, tmpl)
@@ -4464,5 +4472,150 @@ func TestCommit_MakesActiveTemplateTheRollbackBaseline(t *testing.T) {
 	}
 	if out != "A" {
 		t.Errorf("render after no-op Commit/Rollback = %q, want \"A\"", out)
+	}
+}
+
+// pristineZoneEndpoints builds endpoint input with deliberately unsorted
+// ForZones hints, fresh on every call, so post-render state can be compared
+// against an untouched instance.
+func pristineZoneEndpoints() []watcher.Endpoint {
+	return []watcher.Endpoint{
+		{Host: "10.0.0.1", Port: 8080, Name: "pod-a", Zone: "europe-west3-a", ForZones: []string{"zone-c", "zone-a", "zone-b"}},
+		{Host: "10.0.0.2", Port: 8080, Name: "pod-b", Zone: "europe-west3-b", ForZones: []string{"z3", "z1", "z2"}},
+	}
+}
+
+func TestRender_SortAlphaDoesNotMutateInputEndpoints(t *testing.T) {
+	t.Parallel()
+	// sprig's sortAlpha (and sprout's) hand a []string argument straight to
+	// sort.Strings without copying it, so `sortAlpha .ForZones` sorts the
+	// watcher-owned backing array in place. The endpoint slices handed to the
+	// template are the very slices the endpoint watchers retain as their
+	// EndpointsEqual dedup baselines (and the event loop keeps as
+	// latestFrontends/latestBackends), so a template must not be able to reach
+	// them: sorting one corrupts the baseline (every later sync of an unchanged
+	// store reports "changed") and races the informer goroutine.
+	tmpl := `<< range .Frontends >>f=<< join "," (sortAlpha .ForZones) >>;<< end >>` +
+		`<< range $name, $bg := .Backends >>` +
+		`<< range $bg.Endpoints >>e=<< join "," (sortAlpha .ForZones) >>;<< end >>` +
+		`<< range $bg.LocalEndpoints >>l=<< join "," (sortAlpha .ForZones) >>;<< end >>` +
+		`<< range $bg.RemoteEndpoints >>r=<< join "," (sortAlpha .ForZones) >>;<< end >>` +
+		`<< end >>`
+	for _, funcs := range funcLibs {
+		t.Run(funcs, func(t *testing.T) {
+			t.Parallel()
+			path := writeTempTemplate(t, tmpl)
+			r, err := New(path, "<<", ">>", funcs)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			r.SetLocalZone("europe-west3-a") // populates LocalEndpoints/RemoteEndpoints
+			frontends := pristineZoneEndpoints()
+			backends := map[string]BackendGroup{"api": {Endpoints: pristineZoneEndpoints()}}
+			out, err := r.Render(frontends, backends, nil, nil)
+			if err != nil {
+				t.Fatalf("render error: %v", err)
+			}
+			// The template really did sort (otherwise the test proves nothing).
+			if !strings.Contains(out, "f=zone-a,zone-b,zone-c;") {
+				t.Fatalf("expected sorted output from sortAlpha, got: %q", out)
+			}
+			if !reflect.DeepEqual(frontends, pristineZoneEndpoints()) {
+				t.Errorf("template mutated caller-owned Frontends ForZones: %#v", frontends)
+			}
+			if !reflect.DeepEqual(backends["api"].Endpoints, pristineZoneEndpoints()) {
+				t.Errorf("template mutated caller-owned Backends Endpoints ForZones: %#v", backends["api"].Endpoints)
+			}
+		})
+	}
+}
+
+func TestRender_NoRaceWithConcurrentEndpointBaselineCompare(t *testing.T) {
+	t.Parallel()
+	// Models the production race shape: the endpoint watcher retains the
+	// delivered []Endpoint as its dedup baseline and compares fresh syncs
+	// against it with slices.Equal on ForZones (endpointEqual, informer
+	// goroutine), while the event loop renders a template whose sortAlpha
+	// sorts the same backing array in place. Run under -race this must stay
+	// clean.
+	path := writeTempTemplate(t, `<< range .Frontends >><< join "," (sortAlpha .ForZones) >><< end >>`)
+	r, err := New(path, "<<", ">>", "sprig")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	baseline := pristineZoneEndpoints() // retained by the watcher AND delivered
+	fresh := pristineZoneEndpoints()    // a later sync's parse result: equal but distinct
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				for i := range baseline {
+					_ = slices.Equal(fresh[i].ForZones, baseline[i].ForZones)
+				}
+			}
+		}
+	})
+	for range 200 {
+		_, err = r.Render(baseline, nil, nil, nil)
+		if err != nil {
+			close(done)
+			wg.Wait()
+			t.Fatalf("render error: %v", err)
+		}
+	}
+	close(done)
+	wg.Wait()
+}
+
+// backendsVCL returns a VCL with n backend declarations, the shape the chart's
+// default template emits for a Service with n endpoints.
+func backendsVCL(n int) string {
+	var b strings.Builder
+	_, _ = b.WriteString("vcl 4.1;\n\n")
+	for i := range n {
+		_, _ = fmt.Fprintf(&b, "backend be_%d {\n  .host = \"10.%d.%d.%d\";\n  .port = \"8080\";\n}\n\n", i, i/65536, (i/256)%256, i%256)
+	}
+	_, _ = b.WriteString("sub vcl_recv {\n  set req.backend_hint = be_0;\n}\n")
+
+	return b.String()
+}
+
+//nolint:paralleltest // timing measurement must not compete with the package's parallel tests
+func TestInjectDrainVCL_ScalesLinearlyWithBackendCount(t *testing.T) {
+	// backendBlockEnds used to call inCommentOrLongString once per backend
+	// match, and every call rescanned the VCL from offset 0 - O(N*len(vcl)) -
+	// and injectDrainVCL ran that scan twice. Render is synchronous on the
+	// controller's single event-loop goroutine, so a few thousand endpoints
+	// stalled watcher draining, debounce timers and the SIGTERM/drain handoff
+	// for seconds (measured: 1.4s per Render at N=4000, ~99% of it in
+	// injectDrainVCL). Timing is consulted only when the absolute cost is
+	// already far outside any plausible linear cost AND the growth is
+	// super-linear, so a merely slow machine cannot fail this.
+	const small, big = 500, 4000
+	vclSmall, vclBig := backendsVCL(small), backendsVCL(big)
+	measure := func(vcl string) time.Duration {
+		start := time.Now()
+		out, couldNotPrepend := injectDrainVCL(vcl, "k8s_httpcache_drain")
+		d := time.Since(start)
+		if couldNotPrepend || !strings.Contains(out, "backend k8s_httpcache_drain {") {
+			t.Fatalf("drain VCL not injected (couldNotPrepend=%v)", couldNotPrepend)
+		}
+
+		return d
+	}
+	_ = measure(vclSmall) // warm up
+	tSmall := max(measure(vclSmall), time.Nanosecond)
+	tBig := measure(vclBig)
+	// An 8x larger input must cost ~8x, not ~64x. Both guards must trip: a
+	// merely slow (or -race instrumented) machine raises the absolute cost but
+	// not the growth factor, which stayed at ~9x measured after the fix and was
+	// ~48x before it.
+	if tBig > 250*time.Millisecond && tBig > 24*tSmall {
+		t.Errorf("injectDrainVCL took %v at %d backends vs %v at %d (%.0fx for an 8x input): the per-match full rescan is back",
+			tBig, big, tSmall, small, float64(tBig)/float64(tSmall))
 	}
 }

@@ -532,6 +532,148 @@ func TestLoadCertDiscardErrorIsBestEffort(t *testing.T) {
 	}
 }
 
+// TestLoadCertRetriesFailedDiscard pins the fix for a permanent certificate
+// leak: LoadCert recorded the new id over the prior one BEFORE attempting
+// tls.cert.discard, so a discard that failed without reaching varnishd (a
+// varnishadm CLI error - the same class listCertIDs retries for) dropped the
+// last reference to the prior certificate. It then stayed loaded and active
+// in varnishd for the process lifetime - one leaked certificate per failed
+// discard, and still varnishd's fallback for handshakes without SNI.
+func TestLoadCertRetriesFailedDiscard(t *testing.T) {
+	t.Parallel()
+
+	// Simulated varnishd: commit activates the staged certificate, discard
+	// removes the named one. The first discard fails at the CLI level, i.e.
+	// it never reaches the daemon.
+	active := []string{"cert0"}
+	nextID := 1
+	discards := 0
+	r := &mockRunner{runFn: func(_ string, args []string) (string, error) {
+		if len(args) == 0 {
+			return "", nil
+		}
+		switch args[0] {
+		case "tls.cert.list":
+			return strings.Join(active, "\n"), nil
+		case "tls.cert.commit":
+			active = append(active, fmt.Sprintf("cert%d", nextID))
+			nextID++
+
+			return "", nil
+		case "tls.cert.discard":
+			discards++
+			if discards == 1 {
+				return "", errors.New("varnishadm: connection reset")
+			}
+			active = slices.DeleteFunc(active, func(id string) bool { return id == args[1] })
+
+			return "", nil
+		default:
+			return "", nil
+		}
+	}}
+	m := newTestManager(r)
+	m.majorVersion.Store(9)
+	m.tlsCertIDs["web"] = "cert0"
+	t.Cleanup(m.CleanupTLS)
+
+	cert, key := genTestCert(t)
+	// Rotation 1: cert1 is committed, the discard of cert0 fails.
+	err := m.LoadCert("web", cert, key, nil)
+	if err != nil {
+		t.Fatalf("rotation 1: %v", err)
+	}
+	// Rotation 2: cert2 is committed; the prior cert1 is discarded and the
+	// earlier failure must be retried instead of forgotten.
+	err = m.LoadCert("web", cert, key, nil)
+	if err != nil {
+		t.Fatalf("rotation 2: %v", err)
+	}
+
+	if slices.Contains(active, "cert0") {
+		t.Errorf("cert0 leaked in varnishd forever after its failed discard: active=%v", active)
+	}
+	if got := m.tlsCertIDs["web"]; got != "cert2" {
+		t.Errorf("tracked id = %q, want cert2", got)
+	}
+	if got := readMetric(t, m.metrics.TLSCertsActive); got != 1 {
+		t.Errorf("tls_certs_active = %v, want 1", got)
+	}
+}
+
+// TestLoadCertDiscardBacklogBounded pins the two bounds on the discard retry
+// queue introduced with that retry: it must never grow past
+// maxPendingDiscards while discards keep failing (an id varnishd will never
+// accept must not accumulate one entry per rotation for the process
+// lifetime), and an id varnishd no longer lists must leave the queue without
+// another CLI call - a discard that did reach varnishd is flushed by the next
+// commit, so retrying it could only ever fail with "ID not found".
+func TestLoadCertDiscardBacklogBounded(t *testing.T) {
+	t.Parallel()
+
+	active := []string{"cert0"}
+	nextID := 1
+	failDiscards := true
+	var attempted []string
+	r := &mockRunner{runFn: func(_ string, args []string) (string, error) {
+		if len(args) == 0 {
+			return "", nil
+		}
+		switch args[0] {
+		case "tls.cert.list":
+			return strings.Join(active, "\n"), nil
+		case "tls.cert.commit":
+			active = append(active, fmt.Sprintf("cert%d", nextID))
+			nextID++
+
+			return "", nil
+		case "tls.cert.discard":
+			attempted = append(attempted, args[1])
+			if failDiscards {
+				return "", errors.New("varnishadm: connection reset")
+			}
+			active = slices.DeleteFunc(active, func(id string) bool { return id == args[1] })
+
+			return "", nil
+		default:
+			return "", nil
+		}
+	}}
+	m := newTestManager(r)
+	m.majorVersion.Store(9)
+	m.tlsCertIDs["web"] = "cert0"
+	t.Cleanup(m.CleanupTLS)
+
+	cert, key := genTestCert(t)
+	for i := range maxPendingDiscards + 4 {
+		err := m.LoadCert("web", cert, key, nil)
+		if err != nil {
+			t.Fatalf("rotation %d: %v", i, err)
+		}
+	}
+	if got := len(m.tlsPendingDiscards); got > maxPendingDiscards {
+		t.Errorf("discard backlog holds %d ids, want at most %d", got, maxPendingDiscards)
+	}
+
+	// varnishd dropped one queued certificate by itself; the next rotation
+	// must forget it instead of retrying a discard that cannot succeed.
+	gone := m.tlsPendingDiscards[0].id
+	active = slices.DeleteFunc(active, func(id string) bool { return id == gone })
+	failDiscards = false
+	attempted = nil
+
+	err := m.LoadCert("web", cert, key, nil)
+	if err != nil {
+		t.Fatalf("final rotation: %v", err)
+	}
+	if slices.Contains(attempted, gone) {
+		t.Errorf("retried discard of %q that varnishd no longer lists", gone)
+	}
+	if len(m.tlsPendingDiscards) != 0 {
+		t.Errorf("backlog not drained after discards started succeeding: %v", m.tlsPendingDiscards)
+	}
+}
+
 func TestLoadCertWriteFileError(t *testing.T) {
 	t.Parallel()
 	r := &mockRunner{runFn: func(string, []string) (string, error) { return "", nil }}

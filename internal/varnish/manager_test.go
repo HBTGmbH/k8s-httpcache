@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -48,6 +49,12 @@ func (r *mockRunner) run(name string, args []string) (string, error) {
 	}
 
 	return r.runFn(name, args)
+}
+
+// runStdout delegates to run: the mock has a single output stream, so the
+// stdout-only/combined distinction only exists in execRunner.
+func (r *mockRunner) runStdout(name string, args []string) (string, error) {
+	return r.run(name, args)
 }
 
 // stripAdmOptions removes leading varnishadm option pairs (-n <dir>, -t <sec>).
@@ -841,7 +848,7 @@ func TestNew(t *testing.T) {
 	t.Parallel()
 	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm",
 		[]string{":8080", ":8443"}, []string{"-p", "default_ttl=3600"}, "/usr/bin/varnishstat",
-		telemetry.NewMetrics(prometheus.NewRegistry(), nil))
+		telemetry.NewMetrics(prometheus.NewRegistry(), nil), redact.NewRedactor())
 
 	if m.varnishdPath != "/usr/sbin/varnishd" {
 		t.Errorf("varnishdPath = %q, want /usr/sbin/varnishd", m.varnishdPath)
@@ -870,7 +877,7 @@ func TestNewDefaultVarnishstatPath(t *testing.T) {
 	t.Parallel()
 	m := New("/usr/sbin/varnishd", "/usr/bin/varnishadm",
 		[]string{":8080"}, nil, "",
-		telemetry.NewMetrics(prometheus.NewRegistry(), nil))
+		telemetry.NewMetrics(prometheus.NewRegistry(), nil), redact.NewRedactor())
 
 	if m.varnishstatPath != defaultVarnishstatPath {
 		t.Errorf("varnishstatPath = %q, want default %q", m.varnishstatPath, defaultVarnishstatPath)
@@ -2757,7 +2764,7 @@ func TestNewPanicsOnNilMetrics(t *testing.T) {
 			t.Fatal("expected panic for nil metrics")
 		}
 	}()
-	New("/usr/sbin/varnishd", "/usr/bin/varnishadm", []string{":8080"}, nil, "", nil)
+	New("/usr/sbin/varnishd", "/usr/bin/varnishadm", []string{":8080"}, nil, "", nil, redact.NewRedactor())
 }
 
 func TestAdmRedactsSecrets(t *testing.T) {
@@ -3771,6 +3778,46 @@ func TestExecRunnerRunError(t *testing.T) {
 	_, err := er.run("/nonexistent/binary", nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent binary")
+	}
+}
+
+// TestVarnishstatOutputExcludesStderr pins the fix for the varnishstat call
+// path using CombinedOutput: libvarnishapi's VSM attach writes progress dots
+// to STDERR while it waits for varnishd's shared memory to appear and then
+// exits 0 (measured on varnish 6.6/7.7/9.0), so merging stderr into stdout
+// puts non-JSON bytes in front of the '{' that every varnishstat parser
+// requires - ActiveSessions then fails in both schema parsers and the
+// Prometheus collector exports no counters at all for that scrape.
+func TestVarnishstatOutputExcludesStderr(t *testing.T) {
+	t.Parallel()
+
+	const statJSON = `{"version":1,"counters":{"MEMPOOL.sess0.live":{"value":3},"MEMPOOL.sess1.live":{"value":4}}}`
+	script := filepath.Join(t.TempDir(), "varnishstat")
+	// Dots on stderr, JSON on stdout, exit 0 - exactly the attach window.
+	body := "#!/bin/sh\nprintf '...\\n' >&2\nprintf '%s\\n' '" + statJSON + "'\n"
+	err := os.WriteFile(script, []byte(body), 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestManager(&mockRunner{})
+	m.run = execRunner{stdout: io.Discard, stderr: io.Discard}
+	m.varnishstatPath = script
+
+	sessions, err := m.ActiveSessions()
+	if err != nil {
+		t.Fatalf("ActiveSessions with varnishstat stderr output: %v", err)
+	}
+	if sessions != 7 {
+		t.Errorf("ActiveSessions = %d, want 7", sessions)
+	}
+
+	out, _, err := m.VarnishstatFunc()()
+	if err != nil {
+		t.Fatalf("VarnishstatFunc with varnishstat stderr output: %v", err)
+	}
+	if !strings.HasPrefix(out, "{") {
+		t.Errorf("varnishstat output is not parseable JSON: %q", out[:min(20, len(out))])
 	}
 }
 
@@ -5353,6 +5400,60 @@ func TestNCSAWritersFlushedBetweenProcesses(t *testing.T) {
 	}
 }
 
+// TestNCSAWritersRedactAcrossOverlongLineFlush pins the fix for a cleartext
+// secret leak: the prefix writer used to wrap the REDACTING writer, so its
+// overlong-line flush (a newline-free run reaching maxBufferedLine, e.g. the
+// misconfigured varnishncsa -F format that motivated the bound) injected the
+// log prefix MID-LINE into the byte stream the redactor scans. The redactor's
+// tailHold/safeCut only defend against splits the redactor itself makes, so
+// that upstream insertion tore a single-line secret in two and BOTH halves
+// reached stdout unredacted, trivially reassembled from the pod log.
+func TestNCSAWritersRedactAcrossOverlongLineFlush(t *testing.T) {
+	t.Parallel()
+
+	const secret = "supersecretvalue"
+	red := redact.NewRedactor()
+	red.Update(map[string]map[string]any{"app": {"key": secret}})
+	m := newTestManager(&mockRunner{})
+	m.SetRedactor(red)
+
+	var out bytes.Buffer
+	stdout, _ := m.buildNCSAWriters(&out, io.Discard, "[access] ")
+
+	// One newline-free run straddling the flush bound, with the secret
+	// starting 8 bytes before it.
+	payload := make([]byte, 0, 2*maxBufferedLine)
+	payload = append(payload, bytes.Repeat([]byte("x"), maxBufferedLine-8)...)
+	payload = append(payload, secret...)
+	payload = append(payload, bytes.Repeat([]byte("y"), maxBufferedLine)...)
+
+	// os/exec copies subprocess output in 32 KiB units.
+	const chunk = 32 * 1024
+	for off := 0; off < len(payload); off += chunk {
+		_, err := stdout.Write(payload[off:min(off+chunk, len(payload))])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.flushNCSAWriters()
+
+	got := out.String()
+	if strings.Contains(got, secret) {
+		t.Error("ncsa stdout leaked the whole secret")
+	}
+	if strings.Contains(got, secret[:8]) || strings.Contains(got, secret[8:]) {
+		i := strings.Index(got, secret[:8])
+		t.Errorf("ncsa stdout leaked the secret split by the injected prefix: %q",
+			got[max(i-10, 0):min(i+40, len(got))])
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Error("secret was never redacted")
+	}
+	if !strings.HasPrefix(got, "[access] ") {
+		t.Errorf("prefix missing on ncsa stdout: %q", got[:min(20, len(got))])
+	}
+}
+
 // TestAdmPassesCLITimeout pins the fix for the missing varnishadm -t flag:
 // Varnish 7.0+ varnishadm defaults to a 5s CLI response timeout, so a
 // vcl.load whose compile takes longer fails every reload (and every retry)
@@ -5504,4 +5605,139 @@ func TestWaitForAdminVarnishdAlreadyExited(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "varnishd exited") {
 		t.Fatalf("error = %v, want varnishd-exited", err)
 	}
+}
+
+// TestReloadClassifiesVCLRejection pins that reload distinguishes "varnishd
+// rejected this VCL" from "the CLI call failed". The event loop rolls the
+// template back only for the former: a vcl.use failure, a wedged admin socket
+// or a CLI timeout says nothing about the VCL's validity, and treating it as a
+// rejection permanently discards the operator's template change (the rendered
+// file is never re-read, so the loop keeps serving the old template while
+// reporting success).
+func TestReloadClassifiesVCLRejection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		failCmd      string // CLI command that fails
+		resp         string
+		wantRejected bool
+	}{
+		{
+			name:         "vcl.load compile error is a rejection",
+			failCmd:      "vcl.load",
+			resp:         "Message from VCC-compiler:\nExpected ';' got '}'\n('/tmp/x.vcl' Line 12 Pos 3)\nVCL compilation failed",
+			wantRejected: true,
+		},
+		{
+			name:         "vcl.load transport failure is not a rejection",
+			failCmd:      "vcl.load",
+			resp:         "Could not get hold of varnishd, is it running?",
+			wantRejected: false,
+		},
+		{
+			name:         "vcl.load CLI timeout is not a rejection",
+			failCmd:      "vcl.load",
+			resp:         "CLI communication error (hdr)",
+			wantRejected: false,
+		},
+		{
+			// vcl.load already succeeded, so the VCL demonstrably compiled.
+			name:         "vcl.use failure is never a rejection",
+			failCmd:      "vcl.use",
+			resp:         "CLI communication error (hdr)",
+			wantRejected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &mockRunner{runFn: func(_ string, args []string) (string, error) {
+				if len(args) > 0 && args[0] == tc.failCmd {
+					return tc.resp, errors.New("exit status 1")
+				}
+
+				return "200", nil
+			}}
+			m := newTestManager(r)
+
+			err := m.reload("/tmp/x.vcl")
+			if err == nil {
+				t.Fatal("reload() = nil, want error")
+			}
+			if got := errors.Is(err, ErrVCLRejected); got != tc.wantRejected {
+				t.Errorf("errors.Is(err, ErrVCLRejected) = %v, want %v (err = %v)",
+					got, tc.wantRejected, err)
+			}
+		})
+	}
+}
+
+// TestDiscardOldVCLsParsesUnredactedResponse pins that varnishadm responses are
+// parsed BEFORE redaction. adm() used to redact the response it returned, so a
+// --secrets value that happened to equal a VCL name rewrote the vcl.list rows
+// the cleanup parses - silently disabling VCL cleanup for the process lifetime
+// while every reload kept leaking a compiled VCL in varnishd.
+func TestDiscardOldVCLsParsesUnredactedResponse(t *testing.T) {
+	t.Parallel()
+
+	// Real varnishadm output, captured from varnish 6.6 / 7.7.3 / 9.0.3
+	// containers: five whitespace-separated columns, and 6.6 additionally
+	// prefixes a bare "200" status line.
+	const vclList = "200\n" +
+		"available   auto   warm   0   boot\n" +
+		"available   auto   warm   0   kv_reload_1\n" +
+		"active      auto   warm   0   kv_reload_2\n"
+
+	r := &mockRunner{runFn: func(_ string, args []string) (string, error) {
+		if len(args) > 0 && args[0] == "vcl.list" {
+			return vclList, nil
+		}
+
+		return "200", nil
+	}}
+	m := newTestManager(r)
+
+	// A secret whose value collides with a live VCL name.
+	red := redact.NewRedactor()
+	red.Update(map[string]map[string]any{"app": {"token": "kv_reload_1"}})
+	m.SetRedactor(red)
+
+	m.discardOldVCLs("kv_reload_2")
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var discarded []string
+	for _, c := range r.calls {
+		args := stripAdmOptions(c[1:])
+		if len(args) >= 2 && args[0] == "vcl.discard" {
+			discarded = append(discarded, args[1])
+		}
+	}
+	if !slices.Contains(discarded, "kv_reload_1") {
+		t.Errorf("vcl.discard calls = %v, want the stale kv_reload_1 to be discarded "+
+			"(a --secrets value colliding with the VCL name must not hide it)", discarded)
+	}
+}
+
+// TestNewRequiresRedactor pins that the redactor is mandatory.
+//
+// It used to be an optional setter (SetRedactor) applied by main.go after
+// construction. Deleting that one call left the entire test suite green while
+// varnishd's and varnishncsa's stdout/stderr reached the pod log completely
+// unredacted, so a Secret value echoed by either subprocess appeared in
+// cleartext. Making it a constructor argument means production cannot forget it.
+func TestNewRequiresRedactor(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		if recover() == nil {
+			t.Error("New with a nil redactor must panic: subprocess output would be unredacted")
+		}
+	}()
+
+	_ = New("/usr/sbin/varnishd", "/usr/bin/varnishadm", []string{":8080"}, nil, "",
+		telemetry.NewMetrics(prometheus.NewRegistry(), nil), nil)
 }

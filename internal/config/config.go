@@ -81,6 +81,7 @@ var (
 	errEmptySelector       = errors.New("empty selector")
 	errListenAddrNotFound  = errors.New("does not match any --listen-addr name")
 	errListenAddrUDS       = errors.New("is a unix domain socket listener; the broadcast fan-out targets pods over TCP and needs a port")
+	errListenAddrPROXY     = errors.New("is a PROXY-protocol listener; the broadcast fan-out speaks plain HTTP to sibling pods and varnishd drops sessions without a PROXY preamble - point --broadcast-target-listen-addr at an HTTP listener, or disable the broadcast server with --broadcast-addr=none")
 	errNoHTTPSListener     = errors.New("requires a --listen-addr with the 'https' protocol (e.g. --listen-addr=https=:8443,https)")
 )
 
@@ -89,19 +90,32 @@ var (
 // before a TLS certificate can serve traffic.
 func hasHTTPSListener(addrs []ListenAddrSpec) bool {
 	for _, la := range addrs {
-		// Proto tokens follow the address, comma-separated: name=host:port,proto[,proto...].
-		_, protos, ok := strings.Cut(la.Raw, ",")
-		if !ok {
-			continue
-		}
-		for p := range strings.SplitSeq(protos, ",") {
-			if strings.EqualFold(strings.TrimSpace(p), "https") {
-				return true
-			}
+		if la.hasProto("https") {
+			return true
 		}
 	}
 
 	return false
+}
+
+// splitCommaList expands comma-separated values of a repeatable flag into
+// individual tokens, trimming whitespace and dropping empty ones. The root
+// command sets DisableSliceFlagSeparator so varnishd pass-through values survive
+// verbatim, which means a flag documenting a comma-separated list has to split
+// its own values: without this, "--varnishstat-export-filter=MAIN,SMA" would
+// arrive as the single literal token "MAIN,SMA".
+func splitCommaList(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		for tok := range strings.SplitSeq(v, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok != "" {
+				out = append(out, tok)
+			}
+		}
+	}
+
+	return out
 }
 
 // BackendSpec describes one upstream backend service to watch.
@@ -156,6 +170,25 @@ type ListenAddrSpec struct {
 	Port int32  // numeric port extracted from the address; 0 for UDS listeners
 	Raw  string // original flag value passed through to varnishd
 	UDS  bool   // unix domain socket listener (absolute path or @abstract); Host/Port are unset
+
+	// Sub-arguments following the address, in flag order: the protocol
+	// (e.g. "HTTP", "PROXY", "https") plus any varnishd option sub-arguments
+	// of a UDS listener (e.g. "user=vcache"). Needed to tell a listener the
+	// broadcast fan-out can speak plain HTTP to from one it cannot.
+	Protos []string
+}
+
+// hasProto reports whether the listen address declares the given varnishd
+// protocol sub-argument, case-insensitively (varnishd itself accepts "proxy",
+// "PROXY", ... interchangeably).
+func (s *ListenAddrSpec) hasProto(proto string) bool {
+	for _, p := range s.Protos {
+		if strings.EqualFold(p, proto) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // listenAddrFlags implements a parser for repeatable --listen-addr flags.
@@ -180,8 +213,16 @@ func (l *listenAddrFlags) Set(val string) error {
 		rest = after
 	}
 
-	// Strip protocol suffixes: ":8080,HTTP" → ":8080"
-	addr, _, _ := strings.Cut(rest, ",")
+	// Strip protocol suffixes: ":8080,HTTP" → ":8080". The stripped
+	// sub-arguments are retained on the spec so later validation can tell a
+	// PROXY listener from a plain HTTP one.
+	addr, subArgs, _ := strings.Cut(rest, ",")
+	for p := range strings.SplitSeq(subArgs, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			spec.Protos = append(spec.Protos, p)
+		}
+	}
 
 	// Unix domain socket listeners (varnishd accepts absolute paths and
 	// @-prefixed abstract sockets) carry no host/port; the raw value is
@@ -561,16 +602,26 @@ func validationError(cmd *cli.Command, format string, args ...any) error {
 
 // resolveBroadcastTargetPort returns the port of the listen address matching
 // targetName. When targetName is empty, the first listen address is used
-// (validated in Parse to be a TCP listener). A UDS listener cannot be a
-// broadcast target: the fan-out connects to sibling pods over TCP.
+// (validated in Parse to be a TCP listener). The target must be a listener the
+// fan-out can reach with a plain HTTP request: a UDS listener has no port to
+// dial, and a PROXY-protocol listener drops any session that does not start
+// with a PROXY preamble, which would fail every PURGE/BAN at the transport
+// level while the broadcast endpoint still answered 200 OK.
 func resolveBroadcastTargetPort(addrs []ListenAddrSpec, targetName string) (int32, error) {
 	if targetName == "" {
+		if addrs[0].hasProto("PROXY") {
+			return 0, fmt.Errorf("the first --listen-addr %q %w", addrs[0].Raw, errListenAddrPROXY)
+		}
+
 		return addrs[0].Port, nil
 	}
 	for _, la := range addrs {
 		if la.Name == targetName {
 			if la.UDS {
 				return 0, fmt.Errorf("--broadcast-target-listen-addr %q: %w", targetName, errListenAddrUDS)
+			}
+			if la.hasProto("PROXY") {
+				return 0, fmt.Errorf("--broadcast-target-listen-addr %q: %w", targetName, errListenAddrPROXY)
 			}
 
 			return la.Port, nil
@@ -886,7 +937,7 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 			&cli.StringSliceFlag{
 				Name:        "varnishstat-export-filter",
 				Category:    catMetrics,
-				Usage:       "Counter groups to export (e.g. MAIN,SMA,VBE); empty exports all (only effective when --varnishstat-export is enabled)",
+				Usage:       "Counter groups to export, comma-separated or repeatable (e.g. MAIN,SMA,VBE); empty exports all (only effective when --varnishstat-export is enabled)",
 				Destination: &c.VarnishstatExportFilter,
 			},
 
@@ -1529,6 +1580,14 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				c.MetricsAddr = ""
 			}
 
+			// The root command disables urfave/cli's slice separator (varnishd
+			// pass-through values must survive verbatim), so the documented
+			// comma-separated counter group list has to be split here. Without
+			// it "MAIN,SMA" would reach the exporter as one group name that
+			// matches no counter prefix and silently export nothing, and an
+			// empty value would do the same instead of exporting all groups.
+			c.VarnishstatExportFilter = splitCommaList(c.VarnishstatExportFilter)
+
 			// Resolve broadcast target port from the named listen address.
 			if c.BroadcastAddr != "" {
 				port, resolveErr := resolveBroadcastTargetPort(c.ListenAddrs, c.BroadcastTargetListenAddr)
@@ -1547,7 +1606,13 @@ func parse(version string, args []string, w io.Writer) (*Config, error) {
 				// request can trip the write deadline and truncate the fan-out
 				// response, so enforce the constraint documented on the flag.
 				// A write timeout of 0 disables the deadline and is exempt.
-				if c.BroadcastWriteTimeout > 0 && c.BroadcastWriteTimeout <= c.BroadcastReadTimeout+c.BroadcastClientTimeout {
+				// The comparison is written as a subtraction because both
+				// operands may be up to math.MaxInt64 (time.ParseDuration
+				// accepts 2562047h47m16.854775807s and the flags are only
+				// checked for sign): summing them would wrap negative and
+				// silently disable the check, while write - client cannot
+				// overflow for non-negative operands.
+				if c.BroadcastWriteTimeout > 0 && c.BroadcastWriteTimeout-c.BroadcastClientTimeout <= c.BroadcastReadTimeout {
 					actionErr = validationError(cmd, "--broadcast-write-timeout (%v) must exceed --broadcast-read-timeout (%v) + --broadcast-client-timeout (%v)",
 						c.BroadcastWriteTimeout, c.BroadcastReadTimeout, c.BroadcastClientTimeout)
 

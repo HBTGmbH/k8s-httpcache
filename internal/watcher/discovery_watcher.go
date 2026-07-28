@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -506,6 +507,36 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 		current[key] = svc
 	}
 
+	// Reconcile the listed Services in a deterministic order. Two Services with
+	// the same bare name in different namespaces can both match this selector,
+	// and only the first one visited claims the name (nameClaimedLocked and the
+	// registry claim suppress the rest). Ranging `current` directly handed that
+	// choice to Go's per-range randomized map iteration, so replicas of the same
+	// controller - given byte-identical cluster state and flags - bound one VCL
+	// backend name to Services in DIFFERENT namespaces, and every restart
+	// re-rolled the choice, with nothing in the VCL, metrics or status surfacing
+	// the divergence. Sorting the keys makes the winner a pure function of the
+	// cluster state (lowest "namespace/serviceName" wins), the same reasoning
+	// that fixed the endpoint dedup survivor in canonicalizeEndpoints.
+	keys := slices.Sorted(maps.Keys(current))
+
+	// Services the add pass skipped, recorded rather than logged on the spot:
+	// the second add pass below can adopt the very Service the first one
+	// skipped (a removal in this same reconcile frees the bare name), and
+	// warning eagerly announced "skipping discovered Service" for a Service
+	// adopted a few statements later - a line byte-identical to the genuine
+	// permanently-suppressed one, so every healthy same-name handoff looked
+	// like a misconfiguration. Each pass resets the list, so what survives the
+	// final pass is exactly the set still suppressed when the reconcile ends.
+	type suppressedService struct {
+		namespace string
+		name      string
+		// byRegistry distinguishes a cross-watcher claim held by another
+		// --backend-selector from a same-named Service managed by this watcher.
+		byRegistry bool
+	}
+	var suppressed []suppressedService
+
 	// addPass adopts every currently-listed Service that is not already managed
 	// and whose bare name is free. It is run again after the remove pass below:
 	// a removal can free a bare name (or registry claim) that a still-listed
@@ -515,7 +546,9 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 	// only event that fires, so the survivor must be adopted within this same
 	// reconcile or the backend is orphaned until some unrelated future event.
 	addPass := func() {
-		for key, svc := range current {
+		suppressed = nil
+		for _, key := range keys {
+			svc := current[key]
 			if _, exists := dw.backends[key]; exists {
 				continue
 			}
@@ -526,8 +559,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 				continue
 			}
 			if dw.nameClaimedLocked(svc.Name, svc.Namespace) {
-				dw.log.Warn("skipping discovered Service: name already claimed by a same-named Service in another namespace",
-					"namespace", svc.Namespace, "service", svc.Name)
+				suppressed = append(suppressed, suppressedService{namespace: svc.Namespace, name: svc.Name})
 
 				continue
 			}
@@ -535,8 +567,7 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 			// Service with this bare name. The consumer keys backends by bare name,
 			// so only the first claimant forwards updates for it.
 			if dw.registry != nil && !dw.registry.claim(svc.Name, dw.ownerToken(key)) {
-				dw.log.Warn("skipping discovered Service: backend name already claimed by another --backend-selector",
-					"namespace", svc.Namespace, "service", svc.Name)
+				suppressed = append(suppressed, suppressedService{namespace: svc.Namespace, name: svc.Name, byRegistry: true})
 
 				continue
 			}
@@ -608,6 +639,19 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 	if len(removed) > 0 {
 		addPass()
 	}
+
+	// Report only the Services still suppressed now that the reconcile has
+	// settled - never one the second add pass just adopted.
+	for _, s := range suppressed {
+		if s.byRegistry {
+			dw.log.Warn("skipping discovered Service: backend name already claimed by another --backend-selector",
+				"namespace", s.namespace, "service", s.name)
+
+			continue
+		}
+		dw.log.Warn("skipping discovered Service: name already claimed by a same-named Service in another namespace",
+			"namespace", s.namespace, "service", s.name)
+	}
 	dw.mu.Unlock()
 
 	// Send removal notifications without holding the lock. A removed Service
@@ -625,15 +669,21 @@ func (dw *BackendDiscoveryWatcher) syncServices(ctx context.Context, lister core
 
 // nameClaimedLocked reports whether a backend with the given Service name
 // already exists in a different namespace. Updates are keyed by bare Service
-// name, so a second same-named Service would fight over the same backend
-// group downstream; the first discovered Service wins. Must be called with
-// dw.mu held.
+// name, so a second same-named Service would fight over the same backend group
+// downstream; the incumbent keeps the name, and among Services first listed
+// together the lowest "namespace/serviceName" wins (syncServices reconciles in
+// sorted key order, so the choice cannot vary between restarts or replicas).
+// Must be called with dw.mu held.
 //
 // Because syncServices runs its add pass before its remove pass, a departing
-// winner still suppresses a same-named survivor within the same reconcile: the
-// survivor is adopted on the next reconcile that observes the conflict cleared,
-// never two same-named Services at once. This lazy promotion is intentional - we
-// don't silently re-point a backend at another namespace mid-reconcile.
+// winner still suppresses a same-named survivor during that first pass - the
+// watcher never manages two same-named Services at once. The promotion is
+// nonetheless EAGER, not lazy: syncServices re-runs the add pass after any
+// removal (see the addPass comment), so the survivor is adopted in the same
+// reconcile that drops the winner. It has to be - the informer resync period is
+// 0, so the winner's deletion is the only event that ever fires and a deferred
+// promotion would orphan the backend forever
+// (TestDiscoveryWatcher_SurvivingSameNameAdoptedAfterWinnerDeleted).
 func (dw *BackendDiscoveryWatcher) nameClaimedLocked(name, namespace string) bool {
 	for _, mb := range dw.backends {
 		if mb.name == name && mb.namespace != namespace {

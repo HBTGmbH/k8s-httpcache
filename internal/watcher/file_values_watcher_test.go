@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -85,7 +86,7 @@ func TestFileValuesWatcherUpdate(t *testing.T) {
 
 	// Initial sync.
 	data := readFileValuesChanges(t, w)
-	if !reflect.DeepEqual(data["ttl"], float64(300)) {
+	if !reflect.DeepEqual(data["ttl"], int64(300)) {
 		t.Fatalf("expected ttl=300, got %v (%T)", data["ttl"], data["ttl"])
 	}
 
@@ -93,7 +94,7 @@ func TestFileValuesWatcherUpdate(t *testing.T) {
 	writeYAML(t, dir, "ttl.yaml", "600")
 
 	data = readFileValuesChanges(t, w)
-	if !reflect.DeepEqual(data["ttl"], float64(600)) {
+	if !reflect.DeepEqual(data["ttl"], int64(600)) {
 		t.Errorf("expected ttl=600, got %v (%T)", data["ttl"], data["ttl"])
 	}
 }
@@ -155,8 +156,8 @@ func TestFileValuesWatcherYAMLParsing(t *testing.T) {
 	if data["plain"] != "hello" {
 		t.Errorf("expected plain=hello, got %v", data["plain"])
 	}
-	if !reflect.DeepEqual(data["number"], float64(42)) {
-		t.Errorf("expected number=42 (float64), got %v (%T)", data["number"], data["number"])
+	if !reflect.DeepEqual(data["number"], int64(42)) {
+		t.Errorf("expected number=42 (int64), got %v (%T)", data["number"], data["number"])
 	}
 	if b, ok := data["boolean"].(bool); !ok || !b {
 		t.Errorf("expected boolean=true, got %v", data["boolean"])
@@ -169,8 +170,8 @@ func TestFileValuesWatcherYAMLParsing(t *testing.T) {
 	if m["host"] != "example.com" {
 		t.Errorf("expected host=example.com, got %v", m["host"])
 	}
-	if !reflect.DeepEqual(m["port"], float64(8080)) {
-		t.Errorf("expected port=8080 (float64), got %v (%T)", m["port"], m["port"])
+	if !reflect.DeepEqual(m["port"], int64(8080)) {
+		t.Errorf("expected port=8080 (int64), got %v (%T)", m["port"], m["port"])
 	}
 
 	l, ok := data["list"].([]any)
@@ -597,5 +598,91 @@ func TestScanDeliversPriorPassOnRetryReadDirError(t *testing.T) {
 		}
 	default:
 		t.Fatal("no snapshot delivered; startup collection would block")
+	}
+}
+
+// makeUnreadable replaces a values file with a dangling symlink: ReadDir still
+// lists the entry, ReadFile fails on it, and unlike chmod the failure does not
+// depend on the uid running the test. It stands in for the real per-file read
+// failures (EACCES on a Secret/ConfigMap volume with a restrictive
+// defaultMode, EMFILE under fd pressure, EIO on a networked volume).
+func makeUnreadable(t *testing.T, dir, name string) {
+	t.Helper()
+	err := os.Remove(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.Symlink(filepath.Join(dir, "nonexistent-target"), filepath.Join(dir, name))
+	if err != nil {
+		t.Skip("symlink not supported:", err)
+	}
+}
+
+// TestScanKeepsValuesOnReadFileError is the per-file counterpart of
+// TestScanKeepsValuesOnReadDirError. A transient failure reading ONE listed
+// values file used to log the error, skip the file and publish the truncated
+// map as a complete snapshot: the ..data recheck only compares the symlink
+// target, which did not move, so the shrunken map was delivered as a real
+// update, became the dedup baseline and drove a Varnish reload rendered
+// without that key (`<no value>`, or a VCL that no longer compiles). The
+// directory-listing failure a few lines up explicitly refuses to wipe values
+// for exactly this reason; one unreadable file must not wipe them either.
+func TestScanKeepsValuesOnReadFileError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeYAML(t, dir, "a.yaml", "ttl: 300")
+	writeYAML(t, dir, "b.yaml", "grace: 10")
+
+	w := NewFileValuesWatcher(dir, time.Hour)
+	w.ScanOnce()
+	got := <-w.Changes()
+	if len(got) != 2 {
+		t.Fatalf("initial scan = %v, want keys a and b", got)
+	}
+
+	makeUnreadable(t, dir, "a.yaml")
+
+	w.ScanOnce()
+	select {
+	case got := <-w.Changes():
+		t.Fatalf("delivered %v after a transient read failure on a.yaml: the key was dropped and "+
+			"the truncated snapshot became the new baseline", got)
+	default:
+	}
+}
+
+// TestScanRetainsUnreadableKeyInLaterSnapshot completes the previous test: it
+// is not enough to suppress the delivery of the truncated map, the last known
+// value has to be carried into every later snapshot too - otherwise the very
+// next unrelated change (a new file, an edit to another one) publishes the
+// truncated map after all.
+func TestScanRetainsUnreadableKeyInLaterSnapshot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeYAML(t, dir, "a.yaml", "ttl: 300")
+	writeYAML(t, dir, "b.yaml", "grace: 10")
+
+	w := NewFileValuesWatcher(dir, time.Hour)
+	w.ScanOnce()
+	<-w.Changes()
+
+	makeUnreadable(t, dir, "a.yaml")
+	// An unrelated key appears while a.yaml is still unreadable.
+	writeYAML(t, dir, "c.yaml", "keep: true")
+
+	w.ScanOnce()
+	got := readFileValuesChanges(t, w)
+	a, ok := got["a"].(map[string]any)
+	if !ok {
+		t.Fatalf("key 'a' missing from %v: an unreadable file must keep its last delivered value", got)
+	}
+	if fmt.Sprint(a["ttl"]) != "300" {
+		t.Errorf("a.ttl = %v, want the last known value 300", a["ttl"])
+	}
+	if _, ok := got["b"]; !ok {
+		t.Errorf("key 'b' missing from %v", got)
+	}
+	if _, ok := got["c"]; !ok {
+		t.Errorf("key 'c' missing from %v: the readable files must still be published", got)
 	}
 }

@@ -28,6 +28,11 @@ import (
 // memory).
 const maxBodySize = 1 << 20 // 1 MiB
 
+// defaultClientTimeout bounds each per-pod fan-out request when the caller
+// supplies no positive Options.ClientTimeout. It matches the
+// --broadcast-client-timeout default.
+const defaultClientTimeout = 3 * time.Second
+
 // knownMethods is the set of HTTP methods recorded verbatim in the request
 // metric's "method" label. Any other method is collapsed to "other": net/http
 // accepts arbitrary RFC 7230 method tokens from clients, so using r.Method
@@ -123,7 +128,7 @@ type Options struct {
 	ReadHeaderTimeout time.Duration      // max time to read request headers
 	ReadTimeout       time.Duration      // max time to read the whole request (headers + body); bounds slow-body clients
 	WriteTimeout      time.Duration      // max time to write the response; bounds slow-read clients
-	ClientTimeout     time.Duration      // per-pod fan-out request timeout
+	ClientTimeout     time.Duration      // per-pod fan-out request timeout (values <= 0 fall back to defaultClientTimeout; see New)
 	ClientIdleTimeout time.Duration      // max idle time for connections to Varnish pods
 	ShutdownTimeout   time.Duration      // grace period for in-flight requests after drain
 	Metrics           *telemetry.Metrics // Prometheus metrics
@@ -153,9 +158,23 @@ func New(opts Options) *Server { //nolint:gocritic // hugeParam: Options is copi
 	if opts.Metrics == nil {
 		panic("broadcast: Options.Metrics must not be nil")
 	}
+	// A zero http.Client timeout means "no timeout", and the per-pod request
+	// context is deliberately detached from the client (see forward), so
+	// Client.Timeout is the only thing that can ever end a fan-out request. An
+	// unbounded one against a pod that completes the TCP handshake and then
+	// never answers (thread-pool exhaustion, a stopped process, a stalled node)
+	// wedges the handler and its goroutine permanently - leaking a goroutine, a
+	// socket and the buffered request body per request, and keeping Drain from
+	// ever seeing the connection count reach zero. Never run without a bound.
+	clientTimeout := opts.ClientTimeout
+	if clientTimeout <= 0 {
+		slog.Warn("broadcast client timeout must be positive; falling back to the default",
+			"configured", opts.ClientTimeout, "using", defaultClientTimeout)
+		clientTimeout = defaultClientTimeout
+	}
 	s := &Server{
 		client: &http.Client{
-			Timeout: opts.ClientTimeout,
+			Timeout: clientTimeout,
 			Transport: &http.Transport{
 				IdleConnTimeout: opts.ClientIdleTimeout,
 			},
@@ -244,10 +263,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.BroadcastFanoutTargets.Set(float64(len(frontends)))
 
-	for _, fe := range frontends {
+	keys := fanoutKeys(frontends)
+	for i, fe := range frontends {
 		wg.Go(func() {
 			start := time.Now()
-			nr := namedResult{name: fe.Name}
+			nr := namedResult{name: keys[i]}
 			nr.result = s.forward(r, &fe, body)
 			// Per-pod fan-out telemetry: latency distribution and a
 			// bounded-cardinality outcome bucket. Prometheus metric methods are
@@ -277,6 +297,45 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	//nolint:errchkjson // best-effort JSON response; nothing to do if encoding fails
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// fanoutKeys returns the aggregated response's key for each frontend, in slice
+// order. The response is a map keyed per pod, so frontends sharing a Name would
+// collapse into a single entry: the caller would see fewer pods than were
+// actually contacted - a PURGE that failed on one pod reported as an
+// unqualified success - with the surviving entry decided by goroutine
+// completion order. Pod names are not unique by construction: an EndpointSlice
+// endpoint without a targetRef (selector-less or mirrored Service) carries no
+// pod name at all, and the watcher deduplicates endpoints on (host, port) only.
+// A name that is empty or repeated therefore falls back to the pod's host:port,
+// and to an index suffix in the (watcher-deduplicated) case where even that
+// repeats. Unique, non-empty names are used verbatim, so the common response
+// shape is unchanged.
+func fanoutKeys(frontends []watcher.Frontend) []string {
+	nameCount := make(map[string]int, len(frontends))
+	for _, fe := range frontends {
+		nameCount[fe.Name]++
+	}
+
+	keys := make([]string, len(frontends))
+	used := make(map[string]struct{}, len(frontends))
+	for i, fe := range frontends {
+		addr := net.JoinHostPort(fe.Host, strconv.FormatInt(int64(fe.Port), 10))
+		key := fe.Name
+		switch {
+		case key == "":
+			key = addr
+		case nameCount[key] > 1:
+			key += "@" + addr
+		}
+		if _, clash := used[key]; clash {
+			key = fmt.Sprintf("%s#%d", key, i)
+		}
+		used[key] = struct{}{}
+		keys[i] = key
+	}
+
+	return keys
 }
 
 // ListenAndServe starts the broadcast HTTP server.

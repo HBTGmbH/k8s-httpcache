@@ -266,7 +266,7 @@ These flags control which cache binaries k8s-httpcache uses. See [Varnish Cache 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--broadcast-addr` | `:8088` | Broadcast server listen address (`none` to disable) |
-| `--broadcast-target-listen-addr` | *(first `--listen-addr`)* | Name of the `--listen-addr` to target for fan-out (only effective when broadcast is enabled) |
+| `--broadcast-target-listen-addr` | *(first `--listen-addr`)* | Name of the `--listen-addr` to target for fan-out; must be a plain TCP listener the fan-out can send HTTP to, so `PROXY` and unix-socket listeners are rejected (only effective when broadcast is enabled) |
 | `--broadcast-drain-timeout` | `30s` | Time to wait for broadcast connections to drain before shutting down (only effective when broadcast is enabled) |
 | `--broadcast-shutdown-timeout` | `5s` | Time to wait for in-flight broadcast requests to finish after draining (only effective when broadcast is enabled) |
 | `--broadcast-server-idle-timeout` | `120s` | Max idle time for client keep-alive connections to the broadcast server (only effective when broadcast is enabled) |
@@ -286,7 +286,7 @@ These flags control which cache binaries k8s-httpcache uses. See [Varnish Cache 
 | `--metrics-write-timeout` | `15s` | Max time to write the response on the metrics server; bounds slow-read clients (`0` disables) |
 | `--metrics-idle-timeout` | `120s` | Max idle time for keep-alive connections to the metrics server (`0` disables) |
 | `--varnishstat-export` | `false` | Enable varnishstat Prometheus exporter on `/metrics` |
-| `--varnishstat-export-filter` | *(all)* | Counter groups to export (e.g. `MAIN,SMA,VBE`); empty exports all |
+| `--varnishstat-export-filter` | *(all)* | Counter groups to export (repeatable, or comma-separated: `--varnishstat-export-filter=MAIN,SMA,VBE`); empty exports all |
 
 Responses from `/metrics` are gzip-compressed (or zstd, when supported) when the scraper advertises it via `Accept-Encoding` - which Prometheus does by default; otherwise the response is served uncompressed.
 
@@ -750,7 +750,7 @@ Format: `[name=][host]:port[,proto...]`
 | `name=` | no | Identifier for the listen address (used by `--broadcast-target-listen-addr`) |
 | `host` | no | Bind IP; omit to listen on all interfaces |
 | `port` | yes | Numeric port (1-65535) |
-| `proto` | no | Comma-separated protocols passed to Varnish (e.g. `HTTP`, `PROXY`) |
+| `proto` | no | Protocol passed to Varnish (`HTTP`, `PROXY`, or `https`); Varnish accepts at most one protocol per listen address |
 
 ### Examples
 
@@ -758,8 +758,10 @@ Format: `[name=][host]:port[,proto...]`
 --listen-addr=http=:8080,HTTP                # named, all interfaces, HTTP protocol (default)
 --listen-addr=:9090                           # unnamed, all interfaces
 --listen-addr=admin=127.0.0.1:6082           # named, loopback only
---listen-addr=0.0.0.0:8080,HTTP,PROXY        # HTTP + PROXY protocol
+--listen-addr=proxy=0.0.0.0:8080,PROXY       # PROXY protocol (e.g. behind an NLB or HAProxy)
 ```
+
+A `PROXY` listener expects a PROXY-protocol preamble and drops plain HTTP sessions, so it cannot be the [broadcast](#broadcast-server) fan-out target: keep an `HTTP` listener as the first `--listen-addr` (or name one with `--broadcast-target-listen-addr`). Otherwise startup fails with a message pointing at the offending listener.
 
 ## Values specification
 

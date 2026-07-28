@@ -265,9 +265,10 @@ func TestConfigMapWatcherYAMLParsing(t *testing.T) {
 		t.Errorf("expected plain=hello, got %v", data["plain"])
 	}
 
-	// Number is parsed (sigs.k8s.io/yaml uses float64 for numbers).
-	if !reflect.DeepEqual(data["number"], float64(42)) {
-		t.Errorf("expected number=42 (float64), got %v (%T)", data["number"], data["number"])
+	// Numbers are parsed as int64 when integral: a float64 renders into VCL
+	// in scientific notation once it reaches 1e6 (see decodeValue).
+	if !reflect.DeepEqual(data["number"], int64(42)) {
+		t.Errorf("expected number=42 (int64), got %v (%T)", data["number"], data["number"])
 	}
 
 	// Boolean is parsed.
@@ -283,8 +284,8 @@ func TestConfigMapWatcherYAMLParsing(t *testing.T) {
 	if m["host"] != "example.com" {
 		t.Errorf("expected host=example.com, got %v", m["host"])
 	}
-	if !reflect.DeepEqual(m["port"], float64(8080)) {
-		t.Errorf("expected port=8080 (float64), got %v (%T)", m["port"], m["port"])
+	if !reflect.DeepEqual(m["port"], int64(8080)) {
+		t.Errorf("expected port=8080 (int64), got %v (%T)", m["port"], m["port"])
 	}
 
 	// List YAML becomes a slice.

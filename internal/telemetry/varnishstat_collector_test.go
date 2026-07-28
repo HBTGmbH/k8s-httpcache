@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -340,8 +341,10 @@ func TestVarnishstatCollectorParseFailuresIncrementsOnBadJSON(t *testing.T) {
 	if up == nil {
 		t.Fatal("missing varnish_up metric")
 	}
-	if got := up.GetMetric()[0].GetGauge().GetValue(); got != 1 {
-		t.Errorf("varnish_up = %v, want 1", got)
+	// A scrape whose output cannot be parsed exported no counters, so it did
+	// not succeed - see TestVarnishstatCollectorUpIsZeroOnParseFailure.
+	if got := up.GetMetric()[0].GetGauge().GetValue(); got != 0 {
+		t.Errorf("varnish_up = %v, want 0", got)
 	}
 
 	pf := findFamily(families, "varnish_exporter_json_parse_failures_total")
@@ -572,7 +575,7 @@ func TestVarnishstatCollectorBackendUp(t *testing.T) {
 				"ident": "boot.healthy(10.0.0.1,,80)"
 			},
 			"VBE.boot.sick(10.0.0.2,,80).happy": {
-				"value": 0, "flag": "b", "description": "",
+				"value": 16384, "flag": "b", "description": "",
 				"ident": "boot.sick(10.0.0.2,,80)"
 			}
 		}
@@ -1432,13 +1435,12 @@ func TestVarnishstatCollectorSkipsZeroCounters(t *testing.T) {
 		t.Error("zero-value gauge varnish_main_n_object should still be emitted")
 	}
 
-	// backend_up should be synthesized from the bitmap (value=0 → bit 0 clear → up=0).
-	up := findFamily(families, "varnish_backend_up")
-	if up == nil {
-		t.Fatal("varnish_backend_up should be synthesized from zero-value bitmap")
-	}
-	if got := up.GetMetric()[0].GetGauge().GetValue(); got != 0 {
-		t.Errorf("varnish_backend_up = %v, want 0", got)
+	// An all-zero bitmap proves nothing about health (on varnish 6 a healthy
+	// probe-less backend reads exactly 0), so no backend_up series is synthesized
+	// from it - see observeProbe.
+	if up := findFamily(families, "varnish_backend_up"); up != nil {
+		t.Errorf("varnish_backend_up = %v, want no series for an unproven zero bitmap",
+			up.GetMetric()[0].GetGauge().GetValue())
 	}
 }
 
@@ -1510,15 +1512,17 @@ func TestVarnishstatCollectorBackendUpEdgeValues(t *testing.T) {
 	if up == nil {
 		t.Fatal("missing varnish_backend_up metric")
 	}
-	if len(up.GetMetric()) != 4 {
-		t.Fatalf("expected 4 backend_up metrics, got %d", len(up.GetMetric()))
+	// "zero" is deliberately absent: an all-zero bitmap carries no proof that a
+	// probe ever ran, and on varnish 6 that is exactly what a healthy probe-less
+	// backend looks like (measured), so its health is unknown - see observeProbe.
+	if len(up.GetMetric()) != 3 {
+		t.Fatalf("expected 3 backend_up metrics, got %d", len(up.GetMetric()))
 	}
 
 	want := map[string]float64{
 		"bit0_set":   1, // value=1, bit 0 set → up
-		"bit0_clear": 0, // value=2, bit 0 clear → down
+		"bit0_clear": 0, // value=2, non-zero bitmap proves a probe, bit 0 clear → down
 		"all_bits":   1, // value=max uint64, bit 0 set → up
-		"zero":       0, // value=0, bit 0 clear → down
 	}
 
 	for _, m := range up.GetMetric() {
@@ -1543,8 +1547,10 @@ func TestVarnishstatCollectorBackendUpEdgeValues(t *testing.T) {
 func TestVarnishstatCollectorBackendUpMalformedBitmap(t *testing.T) {
 	t.Parallel()
 
-	// A happy bitmap with a floating-point RawValue passes Float64() but
-	// fails ParseUint, so the code should default to up=0.
+	// A happy bitmap with a floating-point RawValue passes Float64() but fails
+	// ParseUint. An unparseable bitmap says nothing about the backend's health,
+	// so no backend_up series is synthesized from it - reporting a fabricated
+	// "down" is the same error class as doing so for a probe-less backend.
 	jsonOutput := `{
 		"version": 1,
 		"counters": {
@@ -1559,14 +1565,13 @@ func TestVarnishstatCollectorBackendUpMalformedBitmap(t *testing.T) {
 	c := NewVarnishstatCollector(fn, nil)
 
 	families := collectMetrics(t, c)
-	up := findFamily(families, "varnish_backend_up")
-	if up == nil {
-		t.Fatal("missing varnish_backend_up metric")
+	if up := findFamily(families, "varnish_backend_up"); up != nil {
+		t.Fatalf("varnish_backend_up = %v, want no series for an unparseable bitmap",
+			up.GetMetric()[0].GetGauge().GetValue())
 	}
-
-	m := up.GetMetric()[0]
-	if got := m.GetGauge().GetValue(); got != 0 {
-		t.Errorf("backend_up = %v, want 0 for malformed bitmap", got)
+	// The raw happy gauge stays suppressed either way.
+	if mf := findFamily(families, "varnish_backend_happy"); mf != nil {
+		t.Error("varnish_backend_happy should not be emitted (replaced by backend_up)")
 	}
 }
 
@@ -1700,7 +1705,7 @@ func TestVarnishstatCollectorV7Comprehensive(t *testing.T) {
 				"ident": "kv_reload_2.backend_a(10.0.0.1,,80)"
 			},
 			"VBE.kv_reload_2.backend_b(10.0.0.2,,80).happy": {
-				"value": 0, "flag": "b", "description": "Happy",
+				"value": 2048, "flag": "b", "description": "Happy",
 				"ident": "kv_reload_2.backend_b(10.0.0.2,,80)"
 			},
 			"VBE.kv_reload_1.old_backend(10.0.0.3,,80).happy": {
@@ -2611,4 +2616,186 @@ func TestNewestVBEGenerationForeignFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestVarnishstatCollectorUpIsZeroOnParseFailure pins that varnish_up reports
+// the scrape's real outcome. The gauge used to be emitted as 1 BEFORE
+// parseVarnishstat ran, and the parse-failure branch returned without revising
+// it - so a scrape that exported zero counters still advertised
+// "varnish_up 1" ("Whether the last varnishstat scrape succeeded"). Every
+// alert of the standard `varnish_up == 0` form stayed silent while the
+// exporter was permanently blind (truncated stdout, an unknown schema shape,
+// or any malformed counter object all reach this path with exit status 0).
+func TestVarnishstatCollectorUpIsZeroOnParseFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		out  string
+	}{
+		{name: "not json at all", out: "not valid json"},
+		{name: "truncated mid-object", out: `{"version":1,"counters":{"MAIN.cache_hit":{"value":1,"flag":"c"`},
+		{name: "counters is an array", out: `{"version":2,"counters":[{"name":"MAIN.cache_hit","value":1}]}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := NewVarnishstatCollector(func() (string, int, error) { return tc.out, 7, nil }, nil)
+			families := collectMetrics(t, c)
+
+			up := findFamily(families, "varnish_up")
+			if up == nil {
+				t.Fatal("missing varnish_up metric")
+			}
+			if got := up.GetMetric()[0].GetGauge().GetValue(); got != 0 {
+				t.Errorf("varnish_up = %v after a failed parse, want 0", got)
+			}
+		})
+	}
+}
+
+// backendUpValues extracts varnish_backend_up keyed by its backend label.
+// A missing family yields an empty map, which is how "no series emitted" is
+// asserted below.
+func backendUpValues(t *testing.T, c *VarnishstatCollector) map[string]float64 {
+	t.Helper()
+
+	out := make(map[string]float64)
+	up := findFamily(collectMetrics(t, c), "varnish_backend_up")
+	if up == nil {
+		return out
+	}
+	for _, m := range up.GetMetric() {
+		for _, lp := range m.GetLabel() {
+			if lp.GetName() == "backend" {
+				out[lp.GetValue()] = m.GetGauge().GetValue()
+			}
+		}
+	}
+
+	return out
+}
+
+// scrapeJSON builds a varnishstat payload with one happy bitmap per backend.
+func scrapeJSON(happy map[string]uint64) string {
+	var sb strings.Builder
+	_, _ = sb.WriteString(`{"version":1,"counters":{`)
+	first := true
+	for name, v := range happy {
+		if !first {
+			_, _ = sb.WriteString(",")
+		}
+		first = false
+		_, _ = fmt.Fprintf(&sb, `"VBE.boot.%s(10.0.0.1,,80).happy":{"value":%d,"flag":"b","description":"","ident":"boot.%s(10.0.0.1,,80)"}`,
+			name, v, name)
+	}
+	_, _ = sb.WriteString(`}}`)
+
+	return sb.String()
+}
+
+// TestVarnishstatBackendUpRequiresProbeEvidence pins how varnish_backend_up is
+// derived from the VBE happy bitmap.
+//
+// The bitmap's value for a backend declared WITHOUT a .probe is
+// version-dependent - measured against real varnishd containers:
+//
+//	varnish 6.6   VBE.boot.unprobed.happy = 0                       (bit 0 clear)
+//	varnish 7.7   VBE.boot.unprobed.happy = 18446744073709551615    (all ones)
+//	varnish 9.0   VBE.boot.unprobed.happy = 18446744073709551615    (all ones)
+//
+// backend.list reports such a backend as "healthy" in every one of those
+// versions. So on Varnish 6 a bare bit-0 test reported every probe-less backend
+// - what the README's own VCL examples render - as DOWN for the process
+// lifetime, firing `varnish_backend_up == 0` fleet-wide; on 7+ the same test is
+// correct. A bitmap that has ever been non-zero is proof the value is
+// meaningful (a probe is running, or the backend is permanently healthy), so
+// from then on a 0 is a real health failure and is reported as such.
+func TestVarnishstatBackendUpRequiresProbeEvidence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("varnish 6 probe-less backend emits no series", func(t *testing.T) {
+		t.Parallel()
+
+		c := NewVarnishstatCollector(func() (string, int, error) {
+			return scrapeJSON(map[string]uint64{"unprobed": 0}), 7, nil
+		}, nil)
+
+		for scrape := range 3 {
+			if got, ok := backendUpValues(t, c)["unprobed"]; ok {
+				t.Fatalf("scrape %d: varnish_backend_up{backend=unprobed} = %v, want no series "+
+					"(a backend with no .probe is healthy, not down)", scrape, got)
+			}
+		}
+	})
+
+	t.Run("varnish 7+ probe-less backend reports up", func(t *testing.T) {
+		t.Parallel()
+
+		// Measured from varnish:7.7.3 and varnish:9.0.3: an unprobed backend
+		// carries an all-ones bitmap and backend.list calls it healthy.
+		c := NewVarnishstatCollector(func() (string, int, error) {
+			return scrapeJSON(map[string]uint64{"unprobed": 18446744073709551615}), 7, nil
+		}, nil)
+
+		if got := backendUpValues(t, c)["unprobed"]; got != 1 {
+			t.Errorf("varnish_backend_up{backend=unprobed} = %v on varnish 7+, want 1", got)
+		}
+	})
+
+	t.Run("probed healthy backend reports up", func(t *testing.T) {
+		t.Parallel()
+
+		c := NewVarnishstatCollector(func() (string, int, error) {
+			return scrapeJSON(map[string]uint64{"healthy": 18446744073709551615}), 7, nil
+		}, nil)
+
+		if got := backendUpValues(t, c)["healthy"]; got != 1 {
+			t.Errorf("varnish_backend_up{backend=healthy} = %v, want 1", got)
+		}
+	})
+
+	t.Run("probed backend with a failed latest probe reports down", func(t *testing.T) {
+		t.Parallel()
+
+		// Non-zero bitmap (a probe is running) with bit 0 clear.
+		c := NewVarnishstatCollector(func() (string, int, error) {
+			return scrapeJSON(map[string]uint64{"flapping": 0xFE}), 7, nil
+		}, nil)
+
+		got, ok := backendUpValues(t, c)["flapping"]
+		if !ok {
+			t.Fatal("varnish_backend_up{backend=flapping} missing; a non-zero bitmap proves a probe exists")
+		}
+		if got != 0 {
+			t.Errorf("varnish_backend_up{backend=flapping} = %v, want 0", got)
+		}
+	})
+
+	t.Run("backend that goes sick after probing reports down", func(t *testing.T) {
+		t.Parallel()
+
+		var happy atomic.Uint64
+		happy.Store(0xFF)
+		c := NewVarnishstatCollector(func() (string, int, error) {
+			return scrapeJSON(map[string]uint64{"web": happy.Load()}), 7, nil
+		}, nil)
+
+		if got := backendUpValues(t, c)["web"]; got != 1 {
+			t.Fatalf("first scrape: varnish_backend_up{backend=web} = %v, want 1", got)
+		}
+
+		// Every probe in the window now fails: the bitmap drains to 0, but we
+		// have already proven this backend is probed, so 0 means DOWN.
+		happy.Store(0)
+		got, ok := backendUpValues(t, c)["web"]
+		if !ok {
+			t.Fatal("varnish_backend_up{backend=web} disappeared after going sick; the probe was already proven")
+		}
+		if got != 0 {
+			t.Errorf("varnish_backend_up{backend=web} = %v after all probes failed, want 0", got)
+		}
+	})
 }

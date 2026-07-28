@@ -29,7 +29,40 @@ import (
 var (
 	errVersionParse = errors.New("cannot parse cache version")
 	errAdminTimeout = errors.New("timeout waiting for cache admin")
+
+	// ErrVCLRejected marks a reload failure in which varnishd actually
+	// rejected the VCL itself (a VCC compile error). Every other reload
+	// failure - a vcl.use error, a wedged admin socket, a CLI timeout - says
+	// nothing about the VCL's validity and must NOT be read as one: the event
+	// loop rolls the operator's template back only for a real rejection,
+	// because a rollback discards the new template irreversibly (nothing
+	// re-reads the file afterwards).
+	ErrVCLRejected = errors.New("varnishd rejected the VCL")
 )
+
+// vccRejectionMarkers are the substrings varnishd's CLI response carries when
+// the VCC compiler refused the VCL. Anything else (connection errors, CLI
+// timeouts, "is it running?") is a transport failure that leaves the VCL's
+// validity unknown.
+var vccRejectionMarkers = []string{
+	"VCC-compiler",
+	msgVCLCompilationFailed,
+}
+
+// msgVCLCompilationFailed is varnishd's terminal line when VCC refused the VCL.
+const msgVCLCompilationFailed = "VCL compilation failed"
+
+// isVCLRejection reports whether a failed vcl.load response is varnishd
+// rejecting the VCL's content rather than the CLI call failing to complete.
+func isVCLRejection(resp string) bool {
+	for _, marker := range vccRejectionMarkers {
+		if strings.Contains(resp, marker) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // runner abstracts external command execution for testing.
 type runner interface {
@@ -37,6 +70,9 @@ type runner interface {
 	start(name string, args []string) (proc, error)
 	// run runs a command to completion and returns its combined output.
 	run(name string, args []string) (string, error)
+	// runStdout runs a command to completion and returns only its standard
+	// output, for callers that parse it.
+	runStdout(name string, args []string) (string, error)
 }
 
 // proc represents a running process.
@@ -160,7 +196,10 @@ func (w *prefixWriter) Flush() error {
 // flushOverlongLine emits the buffered partial line (prefixed) and releases the
 // buffer. It bounds memory when the upstream stream never delivers a newline;
 // an absurdly long line is split across flushes (each re-prefixed), which is
-// acceptable since such input is not genuinely line-oriented.
+// acceptable since such input is not genuinely line-oriented. Because the
+// prefix lands MID-line here, a prefixWriter must always sit DOWNSTREAM of a
+// redacting writer (see buildNCSAWriters): upstream of one, this insertion
+// would tear a single-line secret apart and leak both halves in cleartext.
 func (w *prefixWriter) flushOverlongLine() error {
 	w.scratch = w.scratch[:0]
 	w.scratch = append(w.scratch, w.prefix...)
@@ -204,7 +243,24 @@ func (r execRunner) start(name string, args []string) (proc, error) {
 	return &execProc{cmd: cmd}, nil
 }
 
+// run returns stdout and stderr merged. DetectVersion depends on the merge:
+// `varnishd -V` prints its banner exclusively on stderr.
 func (r execRunner) run(name string, args []string) (string, error) {
+	return r.output(name, args, true)
+}
+
+// runStdout returns only stdout. varnishstat's consumers parse its output
+// strictly from the leading '{', and libvarnishapi writes VSM-attach progress
+// (one dot per retry) to stderr while waiting for varnishd's shared memory to
+// appear and then exits 0 - merging that in would prepend non-JSON bytes and
+// fail every parse for the duration of that window.
+func (r execRunner) runStdout(name string, args []string) (string, error) {
+	return r.output(name, args, false)
+}
+
+// output runs name with args under the configured timeout and returns its
+// trimmed output, merging stderr into stdout only when combined is set.
+func (r execRunner) output(name string, args []string, combined bool) (string, error) {
 	ctx := context.Background()
 	if r.runTimeout > 0 {
 		var cancel context.CancelFunc
@@ -212,7 +268,13 @@ func (r execRunner) run(name string, args []string) (string, error) {
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G702: paths from CLI flags, not runtime input
-	out, err := cmd.CombinedOutput()
+	var out []byte
+	var err error
+	if combined {
+		out, err = cmd.CombinedOutput()
+	} else {
+		out, err = cmd.Output()
+	}
 
 	return strings.TrimSpace(string(out)), err
 }
@@ -249,6 +311,10 @@ type Manager struct {
 	tlsMu      sync.Mutex        // serialises TLS cert stage→commit→discard
 	tlsCertIDs map[string]string // logical cert name → active varnishadm cert id
 	tlsCertDir string            // temp dir holding combined PEM files (lazily created)
+	// tlsPendingDiscards holds superseded certificate ids whose
+	// tls.cert.discard has not succeeded yet, retried on later rotations.
+	// Guarded by tlsMu.
+	tlsPendingDiscards []pendingDiscard
 
 	// outFlushers holds the redacting writers wrapping varnishd's
 	// stdout/stderr. They line-buffer across writes, so the monitor goroutine
@@ -304,15 +370,22 @@ const defaultVarnishstatPath = "varnishstat"
 // New creates a new varnish Manager. listenAddrs are passed as individual -a
 // flags to varnishd. extraArgs are appended to the varnishd command line.
 // varnishstatPath is the path to the varnishstat binary (defaults to "varnishstat" if empty).
-func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, varnishstatPath string, metrics *telemetry.Metrics) *Manager {
+func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, varnishstatPath string, metrics *telemetry.Metrics, redactor *redact.Redactor) *Manager {
 	if metrics == nil {
 		panic("varnish: metrics must not be nil")
+	}
+	// The redactor is a constructor parameter, not an optional setter, so
+	// production cannot forget to install it: without it varnishd's and
+	// varnishncsa's stdout/stderr reach the pod log completely unredacted, and
+	// nothing in the test suite noticed when the wiring was absent.
+	if redactor == nil {
+		panic("varnish: redactor must not be nil")
 	}
 	if varnishstatPath == "" {
 		varnishstatPath = defaultVarnishstatPath
 	}
 
-	return &Manager{
+	m := &Manager{
 		varnishdPath:     varnishdPath,
 		varnishadmPath:   varnishadmPath,
 		varnishstatPath:  varnishstatPath,
@@ -330,6 +403,9 @@ func New(varnishdPath, varnishadmPath string, listenAddrs, extraArgs []string, v
 		NCSAStableUptime: time.Minute,
 		NCSAStopTimeout:  5 * time.Second,
 	}
+	m.SetRedactor(redactor)
+
+	return m
 }
 
 // flusher is implemented by redacting writers that line-buffer output and
@@ -570,7 +646,7 @@ func (m *Manager) ActiveSessions() (uint64, error) {
 	if m.workDir != "" {
 		args = []string{"-n", m.workDir, "-1", "-j"}
 	}
-	out, err := m.run.run(m.varnishstatPath, args)
+	out, err := m.run.runStdout(m.varnishstatPath, args)
 	if err != nil {
 		return 0, fmt.Errorf("varnishstat: %w", err)
 	}
@@ -587,7 +663,7 @@ func (m *Manager) VarnishstatFunc() func() (string, int, error) {
 		if m.workDir != "" {
 			args = []string{"-n", m.workDir, "-1", "-j"}
 		}
-		out, err := m.run.run(m.varnishstatPath, args)
+		out, err := m.run.runStdout(m.varnishstatPath, args)
 		if err != nil {
 			return "", 0, fmt.Errorf("varnishstat: %w", err)
 		}
@@ -597,33 +673,39 @@ func (m *Manager) VarnishstatFunc() func() (string, int, error) {
 }
 
 // buildNCSAWriters wraps the base stdout/stderr for the varnishncsa
-// subprocess: redaction first (innermost, so the prefix writer hands it
-// complete lines), then the optional line prefix. Without the redaction wrap
-// varnishncsa output would bypass the redactor entirely - an access-log
-// format that echoes a header carrying a secret-derived value (e.g. an API
-// key doubling as a Kubernetes Secret) would log it in cleartext.
+// subprocess: the optional line prefix first (innermost, writing to the real
+// sink), then redaction OUTSIDE it. Without the redaction wrap varnishncsa
+// output would bypass the redactor entirely - an access-log format that
+// echoes a header carrying a secret-derived value (e.g. an API key doubling
+// as a Kubernetes Secret) would log it in cleartext. The nesting order
+// matters as much as the wrap: with the prefix writer on the OUTSIDE, its
+// overlong-line flush injected the prefix MID-line into the byte stream the
+// redactor scans, splitting a single-line secret so that neither half matched
+// and both reached stdout in cleartext. Redacting the raw subprocess bytes
+// first restores the redactor's "single-line secrets never straddle a flush
+// boundary" guarantee; the prefix writer then only ever sees redacted text.
 func (m *Manager) buildNCSAWriters(stdout, stderr io.Writer, prefix string) (io.Writer, io.Writer) {
 	// Collect every buffering layer separately and flush outermost-first:
-	// the prefix writer's flush WRITES INTO the redacting writer, so the
-	// redacting writers must be flushed after it (registering only the final
-	// wrapped writer would strand the prefix flush in the redactor's
+	// the redacting writer's flush WRITES INTO the prefix writer, so the
+	// prefix writer must be flushed after it (registering only the final
+	// wrapped writer would strand the redactor's flush in the prefix writer's
 	// partial-line buffer).
-	var redactFlushers []flusher
+	var prefixFlushers []flusher
+	if prefix != "" {
+		pw := newPrefixWriter(stdout, prefix)
+		stdout = pw
+		prefixFlushers = append(prefixFlushers, pw)
+	}
 	if m.redactor != nil {
 		stdout = m.redactor.Writer(stdout)
 		stderr = m.redactor.Writer(stderr)
 		for _, w := range []io.Writer{stdout, stderr} {
 			if f, ok := w.(flusher); ok {
-				redactFlushers = append(redactFlushers, f)
+				m.ncsaFlushers = append(m.ncsaFlushers, f)
 			}
 		}
 	}
-	if prefix != "" {
-		pw := newPrefixWriter(stdout, prefix)
-		stdout = pw
-		m.ncsaFlushers = append(m.ncsaFlushers, pw)
-	}
-	m.ncsaFlushers = append(m.ncsaFlushers, redactFlushers...)
+	m.ncsaFlushers = append(m.ncsaFlushers, prefixFlushers...)
 
 	return stdout, stderr
 }
@@ -751,9 +833,19 @@ func (m *Manager) reload(vclPath string) error {
 		name := fmt.Sprintf("%s%d", vclReloadPrefix, n)
 
 		// Load the new VCL.
-		resp, err := m.adm("vcl.load", name, vclPath)
+		// Raw: the rejection check matches on varnishd's own compiler
+		// markers, which redaction could rewrite. The message below is
+		// redacted explicitly before it can reach a log or an Event.
+		resp, err := m.admRaw("vcl.load", name, vclPath)
 		if err != nil {
-			lastErr = fmt.Errorf("vcl.load: %w: %s", err, resp)
+			// Classify BEFORE redaction (m.redact can rewrite the compiler
+			// markers) and tag only a genuine VCC rejection, so the event
+			// loop rolls the template back for that case alone.
+			rejected := isVCLRejection(resp)
+			lastErr = fmt.Errorf("vcl.load: %w: %s", err, m.redact(resp))
+			if rejected {
+				lastErr = fmt.Errorf("%w: %w", ErrVCLRejected, lastErr)
+			}
 
 			if attempt < maxAttempts-1 {
 				m.metrics.VCLReloadRetriesTotal.Inc()
@@ -791,6 +883,9 @@ func (m *Manager) reload(vclPath string) error {
 				m.log.Warn("failed to discard VCL after vcl.use error", "name", name, "error", discardErr)
 			}
 
+			// Deliberately NOT tagged ErrVCLRejected: vcl.load already
+			// succeeded, so this VCL demonstrably compiled and the template
+			// must not be rolled back over a failed activation.
 			return fmt.Errorf("vcl.use: %w: %s", err, resp)
 		}
 
@@ -935,29 +1030,38 @@ func cliQuote(s string) string {
 		return s
 	}
 
+	// strings.Builder writes never return a non-nil error (they panic on
+	// overflow), so the results are safe to discard explicitly.
 	var b strings.Builder
-	b.WriteByte('"')
+	_ = b.WriteByte('"')
 	for _, r := range s {
 		switch r {
 		case '"', '\\':
-			b.WriteByte('\\')
-			b.WriteRune(r)
+			_ = b.WriteByte('\\')
+			_, _ = b.WriteRune(r)
 		case '\n':
-			b.WriteString(`\n`)
+			_, _ = b.WriteString(`\n`)
 		case '\r':
-			b.WriteString(`\r`)
+			_, _ = b.WriteString(`\r`)
 		case '\t':
-			b.WriteString(`\t`)
+			_, _ = b.WriteString(`\t`)
 		default:
-			b.WriteRune(r)
+			_, _ = b.WriteRune(r)
 		}
 	}
-	b.WriteByte('"')
+	_ = b.WriteByte('"')
 
 	return b.String()
 }
 
-func (m *Manager) adm(args ...string) (string, error) {
+// admRaw runs a varnishadm command and returns the response EXACTLY as varnishd
+// produced it. Only for callers that PARSE the response (vcl.list cleanup,
+// tls.cert.list, the vcl.load rejection check): redaction can rewrite the very
+// tokens they match on, so a --secrets value that happens to equal a VCL name
+// or certificate id would silently disable VCL cleanup for the process
+// lifetime. The raw response must never be logged or embedded in an error -
+// use adm (or m.redact) for that.
+func (m *Manager) admRaw(args ...string) (string, error) {
 	cmdArgs := make([]string, 0, len(args)+4)
 	if m.workDir != "" {
 		cmdArgs = append(cmdArgs, "-n", m.workDir)
@@ -976,12 +1080,28 @@ func (m *Manager) adm(args ...string) (string, error) {
 
 	m.log.Debug("exec", "cmd", m.varnishadmPath, "args", cmdArgs)
 
-	resp, err := m.run.run(m.varnishadmPath, cmdArgs)
-	if m.redactor != nil {
-		resp = m.redactor.Redact(resp)
+	return m.run.run(m.varnishadmPath, cmdArgs)
+}
+
+// adm runs a varnishadm command and returns the response with secret values
+// redacted. This is the default and the only variant safe to log or embed in
+// an error. Callers that PARSE the response must use admRaw instead.
+func (m *Manager) adm(args ...string) (string, error) {
+	resp, err := m.admRaw(args...)
+
+	return m.redact(resp), err
+}
+
+// redact returns s with the configured secret values replaced. Every site that
+// LOGS a varnishadm response or embeds one in a returned error must funnel
+// through this; adm itself deliberately returns the response unredacted so it
+// stays parseable.
+func (m *Manager) redact(s string) string {
+	if m.redactor == nil {
+		return s
 	}
 
-	return resp, err
+	return m.redactor.Redact(s)
 }
 
 // vclSuffix parses the numeric suffix from a VCL name matching the
@@ -1000,7 +1120,7 @@ func vclSuffix(name string) int64 {
 }
 
 func (m *Manager) discardOldVCLs(currentName string) {
-	resp, err := m.adm("vcl.list")
+	resp, err := m.admRaw("vcl.list")
 	if err != nil {
 		return
 	}

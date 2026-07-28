@@ -37,9 +37,13 @@ type VarnishstatCollector struct {
 	// scrape. Keyed by metric name; guarded by mu.
 	descCache map[string]*prometheus.Desc
 
+	// probeSeen records the backends for which a health probe has been proven
+	// to run, keyed by the metric's label values. See observeProbe.
+	probeSeen map[string]struct{}
+
 	// mu serialises Collect: the prometheus.Collector contract allows
 	// concurrent Collect calls (e.g. two scrapes in flight), which would
-	// otherwise race on descCache and the scrape counters.
+	// otherwise race on descCache, probeSeen and the scrape counters.
 	mu            sync.Mutex
 	totalScrapes  float64
 	parseFailures float64
@@ -117,16 +121,21 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	ch <- prometheus.MustNewConstMetric(c.upDesc, prometheus.GaugeValue, 1)
-
+	// varnish_up is emitted only once the output has actually been parsed:
+	// varnishstat exiting 0 with unparseable output (truncated stdout, an
+	// unknown schema shape, a malformed counter object) is a FAILED scrape
+	// that exports no counters at all. Reporting 1 there left every
+	// `varnish_up == 0` alert silent while the exporter was permanently blind.
 	counters, err := parseVarnishstat(out)
 	if err != nil {
 		c.parseFailures++
+		ch <- prometheus.MustNewConstMetric(c.upDesc, prometheus.GaugeValue, 0)
 		ch <- prometheus.MustNewConstMetric(c.parseFailuresDesc, prometheus.CounterValue, c.parseFailures)
 
 		return
 	}
 
+	ch <- prometheus.MustNewConstMetric(c.upDesc, prometheus.GaugeValue, 1)
 	ch <- prometheus.MustNewConstMetric(c.parseFailuresDesc, prometheus.CounterValue, c.parseFailures)
 
 	// Only keep backend counters from the newest VCL generation; older
@@ -171,10 +180,25 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 		// Replace the raw happy bitmap with a boolean 0/1 up gauge.
 		// The bitmap value (e.g. 18446744073709551615) is meaningless as
 		// a Prometheus metric; bit 0 encodes current health status.
+		//
+		// The bitmap is written ONLY by varnishd's health-probe thread, so a
+		// backend declared without a .probe (what the README's own VCL
+		// examples render) sits at 0 for the process lifetime while Varnish
+		// treats it as healthy and serves through it. Deriving up from bit 0
+		// alone therefore reported the whole fleet as down in the default
+		// configuration. A bitmap that has ever been non-zero is proof that a
+		// probe is running for that backend; until we have that proof the
+		// health is unknown and no series is emitted.
 		if metricName == "varnish_backend_happy" {
-			upValue := 0.0
 			parsed, parseErr := strconv.ParseUint(counter.RawValue, 10, 64)
-			if parseErr == nil && parsed&1 != 0 {
+			if parseErr != nil {
+				continue
+			}
+			if !c.observeProbe(labelValues, parsed) {
+				continue
+			}
+			upValue := 0.0
+			if parsed&1 != 0 {
 				upValue = 1.0
 			}
 			c.emitOnce(ch, seen, "varnish_backend_up", "Whether the backend is healthy according to the latest probe", labelKeys, prometheus.GaugeValue, upValue, labelValues)
@@ -184,6 +208,38 @@ func (c *VarnishstatCollector) Collect(ch chan<- prometheus.Metric) {
 
 		c.emitOnce(ch, seen, metricName, desc, labelKeys, valueType, counter.Value, labelValues)
 	}
+}
+
+// observeProbe records whether the backend identified by labelValues has a
+// health probe, and reports whether varnish_backend_up may be derived from its
+// happy bitmap.
+//
+// The bitmap's meaning for a probe-less backend is version-dependent, verified
+// against real varnishd: Varnish 7.7 and 9.0 initialise it to all-ones (so
+// bit 0 is set and the backend correctly reads as healthy), but Varnish 6.6
+// leaves it at 0 - indistinguishable from a probed backend whose every recent
+// probe failed. Deriving up from bit 0 alone therefore reported healthy
+// probe-less backends as DOWN on Varnish 6, fleet-wide, for the whole process
+// lifetime.
+//
+// A bitmap that has ever been non-zero is proof that a probe is running (or,
+// on 7+, that the backend is probe-less and permanently healthy); from then on
+// a 0 is a genuine health failure. Until that proof exists the health is
+// unknown and no series is emitted, so no alert fires on a backend that is
+// actually fine. Callers must hold mu.
+func (c *VarnishstatCollector) observeProbe(labelValues []string, bitmap uint64) bool {
+	key := strings.Join(labelValues, "\x00")
+	if bitmap != 0 {
+		if c.probeSeen == nil {
+			c.probeSeen = make(map[string]struct{})
+		}
+		c.probeSeen[key] = struct{}{}
+
+		return true
+	}
+	_, seen := c.probeSeen[key]
+
+	return seen
 }
 
 // emitOnce resolves the cached desc for name, drops duplicates of an already

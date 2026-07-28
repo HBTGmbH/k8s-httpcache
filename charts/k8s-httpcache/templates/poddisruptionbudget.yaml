@@ -1,4 +1,19 @@
 {{- if .Values.podDisruptionBudget.enabled -}}
+{{- /* A PDB with neither field is accepted by the API server but pins
+       disruptionsAllowed to 0 (the disruption controller never computes an
+       expected pod count), so every eviction - kubectl drain, autoscaler
+       scale-down, node upgrade - is refused forever; with both fields set the
+       API server rejects the manifest outright. The `isSet` guards below also
+       keep an explicit 0 (minAvailable: 0 = allow all disruptions,
+       maxUnavailable: 0 = allow none), which `with` silently dropped. */}}
+{{- $hasMin := include "k8s-httpcache.isSet" .Values.podDisruptionBudget.minAvailable }}
+{{- $hasMax := include "k8s-httpcache.isSet" .Values.podDisruptionBudget.maxUnavailable }}
+{{- if and $hasMin $hasMax }}
+{{- fail "podDisruptionBudget.minAvailable and podDisruptionBudget.maxUnavailable are mutually exclusive; the API server rejects a PodDisruptionBudget that sets both" }}
+{{- end }}
+{{- if not (or $hasMin $hasMax) }}
+{{- fail "podDisruptionBudget.enabled requires podDisruptionBudget.minAvailable or podDisruptionBudget.maxUnavailable: a PDB with neither pins disruptionsAllowed to 0, so every eviction (kubectl drain, cluster autoscaler, node upgrade) is blocked forever" }}
+{{- end }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -14,10 +29,10 @@ spec:
   selector:
     matchLabels:
       {{- include "k8s-httpcache.selectorLabels" . | nindent 6 }}
-  {{- with .Values.podDisruptionBudget.minAvailable }}
-  minAvailable: {{ . }}
+  {{- if $hasMin }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   {{- end }}
-  {{- with .Values.podDisruptionBudget.maxUnavailable }}
-  maxUnavailable: {{ . }}
+  {{- if $hasMax }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
   {{- end }}
 {{- end }}

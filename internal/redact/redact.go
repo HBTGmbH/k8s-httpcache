@@ -139,12 +139,20 @@ func (r *Redactor) rebuildLocked() {
 	r.replacer = strings.NewReplacer(pairs...)
 }
 
-// redactTo writes b to w with all redaction targets replaced. When no
-// targets are configured, b is written through directly with zero
-// allocations; otherwise the only allocation is the string conversion the
-// [strings.Replacer] API requires (the replaced output streams straight into
-// w via WriteString, never materialising an intermediate copy).
-func (r *Redactor) redactTo(w io.Writer, b []byte) error {
+// redactTo writes b to w with all redaction targets replaced, using exactly
+// ONE Write call on w. That single call matters: w is the shared [os.Stdout]
+// / [os.Stderr], whose Write is atomic per call but which is also written
+// concurrently by the controller's own slog handler and by one os/exec copy
+// goroutine per subprocess stream. Letting [strings.Replacer] stream into w
+// would emit a matching line as 2k+1 separate writes (pre-match text,
+// placeholder, remainder, ...), so another writer's complete record could
+// land inside the line and corrupt both.
+//
+// When no targets are configured, b is written through directly with zero
+// allocations; otherwise the replaced output is collected in scratch, whose
+// capacity is reused across calls, leaving only the string conversion the
+// [strings.Replacer] API requires.
+func (r *Redactor) redactTo(w io.Writer, scratch *bytes.Buffer, b []byte) error {
 	r.mu.RLock()
 	repl := r.replacer
 	noTargets := len(r.values) == 0
@@ -155,7 +163,11 @@ func (r *Redactor) redactTo(w io.Writer, b []byte) error {
 
 		return err //nolint:wrapcheck // pass through underlying writer error
 	}
-	_, err := repl.WriteString(w, string(b))
+	scratch.Reset()
+	// bytes.Buffer implements io.StringWriter (so the fragments are appended
+	// without a per-fragment conversion) and never reports an error.
+	_, _ = repl.WriteString(scratch, string(b))
+	_, err := w.Write(scratch.Bytes())
 
 	return err //nolint:wrapcheck // pass through underlying writer error
 }
@@ -193,8 +205,10 @@ func (r *Redactor) tailHold(buf []byte) int {
 // full match to redact and its tail flushed unredacted later, leaking the
 // whole secret in cleartext across the cut. Only the window around the cut
 // needs scanning. Returns 0 when no safe cut exists (pathologically
-// overlapping occurrences); the caller then emits nothing and lets the buffer
-// grow, matching tailHold's existing worst case.
+// overlapping occurrences, e.g. a run of "aaaaaa"): cut only reaches 0 by
+// following a chain of occurrences that overlap all the way down, so buf[:cut]
+// is then entirely secret material and the caller collapses it to a single
+// placeholder rather than keeping it buffered.
 func (r *Redactor) safeCut(buf []byte, cut int) int {
 	r.mu.RLock()
 	vals := r.values
@@ -237,13 +251,19 @@ func (r *Redactor) safeCut(buf []byte, cut int) int {
 
 // maxRedactBuffer bounds the partial-line buffer. A pathological
 // newline-free stream is flushed once it exceeds this, retaining only the
-// tail that could still be a secret prefix (see tailHold).
+// tail that could still be a secret prefix (see tailHold) - or, when no safe
+// cut exists at all, collapsing the unsplittable head to a single placeholder
+// (see safeCut). Either way the buffer is trimmed on every overflow, so it
+// stays below maxRedactBuffer + the size of the write that crossed it (or, if
+// a configured secret is itself longer than maxRedactBuffer, below that
+// secret's length plus that write).
 const maxRedactBuffer = 1 << 20 // 1 MiB
 
 type redactingWriter struct {
 	redactor *Redactor
 	inner    io.Writer
-	buf      []byte // partial line not yet redacted and forwarded
+	buf      []byte       // partial line not yet redacted and forwarded
+	out      bytes.Buffer // reused scratch holding one segment's redacted form
 }
 
 // Write buffers p, redacts and forwards all complete lines, and retains the
@@ -267,14 +287,30 @@ func (w *redactingWriter) Write(p []byte) (int, error) {
 	// suffix that could still be the start of a secret.
 	if len(w.buf) >= maxRedactBuffer {
 		hold := w.redactor.tailHold(w.buf)
-		cut := w.redactor.safeCut(w.buf, len(w.buf)-hold)
-		if cut > 0 {
-			err := w.emit(w.buf[:cut])
-			rest := copy(w.buf, w.buf[cut:])
+		raw := len(w.buf) - hold
+		cut := w.redactor.safeCut(w.buf, raw)
+		// The head must be dropped either way, or the bound bounds nothing:
+		// leaving it buffered lets a newline-free stream grow the buffer 1:1
+		// with the stream while every later Write re-scans it.
+		drop := raw
+		var err error
+		switch {
+		case cut > 0:
+			drop = cut
+			err = w.emit(w.buf[:cut])
+		case raw > 0:
+			// No safe cut exists, so buf[:raw] is one unbroken chain of
+			// overlapping target occurrences (see safeCut): emitting it
+			// verbatim would leak a secret split across the cut, and it
+			// carries no non-secret bytes to preserve. Collapse it.
+			err = w.emitPlaceholder()
+		}
+		if drop > 0 {
+			rest := copy(w.buf, w.buf[drop:])
 			w.buf = w.buf[:rest]
-			if err != nil {
-				return len(p), err
-			}
+		}
+		if err != nil {
+			return len(p), err
 		}
 	}
 
@@ -297,7 +333,15 @@ func (w *redactingWriter) Flush() error {
 }
 
 func (w *redactingWriter) emit(b []byte) error {
-	return w.redactor.redactTo(w.inner, b)
+	return w.redactor.redactTo(w.inner, &w.out, b)
+}
+
+// emitPlaceholder forwards a single placeholder, standing in for a stretch of
+// buffer that is entirely secret material and cannot be cut safely.
+func (w *redactingWriter) emitPlaceholder() error {
+	_, err := io.WriteString(w.inner, placeholder)
+
+	return err //nolint:wrapcheck // pass through underlying writer error
 }
 
 // KeyMaterialValues extracts redaction targets from PEM-encoded private-key

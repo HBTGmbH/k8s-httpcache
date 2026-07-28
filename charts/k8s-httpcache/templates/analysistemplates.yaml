@@ -10,6 +10,10 @@ metadata:
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- include "k8s-httpcache.labels" $ | nindent 4 }}
+  {{- with include "k8s-httpcache.annotations" (dict "root" $) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
 spec:
   {{- include "k8s-httpcache.tpl" (dict "value" .spec "ctx" $) | nindent 2 }}
 {{- end }}

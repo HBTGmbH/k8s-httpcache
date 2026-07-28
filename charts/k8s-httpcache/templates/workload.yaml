@@ -18,6 +18,11 @@
 {{- if and .Values.staticFiles.enabled (not (or .Values.staticFiles.files .Values.staticFiles.existingConfigMap)) }}
 {{- fail "staticFiles.enabled is true but neither staticFiles.files nor staticFiles.existingConfigMap is set; provide files to serve (staticFiles.files) or an existing ConfigMap (staticFiles.existingConfigMap), or set staticFiles.enabled: false" }}
 {{- end }}
+{{- /* Cross-value guards that would otherwise only surface as a
+       CrashLoopBackoff or a blackholed Service at runtime. */}}
+{{- include "k8s-httpcache.validateNamespace" . }}
+{{- include "k8s-httpcache.validatePorts" . }}
+{{- include "k8s-httpcache.validateBroadcastTimeouts" . }}
 {{- if .Values.argoRollouts.enabled }}
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
@@ -38,8 +43,8 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
-  {{- with .Values.revisionHistoryLimit }}
-  revisionHistoryLimit: {{ . }}
+  {{- if include "k8s-httpcache.isSet" .Values.revisionHistoryLimit }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   {{- end }}
   {{- if ne (toString .Values.minReadySeconds) "" }}
   minReadySeconds: {{ .Values.minReadySeconds }}
@@ -75,8 +80,12 @@ spec:
         prometheus.io/path: /metrics
         prometheus.io/port: {{ .Values.container.httpMetricsPort | default 9101 | quote }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
-        {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 8 }}
+      {{- /* commonAnnotations is documented as "annotations to add to all
+             resources" and pod-level tooling (sidecar injectors, cost
+             allocation, descheduler hints) only reads the pod template, so it
+             has to be merged here too - podAnnotations stays more specific. */}}
+      {{- with include "k8s-httpcache.annotations" (dict "extra" .Values.podAnnotations "root" $) }}
+        {{- . | nindent 8 }}
       {{- end }}
       labels:
         {{- include "k8s-httpcache.labels" . | nindent 8 }}
@@ -172,8 +181,8 @@ spec:
             {{- with .Values.vinyl.vinylncsaPath }}
             - --vinylncsa-path={{ . }}
             {{- end }}
-            {{- with .Values.varnish.adminTimeout }}
-            - --admin-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.varnish.adminTimeout }}
+            - --admin-timeout={{ .Values.varnish.adminTimeout }}
             {{- end }}
             {{- /* --- Listen addresses (repeatable) --- */}}
             {{- range .Values.listenAddrs }}
@@ -208,8 +217,8 @@ spec:
             {{- range .Values.valuesDirs }}
             - --values-dir={{ include "k8s-httpcache.tpl" (dict "value" .name "ctx" $) }}:{{ include "k8s-httpcache.tpl" (dict "value" .path "ctx" $) }}
             {{- end }}
-            {{- with .Values.valuesDirPollInterval }}
-            - --values-dir-poll-interval={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.valuesDirPollInterval }}
+            - --values-dir-poll-interval={{ .Values.valuesDirPollInterval }}
             {{- end }}
             {{- if ne (toString .Values.valuesDirWatch) "" }}
             - --values-dir-watch={{ .Values.valuesDirWatch }}
@@ -226,29 +235,29 @@ spec:
             {{- with .Values.broadcast.targetListenAddr }}
             - --broadcast-target-listen-addr={{ . }}
             {{- end }}
-            {{- with .Values.broadcast.drainTimeout }}
-            - --broadcast-drain-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.drainTimeout }}
+            - --broadcast-drain-timeout={{ .Values.broadcast.drainTimeout }}
             {{- end }}
-            {{- with .Values.broadcast.shutdownTimeout }}
-            - --broadcast-shutdown-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.shutdownTimeout }}
+            - --broadcast-shutdown-timeout={{ .Values.broadcast.shutdownTimeout }}
             {{- end }}
-            {{- with .Values.broadcast.serverIdleTimeout }}
-            - --broadcast-server-idle-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.serverIdleTimeout }}
+            - --broadcast-server-idle-timeout={{ .Values.broadcast.serverIdleTimeout }}
             {{- end }}
-            {{- with .Values.broadcast.readHeaderTimeout }}
-            - --broadcast-read-header-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.readHeaderTimeout }}
+            - --broadcast-read-header-timeout={{ .Values.broadcast.readHeaderTimeout }}
             {{- end }}
-            {{- with .Values.broadcast.readTimeout }}
-            - --broadcast-read-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.readTimeout }}
+            - --broadcast-read-timeout={{ .Values.broadcast.readTimeout }}
             {{- end }}
-            {{- with .Values.broadcast.writeTimeout }}
-            - --broadcast-write-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.writeTimeout }}
+            - --broadcast-write-timeout={{ .Values.broadcast.writeTimeout }}
             {{- end }}
-            {{- with .Values.broadcast.clientIdleTimeout }}
-            - --broadcast-client-idle-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.clientIdleTimeout }}
+            - --broadcast-client-idle-timeout={{ .Values.broadcast.clientIdleTimeout }}
             {{- end }}
-            {{- with .Values.broadcast.clientTimeout }}
-            - --broadcast-client-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.broadcast.clientTimeout }}
+            - --broadcast-client-timeout={{ .Values.broadcast.clientTimeout }}
             {{- end }}
             {{- else }}
             - --broadcast-addr=none
@@ -258,17 +267,17 @@ spec:
             {{- with .Values.metrics.addr }}
             - --metrics-addr={{ . }}
             {{- end }}
-            {{- with .Values.metrics.readHeaderTimeout }}
-            - --metrics-read-header-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.metrics.readHeaderTimeout }}
+            - --metrics-read-header-timeout={{ .Values.metrics.readHeaderTimeout }}
             {{- end }}
-            {{- with .Values.metrics.readTimeout }}
-            - --metrics-read-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.metrics.readTimeout }}
+            - --metrics-read-timeout={{ .Values.metrics.readTimeout }}
             {{- end }}
-            {{- with .Values.metrics.writeTimeout }}
-            - --metrics-write-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.metrics.writeTimeout }}
+            - --metrics-write-timeout={{ .Values.metrics.writeTimeout }}
             {{- end }}
-            {{- with .Values.metrics.idleTimeout }}
-            - --metrics-idle-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.metrics.idleTimeout }}
+            - --metrics-idle-timeout={{ .Values.metrics.idleTimeout }}
             {{- end }}
             {{- if .Values.metrics.varnishstatExport }}
             - --varnishstat-export
@@ -311,14 +320,14 @@ spec:
             {{- /* --- Drain --- */}}
             {{- if .Values.drain.enabled }}
             - --drain
-            {{- with .Values.drain.delay }}
-            - --drain-delay={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.drain.delay }}
+            - --drain-delay={{ .Values.drain.delay }}
             {{- end }}
-            {{- with .Values.drain.pollInterval }}
-            - --drain-poll-interval={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.drain.pollInterval }}
+            - --drain-poll-interval={{ .Values.drain.pollInterval }}
             {{- end }}
-            {{- with .Values.drain.timeout }}
-            - --drain-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.drain.timeout }}
+            - --drain-timeout={{ .Values.drain.timeout }}
             {{- end }}
             {{- end }}
             {{- /* --- Template --- */}}
@@ -332,29 +341,29 @@ spec:
             - --zone={{ . }}
             {{- end }}
             {{- /* --- Debounce --- */}}
-            {{- with .Values.debounce.duration }}
-            - --debounce={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.duration }}
+            - --debounce={{ .Values.debounce.duration }}
             {{- end }}
-            {{- with .Values.debounce.max }}
-            - --debounce-max={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.max }}
+            - --debounce-max={{ .Values.debounce.max }}
             {{- end }}
-            {{- with .Values.debounce.frontendDuration }}
-            - --frontend-debounce={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.frontendDuration }}
+            - --frontend-debounce={{ .Values.debounce.frontendDuration }}
             {{- end }}
-            {{- with .Values.debounce.frontendMax }}
-            - --frontend-debounce-max={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.frontendMax }}
+            - --frontend-debounce-max={{ .Values.debounce.frontendMax }}
             {{- end }}
-            {{- with .Values.debounce.backendDuration }}
-            - --backend-debounce={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.backendDuration }}
+            - --backend-debounce={{ .Values.debounce.backendDuration }}
             {{- end }}
-            {{- with .Values.debounce.backendMax }}
-            - --backend-debounce-max={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.backendMax }}
+            - --backend-debounce-max={{ .Values.debounce.backendMax }}
             {{- end }}
-            {{- with .Values.debounce.tlsCertDuration }}
-            - --tls-cert-debounce={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.tlsCertDuration }}
+            - --tls-cert-debounce={{ .Values.debounce.tlsCertDuration }}
             {{- end }}
-            {{- with .Values.debounce.tlsCertMax }}
-            - --tls-cert-debounce-max={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.debounce.tlsCertMax }}
+            - --tls-cert-debounce-max={{ .Values.debounce.tlsCertMax }}
             {{- end }}
             {{- with .Values.debounce.latencyBuckets }}
             - --debounce-latency-buckets={{ . }}
@@ -367,34 +376,37 @@ spec:
             - --log-format={{ . }}
             {{- end }}
             {{- /* --- VCL settings --- */}}
-            {{- with .Values.vcl.shutdownTimeout }}
-            - --shutdown-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.vcl.shutdownTimeout }}
+            - --shutdown-timeout={{ .Values.vcl.shutdownTimeout }}
             {{- end }}
-            {{- with .Values.vcl.templateWatchInterval }}
-            - --vcl-template-watch-interval={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.vcl.templateWatchInterval }}
+            - --vcl-template-watch-interval={{ .Values.vcl.templateWatchInterval }}
             {{- end }}
             {{- if ne (toString .Values.vcl.fileWatch) "" }}
             - --file-watch={{ .Values.vcl.fileWatch }}
             {{- end }}
-            {{- with .Values.vcl.reloadRetries }}
-            - --vcl-reload-retries={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.vcl.reloadRetries }}
+            - --vcl-reload-retries={{ .Values.vcl.reloadRetries }}
             {{- end }}
-            {{- with .Values.vcl.reloadRetryInterval }}
-            - --vcl-reload-retry-interval={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.vcl.reloadRetryInterval }}
+            - --vcl-reload-retry-interval={{ .Values.vcl.reloadRetryInterval }}
             {{- end }}
-            {{- with .Values.vcl.kept }}
-            - --vcl-kept={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.vcl.kept }}
+            - --vcl-kept={{ .Values.vcl.kept }}
             {{- end }}
             {{- /* --- Startup / Kubernetes API timing --- */}}
-            {{- with .Values.timing.startupTimeout }}
-            - --startup-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.timing.startupTimeout }}
+            - --startup-timeout={{ .Values.timing.startupTimeout }}
             {{- end }}
-            {{- with .Values.timing.kubeApiTimeout }}
-            - --kube-api-timeout={{ . }}
+            {{- if include "k8s-httpcache.isSet" .Values.timing.kubeApiTimeout }}
+            - --kube-api-timeout={{ .Values.timing.kubeApiTimeout }}
             {{- end }}
             {{- /* --- Extra args (before --) --- */}}
+            {{- /* Quoted like varnishdExtraArgs below: an unquoted argument
+                   containing ": " parses as a YAML mapping (the Deployment is
+                   rejected when decoded) and a trailing space is folded away. */}}
             {{- range .Values.extraArgs }}
-            - {{ . }}
+            - {{ . | quote }}
             {{- end }}
             {{- /* --- Varnishd extra args (after --) --- */}}
             {{- if .Values.varnishdExtraArgs }}
@@ -469,10 +481,17 @@ spec:
               mountPath: {{ .Values.staticFiles.mountPath }}
               readOnly: true
             {{- end }}
+            {{- /* Only the entries that bring their own ConfigMap get a
+                   generated volume below, so only those may be mounted here -
+                   a mount without a matching volume makes the API server
+                   reject the whole workload. Supply the directory for the
+                   other entries via extraVolumes/extraVolumeMounts. */}}
             {{- range .Values.valuesDirs }}
-            - name: values-dir-{{ .name }}
+            {{- if .configMap }}
+            - name: {{ include "k8s-httpcache.valuesDirVolumeName" .name }}
               mountPath: {{ include "k8s-httpcache.tpl" (dict "value" .path "ctx" $) }}
               readOnly: true
+            {{- end }}
             {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 12 }}
@@ -523,7 +542,7 @@ spec:
         {{- end }}
         {{- range .Values.valuesDirs }}
         {{- if .configMap }}
-        - name: values-dir-{{ .name }}
+        - name: {{ include "k8s-httpcache.valuesDirVolumeName" .name }}
           configMap:
             name: {{ include "k8s-httpcache.tpl" (dict "value" .configMap "ctx" $) }}
         {{- end }}

@@ -170,21 +170,13 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	}
 
 	var endpoints, servingTerminating []Endpoint
+	portZero := false
 	for _, slice := range epSlices {
 		if slice.AddressType != family {
 			continue
 		}
 
 		port := resolvePort(slice.Ports, w.portOverride)
-		// A named override that matches nothing (e.g. the port was renamed on
-		// the Service at runtime; startup validation only catches impossible
-		// names) resolves every endpoint to port 0 - warn once instead of
-		// silently rendering backends on port 0.
-		if port == 0 && w.portOverride != "" && !w.portWarned {
-			w.portWarned = true
-			w.log.Warn("port override matches no port in the EndpointSlice; endpoints resolve to port 0",
-				"namespace", w.namespace, "service", w.serviceName, "override", w.portOverride)
-		}
 
 		for _, ep := range slice.Endpoints {
 			// Ready == nil means "unknown"; the EndpointSlice spec
@@ -204,6 +196,17 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 			name := ""
 			if ep.TargetRef != nil {
 				name = ep.TargetRef.Name
+			}
+			// An endpoint with no targetRef (a selector-less Service with
+			// manually managed or mirrored EndpointSlices) would otherwise
+			// carry an empty name. Templates derive the VCL backend name from
+			// .Name and the broadcast fan-out keys its per-pod results by it,
+			// so every nameless endpoint collapsing to "" produced duplicate
+			// backend declarations (vcl.load fails to compile) and silently
+			// dropped pods from the fan-out response. The address is unique
+			// per endpoint within a Service, so derive the name from it.
+			if name == "" && len(ep.Addresses) > 0 {
+				name = syntheticEndpointName(ep.Addresses[0], port)
 			}
 			zone := ""
 			if ep.Zone != nil {
@@ -227,6 +230,9 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 			if len(ep.Addresses) == 0 {
 				continue
 			}
+			if port == 0 {
+				portZero = true
+			}
 			e := Endpoint{
 				Host:     ep.Addresses[0],
 				Port:     port,
@@ -240,6 +246,29 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 			} else {
 				servingTerminating = append(servingTerminating, e)
 			}
+		}
+	}
+
+	// An endpoint resolved to port 0 renders a `.port = "0"` backend: Varnish
+	// compiles it, so the backend is silently dead and the only symptom is
+	// 503s. Warn once, for BOTH ways the port can go missing - a named
+	// override that matches nothing (the port was renamed on the Service at
+	// runtime; startup validation only catches impossible names) and, with no
+	// override at all, a slice that declares no usable port (a headless
+	// Service created without ports: the EndpointSlice controller publishes
+	// `ports: null` for it, and discovery/v1 treats a nil port as "not
+	// restricted"). The second case used to fall outside the guard and was the
+	// one that rendered backends on port 0 completely silently. The flag is
+	// only set for endpoints actually emitted, so a slice that contributes
+	// nothing never warns.
+	if portZero && !w.portWarned {
+		w.portWarned = true
+		if w.portOverride == "" {
+			w.log.Warn("EndpointSlice declares no usable port; endpoints resolve to port 0",
+				"namespace", w.namespace, "service", w.serviceName)
+		} else {
+			w.log.Warn("port override matches no port in the EndpointSlice; endpoints resolve to port 0",
+				"namespace", w.namespace, "service", w.serviceName, "override", w.portOverride)
 		}
 	}
 
@@ -271,6 +300,31 @@ func (w *Watcher) sync(lister discoverylisters.EndpointSliceLister) {
 	w.previous = endpoints
 
 	coalescingSend(w.ch, endpoints)
+}
+
+// syntheticEndpointName builds a stable, unique, VCL-safe name for an endpoint
+// that carries no targetRef. VCL identifiers allow only letters, digits, '_'
+// and '-', so every other byte of the address (the dots of an IPv4 address, the
+// colons of an IPv6 one) is folded to '_'. The address is unique per endpoint
+// within a Service, so the result is unique too.
+func syntheticEndpointName(addr string, port int32) string {
+	var b strings.Builder
+	b.Grow(len(addr) + 8)
+	for _, r := range addr {
+		switch {
+		case r == '-',
+			r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9':
+			_, _ = b.WriteRune(r)
+		default:
+			_ = b.WriteByte('_')
+		}
+	}
+	_ = b.WriteByte('_')
+	_, _ = b.WriteString(strconv.FormatInt(int64(port), 10))
+
+	return b.String()
 }
 
 // canonicalizeEndpoints sorts endpoints into a total order and deduplicates

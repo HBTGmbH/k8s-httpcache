@@ -1,6 +1,12 @@
 {{- if .Values.referenceGrant.enabled -}}
 {{- /* Allows HTTPRoutes (or other resources) in other namespaces to reference
        this chart's Service across the namespace boundary. */}}
+{{- /* ReferenceGrantSpec.From carries MinItems=1, so the default empty list
+       renders `from: []` and the API server rejects the manifest - which under
+       Helm's atomic apply takes the whole release install down. */}}
+{{- if not .Values.referenceGrant.from }}
+{{- fail "referenceGrant.enabled requires at least one referenceGrant.from entry ({group, kind, namespace}); the ReferenceGrant CRD rejects an empty 'from' list (MinItems=1) and the install fails" }}
+{{- end }}
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:

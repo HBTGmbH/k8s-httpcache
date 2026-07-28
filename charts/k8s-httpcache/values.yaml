@@ -41,9 +41,14 @@ selectorLabels: {}
 # ===========================================================================
 # CLI flag groups
 # ===========================================================================
-# -- Service name passed to --service-name (defaults to chart fullname)
+# -- Service name passed to `--service-name` (defaults to chart fullname)
 serviceName: ""
-# -- Namespace passed to --namespace (defaults to Release.Namespace)
+# -- Namespace passed to `--namespace` (defaults to Release.Namespace).
+# Every reference (serviceName, backends, values, secrets, tlsCerts,
+# backendDiscovery) that has no explicit "ns/name" prefix resolves in this
+# namespace, while the chart creates the frontend Service and all RBAC in the
+# release namespace - so when this differs from the release namespace, every
+# reference must be namespace-qualified (the chart fails to render otherwise).
 namespace: ""
 # -- Path to the VCL template inside the container
 vclTemplate: /etc/k8s-httpcache/vcl.tmpl
@@ -100,8 +105,16 @@ tlsCerts: []
 #   secret: my-tls          # cross-namespace: certs/my-tls
 
 # -- Directories to poll for YAML template values (repeatable).
-# Each entry: { name, path, configMap (optional - creates a volume from this ConfigMap) }
+# Each entry: { name, path, configMap (optional) }
 # Generates --values-dir=name:path
+# With `configMap`, the chart adds a volume from that ConfigMap and mounts it
+# read-only at `path`. Without it, only the flag is rendered and supplying the
+# directory is up to you (extraVolumes + extraVolumeMounts, or baked into the
+# image) - the chart adds no mount, because a mount without a matching volume
+# makes the API server reject the whole workload.
+# `name` doubles as the template key (`.Values.NAME.KEY` in the VCL) and is
+# lowercased for the generated volume name, so two entries whose names differ
+# only in case or in `-`/`_` would collide.
 valuesDirs: []
 # - name: mydir
 #   path: /etc/values-dir
@@ -155,11 +168,11 @@ vinyl:
 # Broadcast settings
 # ===========================================================================
 broadcast:
-  # -- Enable the broadcast HTTP server (false sets --broadcast-addr=none)
+  # -- Enable the broadcast HTTP server (false sets `--broadcast-addr=none`)
   enabled: true
   # -- Listen address for the broadcast server (empty = app default ":8088")
   addr: ""
-  # -- Name of the --listen-addr to target for fan-out (empty = first listen addr)
+  # -- Name of the `--listen-addr` to target for fan-out (empty = first listen addr)
   targetListenAddr: ""
   # -- Time to wait for broadcast connections to drain (empty = app default 30s)
   drainTimeout: ""
@@ -182,7 +195,7 @@ broadcast:
 # Metrics / Prometheus
 # ===========================================================================
 metrics:
-  # -- Enable the metrics HTTP server (false sets --metrics-addr=none)
+  # -- Enable the metrics HTTP server (false sets `--metrics-addr=none`)
   enabled: true
   # -- Listen address for the metrics server (empty = app default ":9101")
   addr: ""
@@ -310,8 +323,8 @@ timing:
 # ===========================================================================
 # Extra varnishd arguments (passed after --)
 # ===========================================================================
-# -- Extra arguments passed to varnishd after the -- separator
-# Example: ["-s", "default,1M", "-p", "default_grace=0"]
+# -- Extra arguments passed to varnishd after the `--` separator, e.g.
+# ["-s", "default,1M", "-p", "default_grace=0"]
 varnishdExtraArgs: []
 
 # ===========================================================================
@@ -319,6 +332,12 @@ varnishdExtraArgs: []
 # ===========================================================================
 # -- VCL template rendered into the ConfigMap.
 # This default provides a simple round-robin setup that works out of the box.
+# The `purge` ACL lists loopback plus every cache pod IP (`.Frontends`), because
+# Kubernetes does not SNAT pod-to-pod traffic: a PURGE fanned out by the
+# broadcast server arrives with the SENDING pod's IP as client.ip - never
+# 127.0.0.1, not even for the pod's own leg - so a loopback-only ACL rejects
+# every broadcast invalidation with 405 while the broadcast server still
+# answers 200.
 # @default -- a round-robin VCL template (see values.yaml)
 vclTemplateContent: |
   vcl 4.1;
@@ -344,6 +363,9 @@ vclTemplateContent: |
 
   acl purge {
     "127.0.0.0/8";
+    <<- range .Frontends >>
+    "<< .Host >>";
+    <<- end >>
   }
 
   sub vcl_init {
@@ -483,14 +505,21 @@ securityContext:
     drop:
       - ALL
 
+# These declare the pod's containerPorts and are what the probes, the Service
+# targetPorts and the default NetworkPolicy resolve to. They do NOT move any
+# listener: varnishd binds `listenAddrs`, the metrics server binds
+# `metrics.addr` and the broadcast server binds `broadcast.addr`. Both sides
+# must be changed together; the chart refuses to render a mismatch.
 container:
-  # -- HTTP port exposed by the varnishd process
+  # -- HTTP containerPort; must match the http `listenAddrs` entry (app default
+  # `http=:8080,HTTP`)
   httpPort: 8080
-  # -- HTTPS port exposed by the varnishd process (only when tlsCerts is set).
+  # -- HTTPS containerPort (only when tlsCerts is set); must match the https
+  # `listenAddrs` entry
   httpsPort: 8443
-  # -- Broadcast port exposed by the k8s-httpcache container
+  # -- Broadcast containerPort; must match `broadcast.addr` (app default `:8088`)
   httpBroadcastPort: 8088
-  # -- Metrics port exposed by the k8s-httpcache container
+  # -- Metrics containerPort; must match `metrics.addr` (app default `:9101`)
   httpMetricsPort: 9101
 
 service:
@@ -676,7 +705,7 @@ extraVolumes: []
 extraVolumeMounts: []
 # -- Extra environment variables to add to the container
 extraEnv: []
-# -- Extra arguments appended before the -- separator
+# -- Extra arguments appended before the `--` separator
 extraArgs: []
 # -- Extra raw manifests to render with the release. Each entry is a Kubernetes
 # object (or a templated string) rendered through `tpl`, e.g. an ExternalSecret.
@@ -754,11 +783,14 @@ serviceMonitor:
 # PodDisruptionBudget (optional)
 # ===========================================================================
 podDisruptionBudget:
-  # -- Enable PDB
+  # -- Enable PDB. Exactly one of minAvailable/maxUnavailable must be set: with
+  # neither, the disruption controller pins disruptionsAllowed to 0 and blocks
+  # every eviction (drain, autoscaler, node upgrade); with both, the API server
+  # rejects the object.
   enabled: false
-  # -- Minimum available pods
+  # -- Minimum available pods (count or percentage; 0 allows all disruptions)
   minAvailable: ""
-  # -- Maximum unavailable pods
+  # -- Maximum unavailable pods (count or percentage; 0 blocks all evictions)
   maxUnavailable: ""
 
 # ===========================================================================
@@ -865,7 +897,9 @@ istio:
     action: ALLOW
     # -- External authorization provider (only for action: CUSTOM)
     provider: {}
-    # -- Authorization rules
+    # -- Authorization rules. Required when enabled: Istio never matches a
+    # policy without rules, so an ALLOW policy with none denies all traffic to
+    # the cache pods. Use `[{}]` to allow every request explicitly.
     rules: []
   peerAuthentication:
     # -- Enable Istio PeerAuthentication (mTLS mode)
@@ -951,7 +985,7 @@ referenceGrant:
   # -- Annotations for the ReferenceGrant
   annotations: {}
   # -- Allowed referents (list of { group, kind, namespace }), e.g. HTTPRoutes in
-  # another namespace.
+  # another namespace. Required when enabled - the CRD rejects an empty list.
   from: []
   #  - group: gateway.networking.k8s.io
   #    kind: HTTPRoute

@@ -1309,3 +1309,355 @@ func TestFanoutSurvivesClientDisconnect(t *testing.T) {
 		t.Errorf("pod result after client disconnect = %+v, want status 200 (fan-out must complete fleet-wide)", results["pod1"])
 	}
 }
+
+// waitConns blocks until the server's connection counter reaches want, or
+// fails the test. The [http.Server] ConnState callback runs asynchronously, so
+// tests that depend on a StateNew/StateClosed transition having landed must
+// wait for it rather than sleep a guessed interval.
+func waitConns(t *testing.T, s *Server, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.conns.Load() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("conns = %d, want %d", s.conns.Load(), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// dialKeptAlive opens a raw connection to addr, completes one request/response
+// exchange on it and returns it still open (keep-alive), so the caller can hold
+// it across a drain. Closing it is up to the caller.
+func dialKeptAlive(t *testing.T, addr string) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_, err = conn.Write([]byte("GET /purge/foo HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("write: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err = conn.Read(make([]byte, 4096))
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("read: %v", err)
+	}
+
+	return conn
+}
+
+// TestDrainEntersDrainingMode pins the seam between Drain and the draining
+// flag it must raise. Every other test that asserts Connection: close sets
+// s.draining by hand, and every test that calls Drain only asserts on its
+// return timing - so deleting `s.draining.Store(true)` from Drain kept the
+// whole suite green while production lost graceful drain entirely: a pod
+// receiving SIGTERM would stop emitting Connection: close, keep-alive clients
+// would never let go, and Drain would cut them with srv.Shutdown after burning
+// the full drain timeout.
+func TestDrainEntersDrainingMode(t *testing.T) {
+	t.Parallel()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	s := newTestServer(t)
+	s.SetFrontends([]watcher.Frontend{frontendFromServer("pod-0", backend)})
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody))
+	if got := rec.Header().Get("Connection"); got == "close" {
+		t.Fatal("expected no Connection: close before Drain")
+	}
+
+	// Drain itself - not the test - must put the server into draining mode.
+	err := s.Drain(5 * time.Second)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/purge/foo", http.NoBody))
+	if got := rec.Header().Get("Connection"); got != "close" {
+		t.Fatalf("Connection header after Drain() = %q, want %q; Drain must enter draining mode", got, "close")
+	}
+}
+
+// TestDrainReturnsWhenHeldConnectionCloses pins the other half of the draining
+// flag: connState only signals drained while s.draining is set, so a Drain
+// that never raised the flag would burn the entire drain timeout even after
+// every client had hung up (measured: "drain timeout reached remaining=0").
+// The existing drain tests either close their connection before Drain (so the
+// signal comes from Drain's own conns check) or never close it at all, so none
+// of them crosses connState's signal path.
+func TestDrainReturnsWhenHeldConnectionCloses(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = s.srv.Serve(ln) }()
+
+	// Hold a keep-alive connection open across the start of the drain, so the
+	// drained signal can only come from connState when it is closed.
+	conn := dialKeptAlive(t, ln.Addr().String())
+	defer func() { _ = conn.Close() }()
+	waitConns(t, s, 1)
+
+	const drainTimeout = 5 * time.Second
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- s.Drain(drainTimeout) }()
+
+	// Let Drain reach its wait, then hang up: Drain must notice, not wait out
+	// the timeout.
+	time.Sleep(100 * time.Millisecond)
+	_ = conn.Close()
+
+	select {
+	case drainErr := <-done:
+		if drainErr != nil {
+			t.Fatalf("drain: %v", drainErr)
+		}
+		if elapsed := time.Since(start); elapsed > drainTimeout/2 {
+			t.Fatalf("Drain returned after %v once the last connection closed, want well under the %v timeout", elapsed, drainTimeout)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Drain did not return")
+	}
+}
+
+// TestDrainWaitsAfterEarlierIdlePeriod pins connState's drained-signal guard:
+// signalDrained must fire only when the connection count drops to zero WHILE
+// draining. Relaxing the guard (&& to ||) fires it the first time the server
+// goes idle during normal operation, and drainOnce closes connsDrained
+// permanently - so every later Drain returns instantly while clients are still
+// connected, logging "all broadcast connections drained" and letting Shutdown
+// cut the grace period to zero. No existing test has the ordering "one
+// connection closed earlier, another still held at drain time".
+func TestDrainWaitsAfterEarlierIdlePeriod(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = s.srv.Serve(ln) }()
+	addr := ln.Addr().String()
+
+	// One request on a connection the client closes immediately: conns goes
+	// 1 -> 0 while the server is NOT draining.
+	cl := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := cl.Get("http://" + addr + "/purge/foo")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	waitConns(t, s, 0)
+
+	select {
+	case <-s.connsDrained:
+		t.Fatal("connsDrained closed during normal operation; every later Drain becomes a no-op")
+	default:
+	}
+
+	// Now hold a connection open across the drain: Drain must wait for it.
+	conn := dialKeptAlive(t, addr)
+	defer func() { _ = conn.Close() }()
+	waitConns(t, s, 1)
+
+	const drainTimeout = 400 * time.Millisecond
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- s.Drain(drainTimeout) }()
+
+	select {
+	case <-done:
+		if elapsed := time.Since(start); elapsed < drainTimeout {
+			t.Fatalf("Drain returned after %v with a connection still held, want >= %v", elapsed, drainTimeout)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Drain did not return")
+	}
+}
+
+// TestFanoutResultsKeyedUniquelyPerPod pins that every pod contacted appears in
+// the aggregated response. Results were keyed by pod Name alone, so frontends
+// sharing a name collapsed into one map entry: a PURGE that failed on one pod
+// was reported to the caller as an unqualified 200 with the failing pod simply
+// missing, and which pod survived was decided by goroutine completion order.
+// Names are not unique by construction - an EndpointSlice endpoint with no
+// targetRef (selector-less or mirrored Service) carries no pod name at all, and
+// the watcher deduplicates endpoints on (host, port) only.
+func TestFanoutResultsKeyedUniquelyPerPod(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		podName string
+	}{
+		{"empty names", ""},
+		{"colliding names", "httpcache-0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			okPod := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("purged"))
+			}))
+			defer okPod.Close()
+			failPod := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("boom"))
+			}))
+			defer failPod.Close()
+
+			s := newTestServer(t)
+			s.SetFrontends([]watcher.Frontend{
+				frontendFromServer(tc.podName, okPod),
+				frontendFromServer(tc.podName, failPod),
+			})
+
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, httptest.NewRequest("PURGE", "/purge/foo", http.NoBody))
+
+			var results map[string]PodResult
+			err := json.NewDecoder(rec.Body).Decode(&results)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(results) != 2 {
+				t.Fatalf("got %d results for 2 pods (%v); a pod's result was silently dropped", len(results), results)
+			}
+			statuses := map[int]int{}
+			for _, r := range results {
+				statuses[r.Status]++
+			}
+			if statuses[http.StatusOK] != 1 || statuses[http.StatusInternalServerError] != 1 {
+				t.Fatalf("results = %v, want one 200 and one 500", results)
+			}
+		})
+	}
+}
+
+// TestNewAlwaysBoundsClientTimeout pins that the fan-out client always has a
+// positive timeout. The per-pod request context is deliberately detached from
+// the client with [context.WithoutCancel], so Client.Timeout is the only thing
+// left that can end a fan-out request - and a zero [http.Client] timeout means
+// "no timeout at all". With --broadcast-client-timeout=0 (which the config
+// accepts as ">= 0") a pod that completes the TCP handshake and never answers
+// wedged the handler and its goroutine permanently.
+func TestNewAlwaysBoundsClientTimeout(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		opt  time.Duration
+		want time.Duration
+	}{
+		{"zero is bounded", 0, defaultClientTimeout},
+		{"negative is bounded", -1 * time.Second, defaultClientTimeout},
+		{"positive is preserved", 250 * time.Millisecond, 250 * time.Millisecond},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := New(Options{
+				Addr:          ":0",
+				ClientTimeout: tc.opt,
+				Metrics:       telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+			})
+			if s.client.Timeout != tc.want {
+				t.Fatalf("client.Timeout = %v for ClientTimeout %v, want %v", s.client.Timeout, tc.opt, tc.want)
+			}
+		})
+	}
+}
+
+// TestFanoutCannotWedgeOnUnresponsivePod is the end-to-end half of
+// TestNewAlwaysBoundsClientTimeout: against a pod that completes the TCP
+// handshake and then never answers (varnishd thread-pool exhaustion, a
+// SIGSTOPped process, a stalled node), an unbounded fan-out never returns -
+// leaking one goroutine, one socket and the buffered request body per request,
+// and keeping Drain from ever seeing the connection count reach zero.
+func TestFanoutCannotWedgeOnUnresponsivePod(t *testing.T) {
+	t.Parallel()
+
+	// Blackhole pod: accept the connection, never write a response.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var (
+		mu       sync.Mutex
+		accepted []net.Conn
+	)
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			mu.Lock()
+			accepted = append(accepted, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-acceptDone
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range accepted {
+			_ = c.Close()
+		}
+	})
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, err := strconv.ParseInt(portStr, 10, 32)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+
+	s := New(Options{
+		Addr:          ":0",
+		ClientTimeout: 0, // operator set --broadcast-client-timeout=0
+		Metrics:       telemetry.NewMetrics(prometheus.NewRegistry(), nil),
+	})
+	t.Cleanup(s.client.CloseIdleConnections)
+	s.SetFrontends([]watcher.Frontend{{Name: "pod-stuck", Host: host, Port: int32(port)}})
+
+	rec := httptest.NewRecorder()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		s.ServeHTTP(rec, httptest.NewRequest("PURGE", "/purge/foo", http.NoBody))
+	}()
+
+	select {
+	case <-served:
+	case <-time.After(defaultClientTimeout + 10*time.Second):
+		t.Fatal("fan-out never returned against an unresponsive pod: the handler and its goroutine are wedged permanently")
+	}
+
+	var results map[string]PodResult
+	err = json.NewDecoder(rec.Body).Decode(&results)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := results["pod-stuck"]; got.Status != 0 || !strings.Contains(got.Body, "request error:") {
+		t.Fatalf("pod-stuck result = %+v, want a transport error from the client timeout", got)
+	}
+}

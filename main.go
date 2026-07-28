@@ -66,7 +66,6 @@ const (
 type vclRenderer interface {
 	Reload() error
 	Render(frontends []watcher.Frontend, backends map[string]renderer.BackendGroup, values, secrets map[string]map[string]any) (string, error)
-	RenderToFile(frontends []watcher.Frontend, backends map[string]renderer.BackendGroup, values, secrets map[string]map[string]any) (string, error)
 	Commit()
 	Rollback()
 }
@@ -398,6 +397,13 @@ func (s *statusStore) recordTLSCert(info *tlsCertInfo) {
 	s.tlsLastReloadAt = time.Now()
 }
 
+// eventFlushGrace bounds the wait after the event broadcaster is shut down, so
+// Events emitted just before process exit are actually delivered. Two orders of
+// magnitude above the ~200us delivery threshold measured against a real
+// cluster, and negligible against a shutdown path already budgeted in seconds.
+// Exported as a var so tests can zero it.
+var eventFlushGrace = 250 * time.Millisecond
+
 // errNoPEMBlock is returned when a certificate has no decodable PEM block.
 var errNoPEMBlock = errors.New("no PEM block in certificate")
 
@@ -625,7 +631,7 @@ func setupMetricsServer(cfg *config.Config, status *statusStore, serverErrCh cha
 	mux.Handle("/metrics", promhttp.HandlerFor(&telemetry.ZeroCounterFilter{Inner: prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/status", statusHandler(status))
 	mux.HandleFunc("/healthz", healthzHandler(status))
-	readyzAddr := readyzDialAddr(cfg.ListenAddrs[0])
+	readyzAddr := readyzDialAddr(&cfg.ListenAddrs[0])
 	mux.HandleFunc("/readyz", readyzHandler(status, readyzAddr))
 	metricsSrv := &http.Server{
 		Addr:              cfg.MetricsAddr,
@@ -742,23 +748,37 @@ func run() int {
 	)
 	if podName := os.Getenv("POD_NAME"); podName != "" {
 		eventBroadcaster := record.NewBroadcaster()
+		// The controller's OWN namespace, which differs from the frontend
+		// Service's whenever --service-name carries a namespace prefix.
+		ownNS := podNamespace(saNamespaceFile, cfg.ServiceNamespace)
 		eventBroadcaster.StartRecordingToSink(&warnOnceEventSink{
 			inner: &typedcorev1.EventSinkImpl{
-				Interface: clientset.CoreV1().Events(cfg.ServiceNamespace),
+				Interface: clientset.CoreV1().Events(ownNS),
 			},
 		})
-		// Flush buffered events and stop the broadcaster's dispatch goroutine
-		// on every exit path.
-		defer eventBroadcaster.Shutdown()
+		// Stop the broadcaster's dispatch goroutine on every exit path, then
+		// give any in-flight delivery a bounded moment to reach the API server.
+		//
+		// Shutdown() does NOT wait for the sink's HTTP POST to complete, so an
+		// Event emitted immediately before exit is simply lost. Measured against
+		// a real cluster: the terminal VarnishdExited Event failed to appear in
+		// 6/6 runs, while VCLReloaded (emitted much earlier) appeared 6/6 - and
+		// a grace sweep put the threshold at roughly 200us of post-emit work.
+		// The default shutdown path does far less than that, so exactly the
+		// Event that explains why the pod died is the one that never arrives.
+		defer func() {
+			eventBroadcaster.Shutdown()
+			time.Sleep(eventFlushGrace)
+		}()
 		eventRecorder = eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "k8s-httpcache"})
 		podRef = &v1.ObjectReference{
 			Kind:       podKind,
 			APIVersion: "v1",
 			Name:       podName,
-			Namespace:  cfg.ServiceNamespace,
+			Namespace:  ownNS,
 		}
 		podCtx, podCancel := kubeContext(cfg.KubeAPITimeout)
-		pod, getErr := clientset.CoreV1().Pods(cfg.ServiceNamespace).Get(podCtx, podName, metav1.GetOptions{})
+		pod, getErr := clientset.CoreV1().Pods(ownNS).Get(podCtx, podName, metav1.GetOptions{})
 		podCancel()
 		if getErr != nil {
 			slog.Warn("could not look up pod UID for event recording; events may not appear in kubectl describe pod", "error", getErr)
@@ -766,7 +786,7 @@ func run() int {
 			podRef.UID = pod.UID
 			warnShortGracePeriod(cfg, pod.Spec.TerminationGracePeriodSeconds)
 		}
-		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", cfg.ServiceNamespace)
+		slog.Info("kubernetes event recorder enabled", "pod", podName, "namespace", ownNS)
 	} else {
 		slog.Info("POD_NAME not set, kubernetes event recording disabled")
 	}
@@ -789,14 +809,15 @@ func run() int {
 	for i, la := range cfg.ListenAddrs {
 		listenAddrs[i] = la.Raw
 	}
-	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, listenAddrs, cfg.ExtraVarnishd, cfg.VarnishstatPath, metrics)
+	// The redactor is a required constructor argument: varnishd's and
+	// varnishncsa's stdout/stderr are wired through it, and nothing in the test
+	// suite noticed when that wiring was missing.
+	secretRedactor := redact.NewRedactor()
+	mgr := varnish.New(cfg.VarnishdPath, cfg.VarnishadmPath, listenAddrs, cfg.ExtraVarnishd, cfg.VarnishstatPath, metrics, secretRedactor)
 	mgr.AdminTimeout = cfg.AdminTimeout
 	mgr.ReloadRetries = cfg.VCLReloadRetries
 	mgr.ReloadRetryInterval = cfg.VCLReloadRetryInterval
 	mgr.VCLKept = cfg.VCLKept
-
-	secretRedactor := redact.NewRedactor()
-	mgr.SetRedactor(secretRedactor)
 
 	err = mgr.DetectVersion()
 	if err != nil {
@@ -994,12 +1015,8 @@ func run() int {
 	// - even with --startup-timeout=0 - when a watcher's Run fails before its
 	// guaranteed initial send (via watcherErrCh).
 	slog.Info("waiting for initial endpoint data", "timeout", cfg.StartupTimeout)
-	startupCtx := ctx
-	if cfg.StartupTimeout > 0 {
-		var startupCancel context.CancelFunc
-		startupCtx, startupCancel = context.WithTimeout(ctx, cfg.StartupTimeout)
-		defer startupCancel()
-	}
+	startupCtx, startupCancel := startupContext(ctx, cfg.StartupTimeout)
+	defer startupCancel()
 	initial, err := awaitInitial(startupCtx, watcherErrCh, func() initialEndpoints {
 		data := initialEndpoints{
 			backends: make(map[string]renderer.BackendGroup),
@@ -1232,14 +1249,7 @@ func run() int {
 							return
 						}
 						select {
-						case backendCh <- backendChange{
-							name:        update.Name,
-							endpoints:   update.Endpoints,
-							labels:      update.Labels,
-							annotations: update.Annotations,
-							removed:     update.Endpoints == nil,
-							gen:         update.Gen,
-						}:
+						case backendCh <- backendChangeFromUpdate(&update):
 						case <-ctx.Done():
 							return
 						}
@@ -1390,18 +1400,9 @@ func rollbackReload(lc *loopConfig, reasons string) bool {
 		return false
 	}
 
-	f, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
+	vclPath, err := writeVCLTempFile(vclStr)
 	if err != nil {
-		slog.Error("creating temp VCL file after rollback", "error", err)
-
-		return false
-	}
-	vclPath := f.Name()
-	_, err = f.WriteString(vclStr)
-	_ = f.Close()
-	if err != nil {
-		slog.Error("writing temp VCL file after rollback", "error", err)
-		_ = os.Remove(vclPath)
+		slog.Error("temp VCL file after rollback", "error", err)
 
 		return false
 	}
@@ -1422,6 +1423,22 @@ func rollbackReload(lc *loopConfig, reasons string) bool {
 		lc.status.recordReload()
 		lc.status.setEndpointCounts(len(lc.latestFrontends), backendCountsMap(lc.latestBackends))
 	}
+
+	return true
+}
+
+// recoverSwappedTemplate re-reads the template from disk after a rollback that
+// turned out to be unwarranted, and reports whether the swap is in place again.
+// Used when the rolled-back template rendered no worse than the previous one,
+// which proves the inputs - not the template - were at fault.
+func recoverSwappedTemplate(lc *loopConfig) bool {
+	err := lc.rend.Reload()
+	if err != nil {
+		slog.Error("could not re-read the VCL template after an unwarranted rollback", "error", err)
+
+		return false
+	}
+	slog.Info("restored the updated VCL template: the previous one failed to render the same inputs")
 
 	return true
 }
@@ -1462,20 +1479,52 @@ func handleDrain(lc *loopConfig, sig os.Signal) {
 	if interrupted || lc.drainTimeout <= 0 {
 		return
 	}
+	deadlineAt := time.Now().Add(lc.drainTimeout)
 	deadline := time.After(lc.drainTimeout)
 	ticker := time.NewTicker(lc.drainPollInterval)
 	defer ticker.Stop()
+
+	// ActiveSessions shells out to varnishstat, bounded only by the 60s CLI
+	// timeout. Calling it inline in the ticker arm blocked this whole select,
+	// so a wedged (or merely slow) varnishstat kept --drain-timeout from
+	// expiring, hid a varnishd exit and swallowed the second-signal abort -
+	// leaving the pod in Terminating until the kubelet SIGKILLed it mid-drain.
+	// Poll in a goroutine instead and receive the answer as just another event.
+	// The channel is buffered so an abandoned poll never leaks its goroutine.
+	type sessionPoll struct {
+		count uint64
+		err   error
+	}
+	polls := make(chan sessionPoll, 1)
+	pollInFlight := false
+
 	for {
 		select {
 		case <-ticker.C:
-			sessions, err := lc.mgr.ActiveSessions()
-			if err != nil {
-				slog.Warn("failed to read active sessions", "error", err)
+			// A tick and the deadline can be ready together, and select picks
+			// at random; check explicitly so the deadline always wins.
+			if !time.Now().Before(deadlineAt) {
+				slog.Warn("drain timeout reached, proceeding with shutdown")
+				emitEvent(lc, v1.EventTypeWarning, "DrainTimeout", "Drain timeout reached, proceeding with forced shutdown")
+
+				return
+			}
+			if pollInFlight {
+				// Do not stack polls behind a slow varnishstat.
+				continue
+			}
+			pollInFlight = true
+			go func() { count, err := lc.mgr.ActiveSessions(); polls <- sessionPoll{count: count, err: err} }()
+
+		case p := <-polls:
+			pollInFlight = false
+			if p.err != nil {
+				slog.Warn("failed to read active sessions", "error", p.err)
 
 				continue
 			}
-			slog.Info("active sessions", "count", sessions)
-			if sessions == 0 {
+			slog.Info("active sessions", "count", p.count)
+			if p.count == 0 {
 				slog.Info("all connections drained")
 				emitEvent(lc, v1.EventTypeNormal, "DrainCompleted", "All connections drained")
 
@@ -1495,6 +1544,81 @@ func handleDrain(lc *loopConfig, sig os.Signal) {
 
 			return
 		}
+	}
+}
+
+// runShutdown performs the orderly shutdown sequence for sig and returns the
+// process exit code. It is reachable from two places: the event loop's signal
+// case, and a signal that arrived while a varnishadm call was in flight (see
+// awaitOffLoop).
+func runShutdown(lc *loopConfig, cancel context.CancelFunc, sig os.Signal) int {
+	slog.Info("received signal, shutting down", "signal", sig)
+
+	if lc.drainBackend != "" {
+		handleDrain(lc, sig)
+	}
+
+	// SIGHUP means "terminal gone", not a request varnishd understands; forward
+	// SIGTERM so varnishd shuts down cleanly. Remapped only after handleDrain so
+	// the drain event reports the signal that was actually received.
+	if sig == syscall.SIGHUP {
+		sig = syscall.SIGTERM
+	}
+
+	if lc.bcast != nil {
+		_ = lc.bcast.Drain(lc.broadcastDrainTimeout)
+	}
+
+	if lc.stopNCSA != nil {
+		lc.stopNCSA()
+	}
+
+	cancel()
+	lc.mgr.ForwardSignal(sig)
+
+	select {
+	case <-lc.mgr.Done():
+	case <-afterOrNever(lc.shutdownTimeout):
+		slog.Warn("varnishd did not exit in time, forcing")
+		lc.mgr.ForwardSignal(syscall.SIGKILL)
+		// SIGKILL cannot be ignored. Wait for the exit so the Err() read below
+		// is ordered after the manager's Wait goroutine writes it (reading
+		// earlier is a data race).
+		<-lc.mgr.Done()
+	}
+
+	err := lc.mgr.Err()
+	if err != nil {
+		slog.Error("varnishd exited with error", "error", err)
+
+		return 1
+	}
+
+	return 0
+}
+
+// awaitOffLoop runs fn (a varnishadm call) on its own goroutine and waits for
+// it, so the event loop stays responsive meanwhile. It returns fn's error, or -
+// if a shutdown signal arrives first - that signal, in which case the caller
+// must abandon what it was doing and let the loop shut down.
+//
+// mgr.Reload and mgr.LoadCert are bounded only by the 60s CLI timeout, times
+// (1 + --vcl-reload-retries) attempts. Calling them inline on the event-loop
+// goroutine meant SIGTERM was accepted and then ignored for minutes - routinely
+// longer than terminationGracePeriodSeconds, so the kubelet SIGKILLed the
+// controller with varnishd never signalled. The abandoned call still completes
+// in the background, bounded by its own CLI timeout; its result is discarded
+// because the process is shutting down. The channel is buffered so that
+// goroutine never leaks.
+func awaitOffLoop(lc *loopConfig, fn func() error) (os.Signal, error) {
+	result := make(chan error, 1)
+	go func() { result <- fn() }()
+
+	select {
+	case err := <-result:
+		return nil, err
+	case sig := <-lc.sigCh:
+		return sig, nil
 	}
 }
 
@@ -1527,6 +1651,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		tlsCert     debounceState
 		tlsRecovery = recoveryState{initial: lc.reloadRecoveryInitial, maxDelay: lc.reloadRecoveryMax}
 	)
+
+	// pendingShutdown holds a signal that arrived while a varnishadm call was in
+	// flight on a helper goroutine (see awaitOffLoop). The loop checks it at the
+	// top of every iteration and shuts down, so a slow reload can no longer make
+	// the controller ignore SIGTERM for minutes.
+	var pendingShutdown os.Signal
 
 	// latestTLS holds the most recent certificate material per logical name;
 	// pendingCertNames tracks names awaiting a (re)load.
@@ -1644,9 +1774,17 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 				emitEvent(lc, v1.EventTypeWarning, "VCLRolledBack", "Template rollback after render error")
 				if rollbackReload(lc, reasons) {
 					clearPending()
-				} else {
-					markRetry()
+
+					return
 				}
+				// The PREVIOUS template failed to render the same inputs, so the
+				// new template was not the cause - the data was. The rollback
+				// already discarded the parsed template, and nothing re-reads
+				// the file later (the template watcher's baseline has advanced),
+				// so recover it from disk instead of losing the operator's
+				// change permanently.
+				templateSwapped = recoverSwappedTemplate(lc)
+				markRetry()
 
 				return
 			}
@@ -1668,32 +1806,39 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			return
 		}
 
-		f, err := os.CreateTemp("", "k8s-httpcache-*.vcl")
+		vclPath, err := writeVCLTempFile(vclStr)
 		if err != nil {
-			slog.Error("creating temp VCL file", "error", err)
+			slog.Error("temp VCL file", "error", err)
 			markRetry()
 
 			return
 		}
-		vclPath := f.Name()
-		_, err = f.WriteString(vclStr)
-		_ = f.Close()
-		if err != nil {
-			slog.Error("writing temp VCL file", "error", err)
+
+		sig, err := awaitOffLoop(lc, func() error { return lc.mgr.Reload(vclPath) })
+		if sig != nil {
+			// Shutting down: leave pendingReload set so nothing is silently
+			// dropped, and let the loop run the shutdown sequence.
+			pendingShutdown = sig
+			pendingReload = true
 			_ = os.Remove(vclPath)
-			markRetry()
 
 			return
 		}
-
-		err = lc.mgr.Reload(vclPath)
 		if err != nil {
 			lc.metrics.VCLReloadsTotal.WithLabelValues("error").Inc()
 			slog.Error("reload error", "error", err)
 			emitEvent(lc, v1.EventTypeWarning, "VCLReloadFailed", fmt.Sprintf("VCL reload failed: %v", err))
 			_ = os.Remove(vclPath)
 
-			if !templateSwapped {
+			// Roll back ONLY when varnishd actually rejected this VCL. Every
+			// other reload failure - a vcl.use error (the VCL already
+			// compiled), a wedged admin socket, a CLI timeout - says nothing
+			// about the template's validity, and rolling back on one discards
+			// it irreversibly: rend.Rollback() drops the renderer's saved copy
+			// and the template watcher's baseline has already advanced, so
+			// nothing ever re-reads the file. The pod would then serve the old
+			// template forever while the rollback reload reported success.
+			if !templateSwapped || !errors.Is(err, varnish.ErrVCLRejected) {
 				markRetry()
 
 				return
@@ -1749,7 +1894,14 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 		for name := range pendingCertNames {
 			d := latestTLS[name]
 			// LoadCert owns the metric increments (success / error / noop).
-			err := lc.mgr.LoadCert(name, d.Cert, d.Key, d.CA)
+			sig, err := awaitOffLoop(lc, func() error { return lc.mgr.LoadCert(name, d.Cert, d.Key, d.CA) })
+			if sig != nil {
+				// Shutting down: this name stays pending and the loop runs the
+				// shutdown sequence.
+				pendingShutdown = sig
+
+				return
+			}
 			if err != nil {
 				failed = true
 				slog.Error("TLS certificate reload failed", "cert", name, "error", err)
@@ -1780,6 +1932,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 	}
 
 	for {
+		// A signal that arrived while a varnishadm call was in flight is acted
+		// on here, so shutdown is never deferred behind it.
+		if pendingShutdown != nil {
+			return runShutdown(lc, cancel, pendingShutdown)
+		}
+
 		select {
 		case <-lc.templateCh:
 			lc.debug("event", "kind", "template")
@@ -1993,6 +2151,12 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			emitEvent(lc, ev.Type, ev.Reason, ev.Message)
 
 		case <-lc.ncsaCrashed:
+			// The manager queues VarnishncsaExited/VarnishncsaCrashLoop on the
+			// buffered event channel and only then closes ncsaCrashed, so both
+			// cases are ready together and select picks at random. Drain the
+			// queued events first or roughly half of all crash-loop exits are
+			// unexplained in `kubectl describe pod`.
+			drainNCSAEvents(lc)
 			slog.Error("varnishncsa crash loop detected, shutting down")
 			cancel()
 			lc.mgr.ForwardSignal(syscall.SIGTERM)
@@ -2032,50 +2196,7 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			return 1
 
 		case sig := <-lc.sigCh:
-			slog.Info("received signal, shutting down", "signal", sig)
-
-			if lc.drainBackend != "" {
-				handleDrain(lc, sig)
-			}
-
-			// SIGHUP means "terminal gone", not a request varnishd
-			// understands; forward SIGTERM so varnishd shuts down cleanly.
-			// Remapped only after handleDrain so the drain event reports the
-			// signal that was actually received.
-			if sig == syscall.SIGHUP {
-				sig = syscall.SIGTERM
-			}
-
-			if lc.bcast != nil {
-				_ = lc.bcast.Drain(lc.broadcastDrainTimeout)
-			}
-
-			if lc.stopNCSA != nil {
-				lc.stopNCSA()
-			}
-
-			cancel()
-			lc.mgr.ForwardSignal(sig)
-
-			select {
-			case <-lc.mgr.Done():
-			case <-afterOrNever(lc.shutdownTimeout):
-				slog.Warn("varnishd did not exit in time, forcing")
-				lc.mgr.ForwardSignal(syscall.SIGKILL)
-				// SIGKILL cannot be ignored. Wait for the exit so the Err()
-				// read below is ordered after the manager's Wait goroutine
-				// writes it (reading earlier is a data race).
-				<-lc.mgr.Done()
-			}
-
-			err := lc.mgr.Err()
-			if err != nil {
-				slog.Error("varnishd exited with error", "error", err)
-
-				return 1
-			}
-
-			return 0
+			return runShutdown(lc, cancel, sig)
 
 		case <-lc.mgr.Done():
 			lc.metrics.VarnishdUp.Set(0)
@@ -2093,6 +2214,20 @@ func runLoop(_ context.Context, cancel context.CancelFunc, lc *loopConfig) int {
 			}
 
 			return 1
+		}
+	}
+}
+
+// drainNCSAEvents emits every varnishncsa lifecycle event still buffered on the
+// event channel. Called on the crash-loop shutdown path, where the events that
+// explain the exit are already queued but would otherwise be discarded.
+func drainNCSAEvents(lc *loopConfig) {
+	for {
+		select {
+		case ev := <-lc.ncsaEvents:
+			emitEvent(lc, ev.Type, ev.Reason, ev.Message)
+		default:
+			return
 		}
 	}
 }
@@ -2140,6 +2275,101 @@ func (s *warnOnceEventSink) checkErr(err error) {
 				"error", err)
 		})
 	}
+}
+
+// saNamespaceFile is the projected service-account namespace, present in every
+// Pod. It is the fallback source for the Pod's own namespace when the downward
+// API has not been wired up.
+const saNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// podNamespace returns the namespace this controller's own Pod runs in.
+//
+// It must NOT be confused with the frontend Service's namespace: with the
+// supported cross-namespace form (--service-name=other-ns/frontend) the two
+// differ, and using the Service's namespace made the pod lookup fail, silently
+// disabling the terminationGracePeriodSeconds guard, and wrote Events into the
+// foreign namespace against an involvedObject that does not exist there.
+func podNamespace(saNamespacePath, fallback string) string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	// path is a fixed in-Pod location (or a test temp file), not request input.
+	raw, err := os.ReadFile(saNamespacePath)
+	if err == nil {
+		if ns := strings.TrimSpace(string(raw)); ns != "" {
+			return ns
+		}
+	}
+
+	return fallback
+}
+
+// vclTempFile is the subset of [os.File] the VCL writer needs, so the
+// close-error branch can be exercised deterministically in tests.
+type vclTempFile interface {
+	WriteString(s string) (int, error)
+	Close() error
+	Name() string
+}
+
+// openVCLTemp creates the temp file rendered VCL is written to. Swappable in tests.
+var openVCLTemp = func() (vclTempFile, error) {
+	return os.CreateTemp("", "k8s-httpcache-*.vcl")
+}
+
+// writeVCLTempFile writes contents to a new temp file and returns its path.
+//
+// The CLOSE error is reported, not discarded: on a filesystem that defers write
+// errors to close (NFS, or a full tmpfs - the chart mounts /tmp as a Memory
+// emptyDir) a truncated VCL would otherwise be handed to varnishd as if it had
+// been written successfully, and its hash recorded as the running config.
+func writeVCLTempFile(contents string) (string, error) {
+	f, err := openVCLTemp()
+	if err != nil {
+		return "", fmt.Errorf("creating temp VCL file: %w", err)
+	}
+	path := f.Name()
+
+	_, writeErr := f.WriteString(contents)
+	closeErr := f.Close()
+	if writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		_ = os.Remove(path)
+
+		return "", fmt.Errorf("writing temp VCL file: %w", writeErr)
+	}
+
+	return path, nil
+}
+
+// backendChangeFromUpdate adapts a discovery-watcher update to the event loop's
+// backendChange. Endpoints == nil is the watcher's "Service removed" signal (the
+// forwarding goroutine normalises "no ready endpoints" to an EMPTY slice
+// precisely so the two stay distinguishable), so the removed flag must test for
+// nil, not for emptiness.
+func backendChangeFromUpdate(update *watcher.BackendUpdate) backendChange {
+	return backendChange{
+		name:        update.Name,
+		endpoints:   update.Endpoints,
+		labels:      update.Labels,
+		annotations: update.Annotations,
+		removed:     update.Endpoints == nil,
+		gen:         update.Gen,
+	}
+}
+
+// startupContext bounds the initial endpoint collection by timeout, or returns
+// ctx unbounded when timeout <= 0 ("0 disables the limit"). A `>= 0` test here
+// would hand [context.WithTimeout] a zero duration, producing an already-expired
+// context that fails every startup instantly.
+func startupContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+
+	return context.WithTimeout(ctx, timeout)
 }
 
 // kubeContext returns a context bounded by timeout (with its cancel func) for a
@@ -2514,20 +2744,44 @@ func shutdownBudget(cfg *config.Config) time.Duration {
 	return budget
 }
 
-// warnShortGracePeriod logs a warning when the configured worst-case shutdown
-// budget exceeds the pod's terminationGracePeriodSeconds: the kubelet would
-// SIGKILL varnishd mid-drain, silently defeating the graceful shutdown the
-// drain flags exist for. grace is the pod-spec value (nil = cluster default).
-func warnShortGracePeriod(cfg *config.Config, grace *int64) {
+// gracePeriodWarning returns the warning to log when the configured worst-case
+// shutdown cannot fit the pod's terminationGracePeriodSeconds - the kubelet
+// would SIGKILL varnishd mid-drain, silently defeating the graceful shutdown
+// the drain flags exist for - or "" when it fits. grace is the pod-spec value
+// (nil = cluster default, nothing to compare against).
+//
+// The unbounded case is handled explicitly. shutdownBudget returns 0 to mean
+// "no finite budget exists" (--shutdown-timeout=0 waits for varnishd forever),
+// and a plain `budget > gracePeriod` test reads that sentinel as "zero budget,
+// always fits" - suppressing the warning in precisely the configuration where
+// the kubelet is guaranteed to kill varnishd mid-drain.
+func gracePeriodWarning(cfg *config.Config, grace *int64) string {
 	if grace == nil {
+		return ""
+	}
+	gracePeriod := time.Duration(*grace) * time.Second
+
+	if cfg.ShutdownTimeout <= 0 {
+		return fmt.Sprintf("--shutdown-timeout=0 waits for varnishd indefinitely, so the worst-case shutdown "+
+			"cannot fit terminationGracePeriodSeconds (%v); the kubelet may SIGKILL varnishd mid-drain", gracePeriod)
+	}
+
+	budget := shutdownBudget(cfg)
+	if budget > gracePeriod {
+		return fmt.Sprintf("worst-case shutdown budget (%v) exceeds terminationGracePeriodSeconds (%v); "+
+			"the kubelet may SIGKILL varnishd mid-drain", budget, gracePeriod)
+	}
+
+	return ""
+}
+
+// warnShortGracePeriod logs gracePeriodWarning, if there is one.
+func warnShortGracePeriod(cfg *config.Config, grace *int64) {
+	msg := gracePeriodWarning(cfg, grace)
+	if msg == "" {
 		return
 	}
-	budget := shutdownBudget(cfg)
-	gracePeriod := time.Duration(*grace) * time.Second
-	if budget > gracePeriod {
-		slog.Warn("worst-case shutdown budget exceeds terminationGracePeriodSeconds; the kubelet may SIGKILL varnishd mid-drain",
-			"budget", budget, "grace_period", gracePeriod)
-	}
+	slog.Warn("the kubelet may SIGKILL varnishd mid-drain", "detail", msg)
 }
 
 // redactedErr returns err's message with configured secret values redacted.
@@ -2548,7 +2802,7 @@ func redactedErr(r *redact.Redactor, err error) string {
 // is reachable via loopback, but a specific-IP bind (e.g. the pod IP) is NOT
 // listening on localhost - dialing localhost there would keep the pod
 // NotReady forever.
-func readyzDialAddr(la config.ListenAddrSpec) string {
+func readyzDialAddr(la *config.ListenAddrSpec) string {
 	host := la.Host
 	switch host {
 	case "", "0.0.0.0", "::":

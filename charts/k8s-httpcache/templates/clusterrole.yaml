@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "k8s-httpcache.fullname" . }}-nodes
+  name: {{ include "k8s-httpcache.clusterRoleName" . }}
   labels:
     {{- include "k8s-httpcache.labels" . | nindent 4 }}
   {{- with include "k8s-httpcache.annotations" (dict "root" .) }}

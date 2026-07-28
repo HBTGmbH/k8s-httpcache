@@ -8,6 +8,13 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "exclude-paths": ["charts/k8s-httpcache"],
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "charts/k8s-httpcache/Chart.yaml",
+          "jsonpath": "$.appVersion"
+        }
+      ],
       "pull-request-title-pattern": "chore${scope}: release k8s-httpcache app ${version}"
     },
     "charts/k8s-httpcache": {

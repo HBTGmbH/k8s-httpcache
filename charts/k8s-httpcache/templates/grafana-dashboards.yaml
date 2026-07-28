@@ -11,9 +11,12 @@ metadata:
   labels:
     {{- include "k8s-httpcache.labels" $ | nindent 4 }}
     {{ $.Values.grafanaDashboards.label }}: {{ $.Values.grafanaDashboards.labelValue | quote }}
-  {{- with $.Values.grafanaDashboards.annotations }}
+  {{- /* Via the shared helper so commonAnnotations ("annotations to add to all
+         resources") reaches these ConfigMaps too - GitOps ownership/prune
+         policies break when a couple of objects lack them. */}}
+  {{- with include "k8s-httpcache.annotations" (dict "extra" $.Values.grafanaDashboards.annotations "root" $) }}
   annotations:
-    {{- include "k8s-httpcache.tpl" (dict "value" . "ctx" $) | nindent 4 }}
+    {{- . | nindent 4 }}
   {{- end }}
 data:
   {{ $name }}.json: |-

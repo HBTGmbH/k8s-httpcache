@@ -1,9 +1,12 @@
 package watcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -832,8 +835,8 @@ func TestDiscoveryWatcher_DuplicateNameAcrossNamespaces(t *testing.T) {
 	waitForInitial(t, dw)
 
 	// Both services have the same Name "web", and InitialState is keyed by
-	// service name. The first discovered Service wins; the same-named
-	// Service in the other namespace is skipped - only one entry.
+	// service name. Exactly one wins; the same-named Service in the other
+	// namespace is skipped - only one entry.
 	state := dw.InitialState()
 	eps, ok := state["web"]
 	if !ok {
@@ -842,9 +845,12 @@ func TestDiscoveryWatcher_DuplicateNameAcrossNamespaces(t *testing.T) {
 	if len(eps) != 1 {
 		t.Fatalf("expected 1 endpoint for 'web', got %d", len(eps))
 	}
-	// We can't predict which one wins, but at least one IP should be present.
-	if eps[0].Host != "10.0.0.1" && eps[0].Host != "10.0.0.2" {
-		t.Errorf("unexpected IP %q", eps[0].Host)
+	// Which one wins is deterministic (lowest "namespace/serviceName" key, so
+	// ns1/web), not a coin flip decided by map iteration order - otherwise two
+	// replicas of this controller would back the same VCL backend name with
+	// different origins. See TestDiscoveryWatcher_SameNameTieBreakIsDeterministic.
+	if eps[0].Host != "10.0.0.1" {
+		t.Errorf("winner = %q, want 10.0.0.1 (ns1/web, the lowest-keyed Service)", eps[0].Host)
 	}
 }
 
@@ -2927,4 +2933,192 @@ func TestDiscoverySyncServicesReadsUnderLock(t *testing.T) {
 	}
 	close(lister.release)
 	<-done
+}
+
+// TestDiscoveryWatcher_SameNameTieBreakIsDeterministic pins the cross-namespace
+// tie-break. Two Services with the same metadata.name in different namespaces
+// can both match one --backend-selector, and updates are keyed by bare name, so
+// exactly one may back that VCL backend. The add pass used to range the
+// `current` map directly and Go randomizes map iteration per range, so the
+// winner was re-rolled on every process start: two replicas of the same
+// controller, given byte-identical cluster state, rendered backend "web"
+// pointing at Services in different namespaces - and nothing in the VCL (all
+// variants compile), the metrics (labels are backend/server only) or the status
+// surfaces the divergence. The winner must be a pure function of the cluster
+// state: the lowest "namespace/serviceName" key wins, regardless of lister
+// order.
+func TestDiscoveryWatcher_SameNameTieBreakIsDeterministic(t *testing.T) {
+	t.Parallel()
+	sel, _ := labels.Parse("app=web")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	svcA := makeDiscoverableService("ns-a", "web", map[string]string{"app": "web"})
+	svcB := makeDiscoverableService("ns-b", "web", map[string]string{"app": "web"})
+	svcC := makeDiscoverableService("ns-c", "web", map[string]string{"app": "web"})
+	// The lister order is varied as well: the outcome must depend on neither
+	// the listing order nor the map iteration order.
+	orders := [][]*corev1.Service{
+		{svcA, svcB, svcC},
+		{svcC, svcB, svcA},
+		{svcB, svcC, svcA},
+	}
+
+	const rounds = 45
+	for i := range rounds {
+		dw := NewBackendDiscoveryWatcher(fake.NewClientset(), "", true, sel, "", nil)
+		dw.syncServices(ctx, &stubServiceLister{services: orders[i%len(orders)]})
+		if !backendExists(dw, "ns-a/web") {
+			dw.shutdown()
+			t.Fatalf("round %d: the lowest-keyed Service ns-a/web must win the bare name 'web'; "+
+				"the winner is nondeterministic, so controller replicas disagree on which origin backs 'web'", i)
+		}
+		for _, loser := range []string{"ns-b/web", "ns-c/web"} {
+			if backendExists(dw, loser) {
+				dw.shutdown()
+				t.Fatalf("round %d: %q must stay suppressed while ns-a/web holds the bare name", i, loser)
+			}
+		}
+		dw.shutdown()
+	}
+}
+
+// TestDiscoveryWatcher_NoSkipWarnWhenSurvivorPromotedSameReconcile pins the
+// discovery WARN against the healthy same-name handoff. The add pass runs
+// before the remove pass, so in the reconcile that drops the winner the
+// survivor is still suppressed by the departing owner - and the second add pass
+// (run once the removal frees the name) adopts it a few statements later in the
+// SAME call. Logging the skip eagerly therefore emitted "skipping discovered
+// Service" for a Service that was in fact adopted microseconds later, byte
+// identical to the genuine permanent-suppression WARN, so operators alerting on
+// discovery WARNs got a false positive on every healthy handoff. A skip may only
+// be reported once the whole reconcile has settled.
+func TestDiscoveryWatcher_NoSkipWarnWhenSurvivorPromotedSameReconcile(t *testing.T) {
+	t.Parallel()
+	sel, _ := labels.Parse("app=web")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var buf bytes.Buffer
+	dw := NewBackendDiscoveryWatcher(fake.NewClientset(), "", true, sel, "", nil)
+	dw.log = slog.New(slog.NewTextHandler(&buf, nil))
+	defer dw.shutdown()
+
+	svc1 := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	svc2 := makeDiscoverableService("ns2", "web", map[string]string{"app": "web"})
+
+	// Genuine suppression: both Services listed, ns1/web wins, ns2/web stays
+	// suppressed for the rest of this reconcile - that WARN must still be logged.
+	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{svc1, svc2}})
+	if !strings.Contains(buf.String(), "skipping discovered Service") {
+		t.Fatalf("a Service that stays suppressed must still be warned about, got log: %q", buf.String())
+	}
+
+	// Handoff reconcile: the winner stops matching and the survivor takes over
+	// the bare name within this same call.
+	buf.Reset()
+	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{svc2}})
+
+	if !backendExists(dw, "ns2/web") {
+		t.Fatalf("survivor ns2/web must be adopted in the winner's removal reconcile, log: %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "skipping discovered Service") {
+		t.Errorf("no skip WARN may be logged for ns2/web: the same reconcile adopts it, "+
+			"and the line is indistinguishable from genuine suppression; got log: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "discovered backend Service") {
+		t.Errorf("expected the adoption to be logged, got: %q", buf.String())
+	}
+}
+
+// TestDiscoveryWatcher_SyncAfterShutdownReleasesLock pins the guarantee
+// shutdown()'s doc advertises: it "is a no-op once backends has been cleared
+// (the syncServices nil-guard covers any racing callback)". An informer
+// callback or a NameRegistry kick can land after shutdown() nilled
+// dw.backends; syncServices then takes dw.mu, sees the nil map and bails out -
+// and that early return MUST release the lock. The suite executed the branch
+// but never observed its lock state, so deleting just its dw.mu.Unlock()
+// passed everything including goleak (nothing blocks until some later caller
+// tries to lock), while in production the first post-shutdown callback wedged
+// dw.mu forever: every later reconcile, shutdown and InitialState read would
+// block on it.
+func TestDiscoveryWatcher_SyncAfterShutdownReleasesLock(t *testing.T) {
+	t.Parallel()
+	sel, _ := labels.Parse("app=web")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	dw := NewBackendDiscoveryWatcher(fake.NewClientset(), "ns1", false, sel, "", nil)
+	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+	lister := &stubServiceLister{services: []*corev1.Service{svc}}
+
+	dw.syncServices(ctx, lister)
+	dw.shutdown()
+
+	// The racing callback. It returns even when the nil-guard forgets to
+	// unlock, so the lock state has to be checked directly.
+	dw.syncServices(ctx, lister)
+
+	if !dw.mu.TryLock() {
+		t.Fatal("the post-shutdown nil-guard left dw.mu held: every later reconcile, " +
+			"shutdown and InitialState read would block on it forever")
+	}
+	dw.mu.Unlock()
+
+	// ...and the watcher stays usable: another late callback plus the idempotent
+	// second shutdown must not block either.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		dw.syncServices(ctx, lister)
+		dw.shutdown()
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a second post-shutdown reconcile blocked: dw.mu was never released by the nil-guard")
+	}
+}
+
+// TestDiscoveryWatcher_RemovedBackendChildWatcherStopped pins the per-backend
+// teardown in the removal pass. When a Service stops matching, syncServices
+// must cancel that backend's child context - stopping its BackendWatcher, its
+// shared informer factory, the reflector goroutines and the open EndpointSlice
+// watch against the API server - not merely drop it from the map. goleak gives
+// no cover here: every test's child context descends from the test's own
+// context, so by the time goleak checks at TestMain exit the parent cancel has
+// already stopped the children. Deleting mb.cancel() from the removal pass
+// therefore passed the whole suite (including -race) while a long-lived
+// controller leaked one BackendWatcher per removed or rescaled Service for the
+// process lifetime.
+func TestDiscoveryWatcher_RemovedBackendChildWatcherStopped(t *testing.T) {
+	t.Parallel()
+	sel, _ := labels.Parse("app=web")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	dw := NewBackendDiscoveryWatcher(fake.NewClientset(), "ns1", false, sel, "", nil)
+	defer dw.shutdown()
+	svc := makeDiscoverableService("ns1", "web", map[string]string{"app": "web"})
+
+	dw.syncServices(ctx, &stubServiceLister{services: []*corev1.Service{svc}})
+	dw.mu.Lock()
+	mb := dw.backends["ns1/web"]
+	dw.mu.Unlock()
+	if mb == nil {
+		t.Fatal("precondition: ns1/web must be managed after the first reconcile")
+	}
+
+	// The Service stops matching (deleted, rescaled away, labels changed).
+	dw.syncServices(ctx, &stubServiceLister{})
+	if backendExists(dw, "ns1/web") {
+		t.Fatal("precondition: ns1/web must be dropped when it no longer matches")
+	}
+
+	select {
+	case <-mb.ctx.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("removed backend's child context is still live: its BackendWatcher, informer " +
+			"factory and EndpointSlice watch leak for the lifetime of the process")
+	}
 }

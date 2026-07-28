@@ -13,7 +13,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"sigs.k8s.io/yaml"
 )
 
 // ConfigMapWatcher watches a single ConfigMap by name and emits its data
@@ -106,12 +105,7 @@ func (w *ConfigMapWatcher) sync(lister corelisters.ConfigMapLister) {
 
 	parsed := make(map[string]any, len(cm.Data))
 	for k, v := range cm.Data {
-		var val any
-		err := yaml.Unmarshal([]byte(v), &val)
-		if err != nil {
-			val = v // fallback to raw string on parse error
-		}
-		parsed[k] = val
+		parsed[k] = decodeValue([]byte(v))
 	}
 
 	w.sendLocked(parsed)

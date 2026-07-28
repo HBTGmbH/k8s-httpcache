@@ -2973,6 +2973,45 @@ func TestParseBroadcastWriteTimeoutDisabledExempt(t *testing.T) {
 	}
 }
 
+// TestParseBroadcastWriteTimeoutOverflow verifies the write > read + client
+// invariant survives int64 overflow: [time.ParseDuration] accepts durations up to
+// the int64 nanosecond limit and each duration flag is only checked for sign, so
+// adding read + client directly wrapped to a large negative duration and the
+// mandatory cross-flag check documented on the flag was silently skipped.
+func TestParseBroadcastWriteTimeoutOverflow(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		read   string
+		client string
+	}{
+		// math.MaxInt64 ns; + any positive client timeout wraps negative.
+		{name: "read at max duration", read: "2562047h47m16.854775807s", client: "1s"},
+		{name: "client near max duration", read: "1s", client: "2562047h47m16s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vcl := makeTempVCL(t)
+			_, err := Parse("", []string{
+				"test",
+				"--service-name=my-svc",
+				"--namespace=default",
+				"--vcl-template=" + vcl,
+				"--broadcast-read-timeout=" + tt.read,
+				"--broadcast-client-timeout=" + tt.client,
+				"--broadcast-write-timeout=1s", // far below read + client
+			})
+			if err == nil {
+				t.Fatal("expected error: --broadcast-write-timeout must exceed read + client even when their sum overflows int64")
+			}
+			if !strings.Contains(err.Error(), "--broadcast-write-timeout") {
+				t.Errorf("error = %q, want substring '--broadcast-write-timeout'", err)
+			}
+		})
+	}
+}
+
 func TestParseVCLReloadRetryIntervalNegative(t *testing.T) {
 	t.Parallel()
 	vcl := makeTempVCL(t)
@@ -3651,6 +3690,75 @@ func TestParseVarnishstatExportFilter(t *testing.T) {
 	want := []string{"MAIN", "SMA"}
 	if !slices.Equal(cfg.VarnishstatExportFilter, want) {
 		t.Errorf("VarnishstatExportFilter = %v, want %v", cfg.VarnishstatExportFilter, want)
+	}
+}
+
+// TestParseVarnishstatExportFilterCommaSyntax pins the comma-separated form the
+// flag help and README document. The root command sets DisableSliceFlagSeparator
+// (so varnishd pass-through args are never split), which used to make
+// "--varnishstat-export-filter=MAIN,SMA,VBE" arrive as the single literal group
+// "MAIN,SMA,VBE"; that matches no varnishstat counter prefix, so the exporter
+// silently served zero varnish_* counters while varnish_up stayed 1.
+func TestParseVarnishstatExportFilterCommaSyntax(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "comma separated",
+			args: []string{"--varnishstat-export-filter=MAIN,SMA,VBE"},
+			want: []string{"MAIN", "SMA", "VBE"},
+		},
+		{
+			name: "comma separated with spaces",
+			args: []string{"--varnishstat-export-filter=MAIN, SMA"},
+			want: []string{"MAIN", "SMA"},
+		},
+		{
+			name: "repeated flags still work",
+			args: []string{"--varnishstat-export-filter=MAIN", "--varnishstat-export-filter=SMA"},
+			want: []string{"MAIN", "SMA"},
+		},
+		{
+			name: "repeated flags mixed with commas",
+			args: []string{"--varnishstat-export-filter=MAIN,SMA", "--varnishstat-export-filter=VBE"},
+			want: []string{"MAIN", "SMA", "VBE"},
+		},
+		{
+			// "empty exports all" per the flag help and README: an empty value
+			// used to yield []string{""}, a group no counter can match, so it
+			// exported nothing while logging the same filter=[] as no filter.
+			name: "empty value exports all",
+			args: []string{"--varnishstat-export-filter="},
+			want: nil,
+		},
+		{
+			name: "trailing comma drops the empty group",
+			args: []string{"--varnishstat-export-filter=MAIN,"},
+			want: []string{"MAIN"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vcl := makeTempVCL(t)
+			args := append([]string{
+				"test",
+				"--service-name=my-svc",
+				"--namespace=default",
+				"--vcl-template=" + vcl,
+				"--varnishstat-export",
+			}, tt.args...)
+			cfg, err := Parse("", args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(cfg.VarnishstatExportFilter, tt.want) {
+				t.Errorf("VarnishstatExportFilter = %#v, want %#v", cfg.VarnishstatExportFilter, tt.want)
+			}
+		})
 	}
 }
 
@@ -4830,6 +4938,100 @@ func TestParseBroadcastTargetUnixSocketRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "unix domain socket") {
 		t.Errorf("error = %q, want the UDS broadcast-target rejection", err)
 	}
+}
+
+// TestParseBroadcastTargetProxyListenerRejected verifies a PROXY-protocol
+// listener cannot be named as the broadcast fan-out target. The fan-out opens a
+// plain HTTP connection to sibling pods, but a varnishd PROXY listener drops any
+// session that does not start with a v1/v2 preamble (verified on varnish 6.6,
+// 7.7, 8.0 and 9.0), so every PURGE/BAN failed at the transport level while the
+// broadcast endpoint still answered 200 OK - cache invalidation was silently
+// broken fleet-wide.
+func TestParseBroadcastTargetProxyListenerRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=http=:8080,HTTP",
+		"--listen-addr=proxy=:8081,PROXY",
+		"--broadcast-target-listen-addr=proxy",
+	})
+	if err == nil {
+		t.Fatal("expected error when the broadcast target is a PROXY-protocol listener")
+	}
+	if !strings.Contains(err.Error(), "PROXY") {
+		t.Errorf("error = %q, want the PROXY broadcast-target rejection", err)
+	}
+}
+
+// TestParseBroadcastTargetDefaultProxyListenerRejected covers the same defect on
+// the default path: with no --broadcast-target-listen-addr the first listen
+// address is used with no inspection at all, so a PROXY-first deployment (the
+// natural NLB/HAProxy proxy-protocol setup) silently got a fan-out target it
+// cannot speak plain HTTP to.
+func TestParseBroadcastTargetDefaultProxyListenerRejected(t *testing.T) {
+	t.Parallel()
+	vcl := makeTempVCL(t)
+	_, err := Parse("", []string{
+		"test",
+		"--service-name=my-svc",
+		"--namespace=default",
+		"--vcl-template=" + vcl,
+		"--listen-addr=:8080,PROXY",
+	})
+	if err == nil {
+		t.Fatal("expected error when the default broadcast target is a PROXY-protocol listener")
+	}
+	if !strings.Contains(err.Error(), "PROXY") {
+		t.Errorf("error = %q, want the PROXY broadcast-target rejection", err)
+	}
+}
+
+// TestParseProxyListenerAllowedWhenNotBroadcastTarget verifies the PROXY
+// rejection is scoped to the fan-out target: a PROXY listener alongside an HTTP
+// one, and a PROXY-only listener with the broadcast server disabled, are both
+// valid varnishd configurations and must still parse.
+func TestParseProxyListenerAllowedWhenNotBroadcastTarget(t *testing.T) {
+	t.Parallel()
+	t.Run("proxy listener is not the target", func(t *testing.T) {
+		t.Parallel()
+		vcl := makeTempVCL(t)
+		cfg, err := Parse("", []string{
+			"test",
+			"--service-name=my-svc",
+			"--namespace=default",
+			"--vcl-template=" + vcl,
+			"--listen-addr=http=:8080,HTTP",
+			"--listen-addr=proxy=:8081,PROXY",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.BroadcastTargetPort != 8080 {
+			t.Errorf("BroadcastTargetPort = %d, want 8080 (the HTTP listener)", cfg.BroadcastTargetPort)
+		}
+	})
+	t.Run("proxy only with broadcast disabled", func(t *testing.T) {
+		t.Parallel()
+		vcl := makeTempVCL(t)
+		cfg, err := Parse("", []string{
+			"test",
+			"--service-name=my-svc",
+			"--namespace=default",
+			"--vcl-template=" + vcl,
+			"--listen-addr=:8080,PROXY",
+			"--broadcast-addr=none",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cfg.ListenAddrs) != 1 || cfg.ListenAddrs[0].Port != 8080 {
+			t.Errorf("ListenAddrs = %+v, want the PROXY listener on port 8080", cfg.ListenAddrs)
+		}
+	})
 }
 
 // TestParseTemplateDelimsIdenticalRejected verifies identical left/right

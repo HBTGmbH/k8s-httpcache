@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"sigs.k8s.io/yaml"
 )
 
 // FileValuesWatcher polls a filesystem directory for .yaml/.yml files and
@@ -93,10 +91,11 @@ func (w *FileValuesWatcher) scan() {
 	const maxScanAttempts = 3
 
 	var parsed map[string]any
+	var unreadable []string
 	haveSnapshot := false
 	for attempt := range maxScanAttempts {
 		dataBefore, dataErr := os.Readlink(filepath.Join(w.dir, k8sDataSymlink))
-		p, ok := w.readFiles()
+		p, missed, ok := w.readFiles()
 		if !ok {
 			// Transient ReadDir failure (e.g. volume remount). A prior pass of
 			// THIS scan already read a complete snapshot (we only looped
@@ -117,12 +116,12 @@ func (w *FileValuesWatcher) scan() {
 			synced := w.synced
 			w.mu.Unlock()
 			if !synced {
-				w.send(nil)
+				w.send(nil, nil)
 			}
 
 			return
 		}
-		parsed = p
+		parsed, unreadable = p, missed
 		haveSnapshot = true
 		if dataErr != nil {
 			break // no ..data symlink - nothing to recheck
@@ -138,19 +137,23 @@ func (w *FileValuesWatcher) scan() {
 		}
 	}
 
-	w.send(parsed)
+	w.send(parsed, unreadable)
 }
 
 // readFiles reads all value files in one pass. It returns ok=false when the
-// directory listing itself failed; per-file errors only skip that file.
-func (w *FileValuesWatcher) readFiles() (map[string]any, bool) {
+// directory listing itself failed. Files that were listed but could not be
+// read are reported by key in the second result: they are absent from the
+// parsed map, and send carries their last delivered value forward instead of
+// treating the gap as a deletion.
+func (w *FileValuesWatcher) readFiles() (map[string]any, []string, bool) {
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
 		slog.Error("reading values directory", "dir", w.dir, "error", err)
 
-		return nil, false
+		return nil, nil, false
 	}
 
+	var unreadable []string
 	parsed := make(map[string]any)
 	for _, e := range entries {
 		if e.IsDir() {
@@ -168,9 +171,12 @@ func (w *FileValuesWatcher) readFiles() (map[string]any, bool) {
 			continue
 		}
 
+		key := strings.TrimSuffix(name, ext)
+
 		data, err := os.ReadFile(filepath.Join(w.dir, name))
 		if err != nil {
 			slog.Error("reading values file", "file", name, "error", err)
+			unreadable = append(unreadable, key)
 
 			continue
 		}
@@ -178,22 +184,36 @@ func (w *FileValuesWatcher) readFiles() (map[string]any, bool) {
 			w.testHookAfterRead(name)
 		}
 
-		var val any
-		unmarshalErr := yaml.Unmarshal(data, &val)
-		if unmarshalErr != nil {
-			val = string(data) // fallback to raw string on parse error
-		}
-
-		key := strings.TrimSuffix(name, ext)
-		parsed[key] = val
+		parsed[key] = decodeValue(data)
 	}
 
-	return parsed, true
+	return parsed, unreadable, true
 }
 
-func (w *FileValuesWatcher) send(data map[string]any) {
+// send delivers a snapshot, first restoring the last delivered value of every
+// key whose file could not be read this pass. data is nil only on the
+// ReadDir-failure path, which reports no unreadable files, so the restore
+// never writes to a nil map.
+func (w *FileValuesWatcher) send(data map[string]any, unreadable []string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	// A file that ReadDir listed but ReadFile could not read is a transient
+	// failure (EACCES from a restrictive volume defaultMode, EMFILE under fd
+	// pressure, EIO on a networked volume), never a deletion - a deleted file
+	// leaves the listing. Publishing the snapshot without the key would make
+	// the truncated map the new dedup baseline and reload Varnish with a VCL
+	// rendered without that value, the exact wipe the ReadDir branch in scan
+	// refuses to perform. A key that was never delivered has nothing to carry
+	// forward and stays absent.
+	for _, key := range unreadable {
+		prev, held := w.previous[key]
+		if !held {
+			continue
+		}
+		data[key] = prev
+		slog.Warn("keeping the last delivered value for an unreadable values file", "key", key)
+	}
 
 	// reflect.DeepEqual is deliberate; see ConfigMapWatcher.send for why a
 	// content hash is not used on this dedup path.

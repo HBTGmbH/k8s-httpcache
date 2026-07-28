@@ -53,6 +53,10 @@ jobs:
             - 'go.sum'
           ci:
             - '.github/**'
+            # The script selftests assert the release-please wiring (chart
+            # appVersion sync), so a change to it has to run them.
+            - 'release-please-config.json'
+            - '.release-please-manifest.json'
           helm:
             - 'charts/**'
           yaml:
@@ -568,6 +572,21 @@ jobs:
           echo "::error::charts/k8s-httpcache/README.md is out of date; run helm-docs and commit it."
           exit 1
         fi
+
+  secret-scan:
+    name: Secret scan
+    # Deliberately ungated - no `needs:` and no `if:`. This is the repo's only
+    # secret scan and it must run on every push and PR. It used to be a step of
+    # the path-filtered `lint` job, where a change matching none of the
+    # paths-filter patterns (release-please-config.json, a new root .env, a new
+    # deploy/*.json, ...) skipped the job and the scan with it, while ci-gate
+    # counted the skip as a pass and the PR went green.
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      with:
+        persist-credentials: false
     - name: Restore gitleaks
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       id: gitleaks
@@ -591,7 +610,6 @@ jobs:
       # Scan the working tree for committed secrets on every change; documented
       # false positives are allowlisted in .gitleaks.toml.
       run: ~/tools/gitleaks dir . --redact --no-banner
-
 
   go-build:
     name: Build binaries
@@ -856,7 +874,7 @@ jobs:
     # check would block PRs forever, so the ruleset requires this job instead.
     # It fails only when a job it depends on actually failed or was cancelled;
     # legitimately skipped jobs are treated as passing.
-    needs: [changes, unit-test, lint, go-build, test]
+    needs: [changes, unit-test, lint, secret-scan, go-build, test]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}

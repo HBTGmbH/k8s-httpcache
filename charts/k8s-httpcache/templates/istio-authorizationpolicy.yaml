@@ -1,4 +1,13 @@
 {{- if .Values.istio.authorizationPolicy.enabled -}}
+{{- /* Istio treats a policy without rules as "the match will never occur"
+       (istiod synthesizes an explicit never-matching RBAC policy), so an ALLOW
+       policy with the default empty rules selects the cache pods and denies
+       EVERY request with "RBAC: access denied" - client traffic on the http
+       port, the broadcast fan-out and in-mesh metrics scrapes alike. For DENY
+       and AUDIT the same emptiness makes the policy a silent no-op. */}}
+{{- if not .Values.istio.authorizationPolicy.rules }}
+{{- fail "istio.authorizationPolicy.enabled requires istio.authorizationPolicy.rules: Istio never matches a policy with no rules, so an ALLOW policy denies all traffic to the cache pods (and DENY/AUDIT do nothing at all); use rules: [{}] to allow every request explicitly" }}
+{{- end }}
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:

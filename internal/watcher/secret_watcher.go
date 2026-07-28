@@ -13,7 +13,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"sigs.k8s.io/yaml"
 )
 
 // SecretWatcher watches a single Secret by name and emits its data
@@ -106,12 +105,7 @@ func (w *SecretWatcher) sync(lister corelisters.SecretLister) {
 
 	parsed := make(map[string]any, len(secret.Data))
 	for k, v := range secret.Data {
-		var val any
-		err := yaml.Unmarshal(v, &val)
-		if err != nil {
-			val = string(v) // fallback to raw string on parse error
-		}
-		parsed[k] = val
+		parsed[k] = decodeValue(v)
 	}
 
 	w.sendLocked(parsed)

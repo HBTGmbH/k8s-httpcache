@@ -393,17 +393,16 @@ func TestRunExitPatternRunsDeferredCleanup(t *testing.T) {
 // --- Mock types for runLoop tests ---
 
 type mockRenderer struct {
-	mu             sync.Mutex
-	reloadFn       func() error
-	renderFn       func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error)
-	renderToFileFn func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error)
-	rollbackFn     func()
-	commitFn       func()
-	reloadCount    int
-	renderCount    int
-	rollbackCount  int
-	commitCount    int
-	lastBackends   map[string]renderer.BackendGroup
+	mu            sync.Mutex
+	reloadFn      func() error
+	renderFn      func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error)
+	rollbackFn    func()
+	commitFn      func()
+	reloadCount   int
+	renderCount   int
+	rollbackCount int
+	commitCount   int
+	lastBackends  map[string]renderer.BackendGroup
 }
 
 func (m *mockRenderer) Reload() error {
@@ -430,19 +429,6 @@ func (m *mockRenderer) Render(fe []watcher.Frontend, be map[string]renderer.Back
 	}
 
 	return fmt.Sprintf("vcl 4.1; /* render %d */", rc), nil
-}
-
-func (m *mockRenderer) RenderToFile(fe []watcher.Frontend, be map[string]renderer.BackendGroup, vals, secrets map[string]map[string]any) (string, error) {
-	m.mu.Lock()
-	m.renderCount++
-	m.lastBackends = maps.Clone(be)
-	fn := m.renderToFileFn
-	m.mu.Unlock()
-	if fn != nil {
-		return fn(fe, be, vals, secrets)
-	}
-
-	return "test.vcl", nil
 }
 
 func (m *mockRenderer) Rollback() {
@@ -477,6 +463,15 @@ func (m *mockRenderer) counts() (int, int, int) {
 	defer m.mu.Unlock()
 
 	return m.reloadCount, m.renderCount, m.rollbackCount
+}
+
+// rejectedVCLErr builds the error a mock manager returns to simulate varnishd
+// REJECTING the VCL itself (a VCC compile error). Only a rejection may trigger
+// a template rollback: a bare [errors.New] models a transport-level CLI failure
+// (vcl.use error, wedged admin socket, CLI timeout), which says nothing about
+// the VCL's validity and must leave the swapped template in place.
+func rejectedVCLErr(msg string) error {
+	return fmt.Errorf("%w: %s", varnish.ErrVCLRejected, msg)
 }
 
 type mockManager struct {
@@ -803,7 +798,7 @@ func TestRunLoop_ReloadZeroFrontends(t *testing.T) {
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
-		t.Fatal("expected RenderToFile to be called for zero frontends")
+		t.Fatal("expected Render to be called for zero frontends")
 	}
 
 	code := wait()
@@ -925,7 +920,7 @@ func TestRunLoop_BackendUpdateTriggersReload(t *testing.T) {
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
-		t.Fatal("expected RenderToFile after backend update")
+		t.Fatal("expected Render after backend update")
 	}
 
 	// Verify metrics.
@@ -960,7 +955,7 @@ func TestRunLoop_ValuesUpdateTriggersReload(t *testing.T) {
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
-		t.Fatal("expected RenderToFile after values update")
+		t.Fatal("expected Render after values update")
 	}
 
 	// Verify metric.
@@ -1043,7 +1038,7 @@ func TestRunLoop_SecretsUpdateTriggersReload(t *testing.T) {
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount < 1 {
-		t.Fatal("expected RenderToFile after secrets update")
+		t.Fatal("expected Render after secrets update")
 	}
 
 	// Verify metric.
@@ -1181,7 +1176,7 @@ func TestRunLoop_TemplateChangeTriggersReparse(t *testing.T) {
 		t.Fatal("expected rend.Reload() to be called on template change")
 	}
 	if renderCount < 1 {
-		t.Fatal("expected RenderToFile after template change")
+		t.Fatal("expected Render after template change")
 	}
 
 	// Verify metrics.
@@ -1211,11 +1206,11 @@ func TestRunLoop_TemplateParseErrorKeepsOld(t *testing.T) {
 		_, rc, _ := h.rend.counts()
 
 		return rc >= 1
-	}, "RenderToFile called")
+	}, "Render called")
 
 	_, renderCount, rollbackCount := h.rend.counts()
 	if renderCount < 1 {
-		t.Fatal("expected RenderToFile to still be called with old template")
+		t.Fatal("expected Render to still be called with old template")
 	}
 	if rollbackCount != 0 {
 		t.Fatal("expected no Rollback when template parse fails (old template kept)")
@@ -1316,7 +1311,7 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 	var mgrCalls atomic.Int32
 	h.mgr.reloadFn = func(_ string) error {
 		if mgrCalls.Add(1) == 1 {
-			return errors.New("varnish reload error")
+			return rejectedVCLErr("varnish reload error")
 		}
 
 		return nil
@@ -1327,7 +1322,7 @@ func TestRunLoop_VarnishReloadErrorTriggersRollback(t *testing.T) {
 
 	wait := h.runAndWait(h.bcast)
 
-	// Template change → Reload succeeds → RenderToFile succeeds →
+	// Template change → Reload succeeds → Render succeeds →
 	// mgr.Reload fails → Rollback → retry render → retry mgr.Reload
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "retry mgr.Reload after rollback")
@@ -1400,15 +1395,15 @@ func TestRunLoop_RollbackReloadError(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness()
 	h.mgr.reloadFn = func(_ string) error {
-		return errors.New("varnish always rejects")
+		return rejectedVCLErr("varnish always rejects")
 	}
 	reloadErrBefore := getCounterValue(t, "error", h.metrics.VCLReloadsTotal)
 	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
 
 	wait := h.runAndWait(h.bcast)
 
-	// Template change → rend.Reload ok → RenderToFile ok → mgr.Reload fails →
-	// Rollback → retry RenderToFile ok → retry mgr.Reload fails again → continue
+	// Template change → rend.Reload ok → Render ok → mgr.Reload fails →
+	// Rollback → retry Render ok → retry mgr.Reload fails again → continue
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "mgr.Reload called twice")
 
@@ -1510,7 +1505,7 @@ func TestRunLoop_RenderErrorNoRollbackWithoutTemplateChange(t *testing.T) {
 
 	_, renderCount, rollbackCount := h.rend.counts()
 	if renderCount < 1 {
-		t.Fatal("expected RenderToFile to be called")
+		t.Fatal("expected Render to be called")
 	}
 	if rollbackCount != 0 {
 		t.Fatal("expected no Rollback on render error without template change")
@@ -1537,7 +1532,7 @@ func TestRunLoop_VarnishReloadErrorNoRollbackWithoutTemplateChange(t *testing.T)
 
 	wait := h.runAndWait(h.bcast)
 
-	// Frontend update → RenderToFile ok → mgr.Reload fails → no Rollback.
+	// Frontend update → Render ok → mgr.Reload fails → no Rollback.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 1 }, "mgr.Reload called")
 
@@ -1680,7 +1675,7 @@ func TestRunLoop_RetryRenderAfterRollbackFails(t *testing.T) {
 		return "vcl 4.1; /* retry */", nil
 	}
 	h.mgr.reloadFn = func(_ string) error {
-		return errors.New("varnish reload error")
+		return rejectedVCLErr("varnish reload error")
 	}
 	reloadErrBefore := getCounterValue(t, "error", h.metrics.VCLReloadsTotal)
 	rollbackBefore := getSingleCounterValue(t, h.metrics.VCLRollbacksTotal)
@@ -1812,7 +1807,7 @@ func TestRunLoop_DebounceCoalescing(t *testing.T) {
 
 	_, renderCount, _ := h.rend.counts()
 	if renderCount != 1 {
-		t.Fatalf("expected exactly 1 RenderToFile call (coalesced), got %d", renderCount)
+		t.Fatalf("expected exactly 1 Render call (coalesced), got %d", renderCount)
 	}
 	if h.mgr.getReloadCount() != 1 {
 		t.Fatalf("expected exactly 1 mgr.Reload call (coalesced), got %d", h.mgr.getReloadCount())
@@ -1852,7 +1847,7 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 		}
 	}()
 
-	// Track the values passed to RenderToFile.
+	// Track the values passed to Render.
 	var (
 		renderMu     sync.Mutex
 		renderedVals []map[string]map[string]any
@@ -1895,7 +1890,7 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			t.Fatal("timeout waiting for RenderToFile after file change")
+			t.Fatal("timeout waiting for Render after file change")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -1909,9 +1904,10 @@ func TestRunLoop_FileValuesWatcherUpdateTriggersRerender(t *testing.T) {
 	if !ok {
 		t.Fatal("expected 'tuning' key in rendered values")
 	}
-	// sigs.k8s.io/yaml parses "600" as float64(600).
-	if ttl, ok := tuning["ttl"].(float64); !ok || ttl != 600 {
-		t.Errorf("expected ttl=600 (float64), got %v (%T)", tuning["ttl"], tuning["ttl"])
+	// Integral values decode to int64 so they render verbatim into the VCL
+	// (a float64 switches to scientific notation at 1e6; see decodeValue).
+	if ttl, ok := tuning["ttl"].(int64); !ok || ttl != 600 {
+		t.Errorf("expected ttl=600 (int64), got %v (%T)", tuning["ttl"], tuning["ttl"])
 	}
 
 	code := wait()
@@ -1939,7 +1935,7 @@ func TestRunLoop_BroadcastDisabled(t *testing.T) {
 		_, rc, _ := h.rend.counts()
 
 		return rc >= 1
-	}, "RenderToFile called")
+	}, "Render called")
 
 	// Signal shutdown with nil bcast - no panic.
 	h.sigCh <- syscall.SIGTERM
@@ -2461,7 +2457,7 @@ func TestRunLoop_FileWatchDisabledTemplateChangeIgnored(t *testing.T) {
 		t.Fatalf("expected 0 rend.Reload calls, got %d", reloadCount)
 	}
 	if renderCount != 0 {
-		t.Fatalf("expected 0 RenderToFile calls, got %d", renderCount)
+		t.Fatalf("expected 0 Render calls, got %d", renderCount)
 	}
 	if h.mgr.getReloadCount() != 0 {
 		t.Fatalf("expected 0 mgr.Reload calls, got %d", h.mgr.getReloadCount())
@@ -2533,7 +2529,7 @@ func TestRunLoop_FileWatchDisabledValuesDirChangeIgnored(t *testing.T) {
 	}
 	_, renderCount, _ := h.rend.counts()
 	if renderCount != 0 {
-		t.Fatalf("expected 0 RenderToFile calls, got %d", renderCount)
+		t.Fatalf("expected 0 Render calls, got %d", renderCount)
 	}
 
 	// Clean shutdown.
@@ -2568,7 +2564,7 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 		t.Fatal("timeout waiting for initial FileValuesWatcher state")
 	}
 
-	// Track values passed to RenderToFile.
+	// Track values passed to Render.
 	var (
 		renderMu     sync.Mutex
 		renderedVals map[string]map[string]any
@@ -2610,16 +2606,16 @@ func TestRunLoop_FileWatchDisabledValuesDirInitialStateAvailable(t *testing.T) {
 		defer renderMu.Unlock()
 
 		return renderedVals != nil
-	}, "RenderToFile called")
+	}, "Render called")
 
-	// Assert RenderToFile was called with latestValues containing
+	// Assert Render was called with latestValues containing
 	// dirtest.greeting == "hello".
 	renderMu.Lock()
 	vals := renderedVals
 	renderMu.Unlock()
 
 	if vals == nil {
-		t.Fatal("expected RenderToFile to be called")
+		t.Fatal("expected Render to be called")
 	}
 	dirtest, ok := vals["dirtest"]
 	if !ok {
@@ -4295,7 +4291,7 @@ func TestRunLoop_EventReasonAfterRollback(t *testing.T) {
 	var mgrCalls atomic.Int32
 	h.mgr.reloadFn = func(_ string) error {
 		if mgrCalls.Add(1) == 1 {
-			return errors.New("varnish reload error")
+			return rejectedVCLErr("varnish reload error")
 		}
 
 		return nil
@@ -4417,7 +4413,7 @@ func TestRunLoop_EventRenderFailedAfterRollback(t *testing.T) {
 	var mgrCalls atomic.Int32
 	h.mgr.reloadFn = func(_ string) error {
 		if mgrCalls.Add(1) == 1 {
-			return errors.New("varnish reload error")
+			return rejectedVCLErr("varnish reload error")
 		}
 
 		return nil
@@ -4482,7 +4478,7 @@ func TestRunLoop_EventReloadFailedAfterRollback(t *testing.T) {
 	h := newTestHarness()
 	rec := h.withRecorder()
 	h.mgr.reloadFn = func(_ string) error {
-		return errors.New("varnish always rejects")
+		return rejectedVCLErr("varnish always rejects")
 	}
 
 	wait := h.runAndWait(h.bcast)
@@ -5558,7 +5554,7 @@ func TestRunLoop_StatusStoreUpdatedOnPostRollbackReload(t *testing.T) {
 	var mgrCalls atomic.Int32
 	h.mgr.reloadFn = func(_ string) error {
 		if mgrCalls.Add(1) == 1 {
-			return errors.New("varnish reload error")
+			return rejectedVCLErr("varnish reload error")
 		}
 
 		return nil
@@ -5623,13 +5619,13 @@ func TestRunLoop_StatusStoreNotUpdatedOnRenderError(t *testing.T) {
 		close(done)
 	}()
 
-	// Frontend update → RenderToFile fails → no status update.
+	// Frontend update → Render fails → no status update.
 	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
 	waitFor(t, func() bool {
 		_, rc, _ := h.rend.counts()
 
 		return rc >= 1
-	}, "RenderToFile called")
+	}, "Render called")
 
 	snap := store.snapshot()
 	if snap.ReloadCount != 0 {
@@ -6116,7 +6112,7 @@ func TestRunLoop_BackendRemovedDeletesFromLatest(t *testing.T) {
 	}
 	waitFor(t, func() bool { return h.mgr.getReloadCount() >= 2 }, "second reload after removal")
 
-	// Verify the backend was removed by inspecting the last RenderToFile call.
+	// Verify the backend was removed by inspecting the last Render call.
 	h.rend.mu.Lock()
 	lastBackends := h.rend.lastBackends
 	h.rend.mu.Unlock()
@@ -8081,7 +8077,7 @@ func TestReadyzDialAddr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		la := config.ListenAddrSpec{Host: tt.host, Port: 8080}
-		if got := readyzDialAddr(la); got != tt.want {
+		if got := readyzDialAddr(&la); got != tt.want {
 			t.Errorf("readyzDialAddr(host=%q) = %q, want %q", tt.host, got, tt.want)
 		}
 	}
@@ -8139,8 +8135,10 @@ func TestShutdownBudget(t *testing.T) {
 		t.Errorf("lean shutdownBudget = %v, want 30s", got)
 	}
 
-	// --shutdown-timeout=0 means the varnishd wait is unbounded: no finite
-	// budget exists and no warning can be computed.
+	// --shutdown-timeout=0 means the varnishd wait is unbounded, so no finite
+	// budget exists. gracePeriodWarning handles that case explicitly rather
+	// than reading this 0 as "fits in any grace period" - see
+	// TestGracePeriodWarning_UnboundedShutdownStillWarns.
 	unbounded := &config.Config{Drain: true, DrainDelay: 15 * time.Second}
 	if got := shutdownBudget(unbounded); got != 0 {
 		t.Errorf("unbounded shutdownBudget = %v, want 0", got)
@@ -8229,7 +8227,7 @@ func TestRunLoopTemplateRollbackSurvivesTempFileFailure(t *testing.T) {
 
 		return fmt.Sprintf("vcl-body-%d", renders), nil
 	}
-	h.mgr.reloadFn = func(string) error { return errors.New("VCL compilation failed") }
+	h.mgr.reloadFn = func(string) error { return rejectedVCLErr("VCL compilation failed") }
 
 	// Break os.CreateTemp for the first attempt: point TMPDIR at a regular
 	// file. Restored explicitly once the first attempt has failed.
@@ -8345,6 +8343,11 @@ current-context: t
 		"--varnishd-path=" + varnishd,
 		"--varnishadm-path=" + varnishadm,
 		"--metrics-addr=none",
+		// Disable the broadcast server too: it otherwise binds the fixed
+		// default :8088 in a real subprocess, so this test failed whenever
+		// anything else on the machine held that port. Nothing here exercises
+		// the broadcast path.
+		"--broadcast-addr=none",
 		"--admin-timeout=2s", "--shutdown-timeout=2s", "--startup-timeout=30s",
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperRunMain$") //nolint:gosec // test re-exec of the test binary itself
@@ -8497,7 +8500,7 @@ func TestRunLoopSecondTemplateChangeDuringUnprovenSwapRollsBackToProven(t *testi
 			return nil
 		}
 
-		return errors.New("VCL compilation failed")
+		return rejectedVCLErr("VCL compilation failed")
 	}
 
 	// Break os.CreateTemp so reload attempts fail before reaching mgr.Reload:
@@ -8587,7 +8590,7 @@ func TestRunLoopCommitCalledOnProofSitesOnly(t *testing.T) {
 	// A rejected reload rolls back and must not commit.
 	mu.Lock()
 	renderBody = "vcl-other"
-	reloadErr = errors.New("VCL compilation failed")
+	reloadErr = rejectedVCLErr("VCL compilation failed")
 	mu.Unlock()
 	h.templateCh <- struct{}{}
 	waitFor(t, func() bool {
@@ -8601,6 +8604,703 @@ func TestRunLoopCommitCalledOnProofSitesOnly(t *testing.T) {
 
 	cancel()
 	h.sigCh <- syscall.SIGTERM
+	close(h.mgr.done)
+	<-done
+}
+
+// TestRunLoop_TransientReloadFailureRetriesNewTemplate pins that a mgr.Reload
+// failure which is NOT varnishd rejecting the VCL leaves the operator's new
+// template active and retries it.
+//
+// Treating every reload error as a rejection discarded the template
+// irreversibly: rend.Rollback() nils the renderer's saved copy, and watchFile's
+// baseline has already advanced to the new bytes, so no later event ever
+// re-reads the file. The rollback reload then succeeded and reported
+// vcl_reloads_total{result="success"} plus a Normal VCLReloaded event - so the
+// pod served the OLD template indefinitely while metrics, Events and /status
+// all claimed the reload had worked. In a multi-replica Deployment only the pod
+// that hit the transient error diverged.
+func TestRunLoop_TransientReloadFailureRetriesNewTemplate(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var active atomic.Value
+	active.Store("OLD")
+	h.rend.reloadFn = func() error {
+		active.Store("NEW")
+
+		return nil
+	}
+	h.rend.rollbackFn = func() { active.Store("OLD") }
+
+	var renders atomic.Int32
+	h.rend.renderFn = func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error) {
+		// Distinct output per render so the VCL-hash dedup never short-circuits.
+		return fmt.Sprintf("vcl 4.1; /* tmpl=%s n=%d */", active.Load(), renders.Add(1)), nil
+	}
+
+	var (
+		mu      sync.Mutex
+		applied []string
+		calls   atomic.Int32
+	)
+	h.mgr.reloadFn = func(path string) error {
+		contents, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("reading rendered VCL: %w", readErr)
+		}
+
+		mu.Lock()
+		applied = append(applied, string(contents))
+		mu.Unlock()
+
+		if calls.Add(1) == 1 {
+			// Transport-level failure (no ErrVCLRejected): the VCL never
+			// reached the compiler, so it says nothing about its validity.
+			return errors.New("CLI communication error (hdr)")
+		}
+
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+
+	lc := h.loopConfig(h.bcast)
+	lc.reloadRecoveryInitial = 5 * time.Millisecond
+	lc.reloadRecoveryMax = 10 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.templateCh <- struct{}{}
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return len(applied) >= 2
+	}, "a retry after the transient reload failure")
+
+	mu.Lock()
+	last := applied[len(applied)-1]
+	all := slices.Clone(applied)
+	mu.Unlock()
+
+	if !strings.Contains(last, "tmpl=NEW") {
+		t.Errorf("last VCL handed to varnishd = %q, want the NEW template to be retried; attempts=%v", last, all)
+	}
+	if _, _, rollbacks := h.rend.counts(); rollbacks != 0 {
+		t.Errorf("renderer rollbacks = %d, want 0: a transport failure must not discard the new template", rollbacks)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+// TestRunLoop_DrainDeadlineFiresWhileActiveSessionsBlocks pins that the drain
+// deadline stays observable while an ActiveSessions poll is in flight.
+//
+// handleDrain used to call lc.mgr.ActiveSessions() inline in the ticker arm of
+// its select. ActiveSessions shells out to varnishstat, which is bounded only by
+// the 60s CLI timeout, so a wedged or merely slow varnishstat blocked the whole
+// select: --drain-timeout could not expire, a varnishd exit went unnoticed and a
+// second SIGTERM could not abort the drain. The pod then sat in Terminating past
+// its grace period and was SIGKILLed mid-drain.
+func TestRunLoop_DrainDeadlineFiresWhileActiveSessionsBlocks(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	// A poll that never returns within the test's lifetime, modelling a wedged
+	// varnishstat bounded only by the CLI timeout.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	h.mgr.activeSessionsFn = func() (uint64, error) {
+		<-release
+
+		return 42, nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainPollInterval = 10 * time.Millisecond
+	lc.drainTimeout = 300 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return h.mgr.getSessionsCalls() > 0 }, "an ActiveSessions poll to start")
+
+	// The 300ms deadline must fire even though that poll never returns. Reaching
+	// ForwardSignal is what proves handleDrain returned.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(h.mgr.getForwardedSigs()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(h.mgr.getForwardedSigs()) == 0 {
+		t.Fatal("drain never finished: --drain-timeout was blocked behind an in-flight ActiveSessions poll")
+	}
+
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0 after drain timeout, got %d", result)
+	}
+}
+
+// TestRunLoop_SignalObservedDuringSlowReload pins that a shutdown signal is
+// acted on while a VCL reload is still in flight.
+//
+// mgr.Reload runs varnishadm and is bounded only by the 60s CLI timeout, times
+// (1 + --vcl-reload-retries) attempts - roughly four minutes by default. It used
+// to be called inline on the event-loop goroutine, so for that whole window the
+// loop could not select on sigCh: SIGTERM was accepted by the kernel and then
+// ignored until the reload finished. That routinely outlasts
+// terminationGracePeriodSeconds, so the kubelet SIGKILLed the controller with
+// varnishd never signalled - the exact ungraceful shutdown the drain flags exist
+// to prevent.
+func TestRunLoop_SignalObservedDuringSlowReload(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	reloadStarted := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var once sync.Once
+	h.mgr.reloadFn = func(string) error {
+		once.Do(func() { close(reloadStarted) })
+		<-release
+
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	// Trigger a reload and wait until it is genuinely in flight.
+	h.frontendCh <- []watcher.Frontend{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}}
+	select {
+	case <-reloadStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload never started")
+	}
+
+	h.sigCh <- syscall.SIGTERM
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(h.mgr.getForwardedSigs()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(h.mgr.getForwardedSigs()) == 0 {
+		t.Fatal("SIGTERM was not acted on while a reload was in flight")
+	}
+
+	close(h.mgr.done)
+	<-done
+}
+
+// TestGracePeriodWarning_UnboundedShutdownStillWarns pins that the
+// grace-period warning fires when --shutdown-timeout=0 makes the shutdown
+// budget UNBOUNDED.
+//
+// shutdownBudget returns 0 as a sentinel meaning "no finite budget exists", but
+// the caller only compared `budget > gracePeriod`. Since grace is never
+// negative, 0 > grace is always false, so the warning was suppressed in exactly
+// the configuration where the kubelet is guaranteed to SIGKILL varnishd
+// mid-drain. TestShutdownBudget pins the 0 sentinel, so the unit test looked
+// green while the guard was dead.
+func TestGracePeriodWarning_UnboundedShutdownStillWarns(t *testing.T) {
+	t.Parallel()
+
+	grace := int64(30)
+
+	bounded := &config.Config{
+		ShutdownTimeout: 30 * time.Second,
+		Drain:           true,
+		DrainDelay:      15 * time.Second,
+		DrainTimeout:    30 * time.Second,
+	}
+	if got := gracePeriodWarning(bounded, &grace); got == "" {
+		t.Error("bounded budget exceeding the grace period should warn, got no warning")
+	}
+
+	// Same drain phases (45s already), but the varnishd wait is now unbounded -
+	// strictly worse, so it must still warn.
+	unbounded := *bounded
+	unbounded.ShutdownTimeout = 0
+	if got := gracePeriodWarning(&unbounded, &grace); got == "" {
+		t.Error("--shutdown-timeout=0 is an UNBOUNDED shutdown; it must warn, got no warning")
+	}
+
+	// A budget that genuinely fits must stay quiet.
+	fits := &config.Config{ShutdownTimeout: 5 * time.Second}
+	if got := gracePeriodWarning(fits, &grace); got != "" {
+		t.Errorf("budget that fits should not warn, got %q", got)
+	}
+
+	// No pod spec available: nothing to compare against.
+	if got := gracePeriodWarning(bounded, nil); got != "" {
+		t.Errorf("nil grace period should not warn, got %q", got)
+	}
+}
+
+// TestRunLoop_NCSACrashLoopEmitsExplanatoryEvents pins that the Events
+// explaining a varnishncsa crash-loop exit actually reach the recorder.
+//
+// The manager queues VarnishncsaExited and VarnishncsaCrashLoop on the buffered
+// ncsaEvents channel and only THEN closes ncsaCrashed. Both select cases are
+// therefore ready at once, and Go picks uniformly at random: the ncsaCrashed arm
+// used to `return 1` without draining ncsaEvents, so roughly half of all
+// crash-loop exits produced no Kubernetes Event at all and `kubectl describe
+// pod` showed nothing about why the pod died. Twenty iterations make the old
+// behaviour fail with probability 1-2^-20.
+func TestRunLoop_NCSACrashLoopEmitsExplanatoryEvents(t *testing.T) {
+	t.Parallel()
+
+	for i := range 20 {
+		h := newTestHarness()
+		rec := h.withRecorder()
+
+		events := make(chan varnish.NCSAEvent, 8)
+		crashed := make(chan struct{})
+		lc := h.loopConfig(h.bcast)
+		lc.ncsaEvents = events
+		lc.ncsaCrashed = crashed
+		lc.shutdownTimeout = 50 * time.Millisecond
+
+		// Exactly the manager's ordering: queue the events, then close.
+		events <- varnish.NCSAEvent{Type: "Warning", Reason: "VarnishncsaExited", Message: "varnishncsa exited unexpectedly"}
+		events <- varnish.NCSAEvent{Type: "Warning", Reason: "VarnishncsaCrashLoop", Message: "crashed 3 times consecutively, giving up"}
+		close(crashed)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			runLoop(ctx, cancel, lc)
+			close(done)
+		}()
+
+		waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "shutdown to start")
+		close(h.mgr.done)
+		<-done
+
+		var seen []string
+		for {
+			select {
+			case e := <-rec.Events:
+				seen = append(seen, e)
+
+				continue
+			default:
+			}
+
+			break
+		}
+		joined := strings.Join(seen, " | ")
+		if !strings.Contains(joined, "VarnishncsaCrashLoop") {
+			t.Fatalf("iteration %d: no VarnishncsaCrashLoop Event recorded; the exit is unexplained in kubectl describe pod. events=%q", i, joined)
+		}
+	}
+}
+
+// TestPodNamespace pins that the controller's own Pod is looked up in the
+// namespace the Pod actually runs in, not the frontend Service's namespace.
+//
+// The event sink, the podRef and the pod Get all used cfg.ServiceNamespace.
+// With the supported cross-namespace form (--service-name=other-ns/frontend)
+// that is a DIFFERENT namespace from the controller's own, so the Get returned
+// Forbidden/NotFound, warnShortGracePeriod never ran (the grace-period guard
+// added by an earlier audit round was dead), and Events were written into the
+// foreign namespace against an involvedObject that does not exist there - so
+// `kubectl describe pod` showed nothing.
+func TestPodNamespace(t *testing.T) {
+	saFile := filepath.Join(t.TempDir(), "namespace")
+	err := os.WriteFile(saFile, []byte("release-ns\n"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("POD_NAMESPACE wins", func(t *testing.T) {
+		t.Setenv("POD_NAMESPACE", "downward-ns")
+		if got := podNamespace(saFile, "svc-ns"); got != "downward-ns" {
+			t.Errorf("podNamespace = %q, want the downward-API value %q", got, "downward-ns")
+		}
+	})
+
+	t.Run("service account namespace file is the fallback", func(t *testing.T) {
+		t.Setenv("POD_NAMESPACE", "")
+		if got := podNamespace(saFile, "svc-ns"); got != "release-ns" {
+			t.Errorf("podNamespace = %q, want the projected service-account namespace %q", got, "release-ns")
+		}
+	})
+
+	t.Run("falls back to the service namespace when neither is available", func(t *testing.T) {
+		t.Setenv("POD_NAMESPACE", "")
+		if got := podNamespace(filepath.Join(t.TempDir(), "absent"), "svc-ns"); got != "svc-ns" {
+			t.Errorf("podNamespace = %q, want the fallback %q", got, "svc-ns")
+		}
+	})
+}
+
+// TestWriteVCLTempFileReportsCloseError pins that a failure to CLOSE the
+// rendered VCL file is reported.
+//
+// The reload path wrote the VCL and then discarded f.Close()'s error entirely
+// (`_ = f.Close()`), unlike writeInitialVCLFile and renderer.RenderToFile which
+// both check it. On a filesystem that defers write errors to close (NFS, or a
+// full tmpfs - the chart mounts /tmp as a Memory emptyDir), a truncated VCL was
+// handed to varnishd as if it had been written successfully.
+//
+//nolint:paralleltest // swaps the package-level openVCLTemp seam
+func TestWriteVCLTempFileReportsCloseError(t *testing.T) {
+	original := openVCLTemp
+	t.Cleanup(func() { openVCLTemp = original })
+
+	path := filepath.Join(t.TempDir(), "rendered.vcl")
+	openVCLTemp = func() (vclTempFile, error) {
+		return &fakeVCLFile{name: path, closeErr: errors.New("input/output error")}, nil
+	}
+
+	got, err := writeVCLTempFile("vcl 4.1;")
+	if err == nil {
+		t.Fatalf("writeVCLTempFile = %q, nil; want the close error to be reported", got)
+	}
+	if !strings.Contains(err.Error(), "input/output error") {
+		t.Errorf("error = %v, want it to carry the close failure", err)
+	}
+}
+
+// fakeVCLFile lets the close-error branch be exercised deterministically.
+type fakeVCLFile struct {
+	name     string
+	closeErr error
+}
+
+func (*fakeVCLFile) WriteString(string) (int, error) { return 0, nil }
+func (f *fakeVCLFile) Close() error                  { return f.closeErr }
+func (f *fakeVCLFile) Name() string                  { return f.name }
+
+// TestRunLoop_RenderErrorFromBadInputKeepsNewTemplate pins that a render error
+// caused by bad INPUT data does not permanently discard the operator's template.
+//
+// When a values/secrets update that breaks template execution lands in the same
+// debounce window as a template change, handleReload blamed the template: it
+// rolled back and re-rendered with the OLD one. That rollback render fails with
+// the SAME error - direct proof the template was innocent - but the swap had
+// already been destroyed, and nothing re-reads the file afterwards (watchFile's
+// baseline has advanced), so the new template was lost for good.
+func TestRunLoop_RenderErrorFromBadInputKeepsNewTemplate(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	var active atomic.Value
+	active.Store("OLD")
+	h.rend.reloadFn = func() error {
+		active.Store("NEW")
+
+		return nil
+	}
+	h.rend.rollbackFn = func() { active.Store("OLD") }
+
+	var badInput atomic.Bool
+	badInput.Store(true)
+	var renders atomic.Int32
+	h.rend.renderFn = func([]watcher.Frontend, map[string]renderer.BackendGroup, map[string]map[string]any, map[string]map[string]any) (string, error) {
+		if badInput.Load() {
+			// Fails for BOTH templates: the inputs are at fault, not the template.
+			return "", errors.New("index out of range [0] with length 0")
+		}
+
+		return fmt.Sprintf("vcl 4.1; /* tmpl=%s n=%d */", active.Load(), renders.Add(1)), nil
+	}
+
+	var (
+		mu      sync.Mutex
+		applied []string
+	)
+	h.mgr.reloadFn = func(path string) error {
+		contents, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("reading rendered VCL: %w", readErr)
+		}
+		mu.Lock()
+		applied = append(applied, string(contents))
+		mu.Unlock()
+
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.reloadRecoveryInitial = 5 * time.Millisecond
+	lc.reloadRecoveryMax = 10 * time.Millisecond
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.templateCh <- struct{}{}
+	waitFor(t, func() bool {
+		_, _, rollbacks := h.rend.counts()
+
+		return rollbacks > 0
+	}, "the rollback attempt")
+
+	// The operator fixes the values; the loop must now converge on the NEW template.
+	badInput.Store(false)
+	h.valuesCh <- valuesChange{name: "cfg", data: map[string]any{"list": []any{int64(7)}}}
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return len(applied) > 0
+	}, "a successful reload after the inputs were fixed")
+
+	mu.Lock()
+	last := applied[len(applied)-1]
+	mu.Unlock()
+	if !strings.Contains(last, "tmpl=NEW") {
+		t.Errorf("VCL handed to varnishd = %q, want the NEW template: the rollback render failed identically, "+
+			"which proves the template was not the cause", last)
+	}
+
+	h.sigCh <- syscall.SIGTERM
+	waitFor(t, func() bool { return len(h.mgr.getForwardedSigs()) > 0 }, "signal forwarded")
+	close(h.mgr.done)
+	<-done
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+}
+
+// TestBackendChangeFromUpdate pins the discovery-watcher -> event-loop adapter.
+//
+// Endpoints == nil is the watcher's "Service removed" signal; the forwarding
+// goroutine deliberately normalises "no ready endpoints" to an EMPTY slice so
+// the two stay distinguishable. Nothing exercised this mapping, so inverting
+// `removed: update.Endpoints == nil` to `!= nil` left the whole root suite
+// green - while every endpoint update deleted its backend and every genuine
+// removal resurrected one.
+func TestBackendChangeFromUpdate(t *testing.T) {
+	t.Parallel()
+
+	removal := backendChangeFromUpdate(&watcher.BackendUpdate{Name: "api", Endpoints: nil, Gen: 7})
+	if !removal.removed {
+		t.Error("nil Endpoints is the removal signal; removed must be true")
+	}
+	if removal.gen != 7 || removal.name != "api" {
+		t.Errorf("removal = %+v, want name=api gen=7", removal)
+	}
+
+	// "No ready endpoints" is an empty slice, NOT a removal.
+	empty := backendChangeFromUpdate(&watcher.BackendUpdate{Name: "api", Endpoints: []watcher.Endpoint{}, Gen: 8})
+	if empty.removed {
+		t.Error("an empty (non-nil) endpoint set means the Service still exists; removed must be false")
+	}
+
+	populated := backendChangeFromUpdate(&watcher.BackendUpdate{
+		Name:      "api",
+		Endpoints: []watcher.Endpoint{{Host: "10.0.0.1", Port: 80, Name: "pod-1"}},
+		Labels:    map[string]string{"k": "v"},
+		Gen:       9,
+	})
+	if populated.removed {
+		t.Error("a populated endpoint set must not be a removal")
+	}
+	if len(populated.endpoints) != 1 || populated.labels["k"] != "v" {
+		t.Errorf("payload not carried through: %+v", populated)
+	}
+}
+
+// TestStartupContext pins that --startup-timeout=0 disables the limit.
+//
+// Its sibling --shutdown-timeout=0 has a dedicated regression test, but this
+// guard had none: weakening `timeout > 0` to `>= 0` hands [context.WithTimeout] a
+// zero duration, yielding an ALREADY-EXPIRED context, so every startup would
+// fail instantly with "waiting for initial endpoint data failed" - and the whole
+// suite stayed green.
+func TestStartupContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero disables the limit", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := startupContext(t.Context(), 0)
+		defer cancel()
+		err := ctx.Err()
+		if err != nil {
+			t.Fatalf("ctx.Err() = %v immediately, want nil: 0 must mean no limit", err)
+		}
+		if _, hasDeadline := ctx.Deadline(); hasDeadline {
+			t.Error("a 0 startup timeout must not set a deadline")
+		}
+	})
+
+	t.Run("positive timeout bounds startup", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := startupContext(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			t.Fatal("a positive startup timeout must set a deadline")
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Error("startup context never expired")
+		}
+	})
+}
+
+// TestRunShutdown_SIGHUPForwardedAsSIGTERM pins the SIGHUP remap.
+//
+// SIGHUP means "terminal gone", which varnishd does not act on; the controller
+// remaps it to SIGTERM before forwarding. Nothing pinned that, so inverting the
+// condition left the whole root suite green while a SIGHUP shutdown forwarded a
+// signal varnishd ignores - the controller would then wait out the full
+// --shutdown-timeout and escalate to SIGKILL, losing the graceful shutdown.
+func TestRunShutdown_SIGHUPForwardedAsSIGTERM(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		in, want os.Signal
+	}{
+		{syscall.SIGHUP, syscall.SIGTERM},
+		{syscall.SIGTERM, syscall.SIGTERM},
+		{syscall.SIGINT, syscall.SIGINT},
+	} {
+		h := newTestHarness()
+		lc := h.loopConfig(h.bcast)
+		close(h.mgr.done)
+
+		if got := runShutdown(lc, func() {}, tc.in); got != 0 {
+			t.Errorf("runShutdown(%v) = %d, want 0", tc.in, got)
+		}
+		sigs := h.mgr.getForwardedSigs()
+		if len(sigs) == 0 || sigs[0] != tc.want {
+			t.Errorf("received %v -> forwarded %v, want %v", tc.in, sigs, tc.want)
+		}
+	}
+}
+
+// TestRunLoop_DrainTimeoutZeroCreatesNoTicker pins that --drain-timeout=0 skips
+// session polling entirely, rather than merely finishing quickly.
+//
+// The sibling TestRunLoop_DrainTimeoutZeroSkipsPolling cannot fail for the guard
+// it names: weakening `lc.drainTimeout <= 0` to `< 0` still produces an
+// immediately-expired deadline, so ActiveSessions is never reached either way
+// and the assertion holds regardless. Setting drainPollInterval to 0 makes the
+// difference observable: entering the poll loop calls [time.NewTicker](0), which
+// panics. Surviving this test therefore proves the short-circuit really ran.
+func TestRunLoop_DrainTimeoutZeroCreatesNoTicker(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+	h.mgr.activeSessionsFn = func() (uint64, error) {
+		t.Error("ActiveSessions must not be polled when drainTimeout is 0")
+
+		return 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var code atomic.Int32
+	code.Store(-1)
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.drainBackend = drainBackendName
+	lc.drainDelay = 10 * time.Millisecond
+	lc.drainTimeout = 0
+	lc.drainPollInterval = 0 // time.NewTicker(0) panics if the guard is weakened
+
+	go func() {
+		code.Store(int32(runLoop(ctx, cancel, lc)))
+		close(done)
+	}()
+
+	h.sigCh <- syscall.SIGTERM
+	waitForForwardedSignal(t, h.mgr)
+	close(h.mgr.done)
+	<-done
+
+	if result := int(code.Load()); result != 0 {
+		t.Fatalf("expected exit 0, got %d", result)
+	}
+	if h.mgr.getSessionsCalls() != 0 {
+		t.Fatalf("expected 0 ActiveSessions calls, got %d", h.mgr.getSessionsCalls())
+	}
+}
+
+// TestRunLoop_RotatedTLSKeyBecomesRedactable pins that a hot-rotated private key
+// is registered as a redaction target BEFORE it is handed to LoadCert.
+//
+// Nothing covered this: deleting the SetStaticValues call kept the whole suite
+// green, while any path that surfaces key bytes (a LoadCert error echoing the
+// combined PEM, varnishd stderr) would print the new private key in cleartext.
+// The --secrets redaction set does not include TLS keys, which arrive only via
+// the --tls-cert watchers.
+func TestRunLoop_RotatedTLSKeyBecomesRedactable(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness()
+
+	const keyLine = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQfakekeymaterial"
+	key := []byte("-----BEGIN PRIVATE KEY-----\n" + keyLine + "\n-----END PRIVATE KEY-----\n")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	lc := h.loopConfig(h.bcast)
+	lc.redactor = redact.NewRedactor()
+
+	go func() {
+		runLoop(ctx, cancel, lc)
+		close(done)
+	}()
+
+	// Sanity: the key is not redactable before the rotation is observed.
+	if got := lc.redactor.Redact(keyLine); got != keyLine {
+		t.Fatalf("key already redacted before the update: %q", got)
+	}
+
+	h.tlsCertCh <- tlsCertChange{name: "web", data: watcher.TLSCertData{
+		Cert: []byte("-----BEGIN CERTIFICATE-----\nignored\n-----END CERTIFICATE-----\n"),
+		Key:  key,
+	}}
+
+	waitFor(t, func() bool { return !strings.Contains(lc.redactor.Redact(keyLine), keyLine) },
+		"the rotated private key to become a redaction target")
+
+	h.sigCh <- syscall.SIGTERM
+	waitForForwardedSignal(t, h.mgr)
 	close(h.mgr.done)
 	<-done
 }

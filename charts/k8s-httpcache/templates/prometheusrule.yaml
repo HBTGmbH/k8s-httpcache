@@ -41,7 +41,14 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: No ready backend endpoints for service {{`{{ $labels.service }}`}}
+            # The metric's own `service` label carries the BACKEND name, but the
+            # Prometheus Operator's ServiceMonitor unconditionally sets a
+            # `service` target label from the scraped Service and (honor_labels:
+            # false) renames the exposed one to `exported_service` - so plain
+            # $labels.service names the cache itself and is identical for every
+            # backend. Under a PodMonitor no such target label is added and
+            # $labels.service is still the right one, hence the fallback.
+            summary: No ready backend endpoints for service {{`{{ if $labels.exported_service }}{{ $labels.exported_service }}{{ else }}{{ $labels.service }}{{ end }}`}}
             description: k8s-httpcache sees zero ready backend endpoints for more than 10 minutes; cache misses will fail.
         - alert: K8sHttpcacheNoReadyFrontendEndpoints
           expr: 'k8s_httpcache_endpoints{role="frontend"} == 0'
@@ -49,7 +56,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: No ready frontend endpoints for service {{`{{ $labels.service }}`}}
+            summary: No ready frontend endpoints for service {{`{{ if $labels.exported_service }}{{ $labels.exported_service }}{{ else }}{{ $labels.service }}{{ end }}`}}
             description: k8s-httpcache discovered zero ready frontend (cache) pods for more than 10 minutes; broadcast invalidation cannot fan out.
         # --- VCL reload pipeline ---
         - alert: K8sHttpcacheVCLReloadFailures

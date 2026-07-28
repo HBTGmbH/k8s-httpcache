@@ -91,20 +91,20 @@ template delimiters), not to Helm:
 | broadcast.clientIdleTimeout | string | `""` | Max idle time for connections to Varnish pods (empty = app default 4s) |
 | broadcast.clientTimeout | string | `""` | Timeout for each fan-out request (empty = app default 3s) |
 | broadcast.drainTimeout | string | `""` | Time to wait for broadcast connections to drain (empty = app default 30s) |
-| broadcast.enabled | bool | `true` |  |
+| broadcast.enabled | bool | `true` | Enable the broadcast HTTP server (false sets `--broadcast-addr=none`) |
 | broadcast.readHeaderTimeout | string | `""` | Max time to read request headers on broadcast server (empty = app default 10s) |
 | broadcast.readTimeout | string | `""` | Max time to read the entire request, headers + body (empty = app default 15s) |
 | broadcast.serverIdleTimeout | string | `""` | Max idle time for client keep-alive connections (empty = app default 120s) |
 | broadcast.shutdownTimeout | string | `""` | Time to wait for in-flight requests after draining (empty = app default 5s) |
-| broadcast.targetListenAddr | string | `""` |  |
+| broadcast.targetListenAddr | string | `""` | Name of the `--listen-addr` to target for fan-out (empty = first listen addr) |
 | broadcast.writeTimeout | string | `""` | Max time to write the response, must exceed read + client timeouts (empty = app default 30s) |
 | clusterDomain | string | `"cluster.local"` | Cluster DNS domain, used to build the in-cluster Service FQDN (e.g. for Istio resources) |
 | commonAnnotations | object | `{}` | Annotations to add to all resources |
 | commonLabels | object | `{}` | Labels to add to all resources |
-| container.httpBroadcastPort | int | `8088` | Broadcast port exposed by the k8s-httpcache container |
-| container.httpMetricsPort | int | `9101` | Metrics port exposed by the k8s-httpcache container |
-| container.httpPort | int | `8080` | HTTP port exposed by the varnishd process |
-| container.httpsPort | int | `8443` | HTTPS port exposed by the varnishd process (only when tlsCerts is set). |
+| container.httpBroadcastPort | int | `8088` | Broadcast containerPort; must match `broadcast.addr` (app default `:8088`) |
+| container.httpMetricsPort | int | `9101` | Metrics containerPort; must match `metrics.addr` (app default `:9101`) |
+| container.httpPort | int | `8080` | HTTP containerPort; must match the http `listenAddrs` entry (app default `http=:8080,HTTP`) |
+| container.httpsPort | int | `8443` | HTTPS containerPort (only when tlsCerts is set); must match the https `listenAddrs` entry |
 | debounce.backendDuration | string | `""` | Debounce duration for backend changes (empty = inherits duration) |
 | debounce.backendMax | string | `""` | Max debounce duration for backend changes (empty = inherits max) |
 | debounce.duration | string | `""` | Debounce duration for endpoint changes (empty = app default 2s) |
@@ -122,7 +122,7 @@ template delimiters), not to Helm:
 | drain.timeout | string | `""` | Max time to wait for sessions to reach 0 (empty = app default 0s) |
 | enableServiceLinks | string | `""` | Inject Service environment variables. Empty = Kubernetes default (true); set false to reduce environment clutter. |
 | excludeAnnotations | list | `[]` | Annotation keys or prefixes to exclude from backend `.Annotations` (repeatable). A trailing `*` matches a prefix (e.g. "kubectl.kubernetes.io/*"). `kubectl.kubernetes.io/last-applied-configuration` is always excluded by default. |
-| extraArgs | list | `[]` |  |
+| extraArgs | list | `[]` | Extra arguments appended before the `--` separator |
 | extraContainers | list | `[]` | Extra containers (sidecars) to add to the pod |
 | extraEnv | list | `[]` | Extra environment variables to add to the container |
 | extraInitContainers | list | `[]` | Extra init containers to add to the pod |
@@ -159,7 +159,7 @@ template delimiters), not to Helm:
 | istio.authorizationPolicy.annotations | object | `{}` | Annotations for the AuthorizationPolicy |
 | istio.authorizationPolicy.enabled | bool | `false` | Enable Istio AuthorizationPolicy (L7 access control) |
 | istio.authorizationPolicy.provider | object | `{}` | External authorization provider (only for action: CUSTOM) |
-| istio.authorizationPolicy.rules | list | `[]` | Authorization rules |
+| istio.authorizationPolicy.rules | list | `[]` | Authorization rules. Required when enabled: Istio never matches a policy without rules, so an ALLOW policy with none denies all traffic to the cache pods. Use `[{}]` to allow every request explicitly. |
 | istio.destinationRule.annotations | object | `{}` | Annotations for the DestinationRule |
 | istio.destinationRule.enabled | bool | `false` | Enable Istio DestinationRule |
 | istio.destinationRule.host | string | `""` | Host (empty = the in-cluster Service FQDN) |
@@ -191,7 +191,7 @@ template delimiters), not to Helm:
 | logging.format | string | `""` | Log format: text, json (empty = app default text) |
 | logging.level | string | `""` | Log level: DEBUG, INFO, WARN, ERROR (empty = app default INFO) |
 | metrics.addr | string | `""` | Listen address for the metrics server (empty = app default ":9101") |
-| metrics.enabled | bool | `true` |  |
+| metrics.enabled | bool | `true` | Enable the metrics HTTP server (false sets `--metrics-addr=none`) |
 | metrics.idleTimeout | string | `""` | Max idle time for keep-alive connections on metrics server (empty = app default 120s) |
 | metrics.readHeaderTimeout | string | `""` | Max time to read request headers on metrics server (empty = app default 10s) |
 | metrics.readTimeout | string | `""` | Max time to read the entire request, headers + body (empty = app default 15s) |
@@ -201,7 +201,7 @@ template delimiters), not to Helm:
 | metrics.writeTimeout | string | `""` | Max time to write the response (empty = app default 15s) |
 | minReadySeconds | string | `""` | Minimum seconds a new pod must be ready before it is considered available (empty = omit) |
 | nameOverride | string | `""` | Override the chart name |
-| namespace | string | `""` |  |
+| namespace | string | `""` | Namespace passed to `--namespace` (defaults to Release.Namespace). Every reference (serviceName, backends, values, secrets, tlsCerts, backendDiscovery) that has no explicit "ns/name" prefix resolves in this namespace, while the chart creates the frontend Service and all RBAC in the release namespace - so when this differs from the release namespace, every reference must be namespace-qualified (the chart fails to render otherwise). |
 | networkPolicy.allowDNS | bool | `true` | Allow DNS egress (UDP/TCP 53). Egress to the Kubernetes API server and to backends is cluster-specific and must be added via networkPolicy.egress. |
 | networkPolicy.annotations | object | `{}` | Annotations for the NetworkPolicy |
 | networkPolicy.egress | list | `[]` | Additional egress rules (appended after the DNS rule when allowDNS is true) |
@@ -210,9 +210,9 @@ template delimiters), not to Helm:
 | networkPolicy.policyTypes | list | `["Ingress","Egress"]` | Policy types to enforce |
 | nodeSelector | object | `{}` | Node selector |
 | podAnnotations | object | `{}` | Annotations to add to pods |
-| podDisruptionBudget.enabled | bool | `false` | Enable PDB |
-| podDisruptionBudget.maxUnavailable | string | `""` | Maximum unavailable pods |
-| podDisruptionBudget.minAvailable | string | `""` | Minimum available pods |
+| podDisruptionBudget.enabled | bool | `false` | Enable PDB. Exactly one of minAvailable/maxUnavailable must be set: with neither, the disruption controller pins disruptionsAllowed to 0 and blocks every eviction (drain, autoscaler, node upgrade); with both, the API server rejects the object. |
+| podDisruptionBudget.maxUnavailable | string | `""` | Maximum unavailable pods (count or percentage; 0 blocks all evictions) |
+| podDisruptionBudget.minAvailable | string | `""` | Minimum available pods (count or percentage; 0 allows all disruptions) |
 | podLabels | object | `{}` | Labels to add to pods |
 | podMonitor.enabled | bool | `false` | Enable Prometheus PodMonitor |
 | podMonitor.interval | string | `""` | Scrape interval |
@@ -232,7 +232,7 @@ template delimiters), not to Helm:
 | readinessProbe | object | `{"failureThreshold":1,"httpGet":{"path":"/readyz","port":"http-m"},"periodSeconds":1}` | Readiness probe configuration (only used when metrics.enabled is true) |
 | referenceGrant.annotations | object | `{}` | Annotations for the ReferenceGrant |
 | referenceGrant.enabled | bool | `false` | Enable a ReferenceGrant allowing cross-namespace references to the Service |
-| referenceGrant.from | list | `[]` | Allowed referents (list of { group, kind, namespace }), e.g. HTTPRoutes in another namespace. |
+| referenceGrant.from | list | `[]` | Allowed referents (list of { group, kind, namespace }), e.g. HTTPRoutes in another namespace. Required when enabled - the CRD rejects an empty list. |
 | referenceGrant.to | list | `[]` | Targets the grant permits references to (empty = this chart's Service) |
 | replicaCount | int | `1` | Number of replicas (ignored when autoscaling.enabled is true) |
 | resources | object | `{}` | Resource requests and limits |
@@ -264,7 +264,7 @@ template delimiters), not to Helm:
 | serviceMonitor.namespace | string | `""` | Namespace for the ServiceMonitor (defaults to release namespace) |
 | serviceMonitor.relabelings | list | `[]` | Relabelings |
 | serviceMonitor.scrapeTimeout | string | `""` | Scrape timeout |
-| serviceName | string | `""` |  |
+| serviceName | string | `""` | Service name passed to `--service-name` (defaults to chart fullname) |
 | startupProbe | object | `{"failureThreshold":210,"httpGet":{"path":"/ready","port":"http"},"periodSeconds":1}` | Startup probe configuration. The probe budget (failureThreshold x periodSeconds) must cover the controller's own --startup-timeout (default 3m): varnishd only starts listening on the http port after the initial endpoint snapshot was collected, and a probe budget shorter than that deadline kills the pod while the controller is still legitimately waiting (e.g. for a slow API server), turning a transient delay into a CrashLoop. |
 | staticFiles | object | `{"enabled":false,"existingConfigMap":"","files":{},"mountPath":"/etc/k8s-httpcache-static"}` | Serve small static files (robots.txt, health JSON, HTML, CSS, SVG) directly from Varnish via std.fileread. When enabled, `staticFiles.files` are rendered into a ConfigMap and mounted read-only at `staticFiles.mountPath`; add a small vcl_recv/vcl_synth snippet to vclTemplateContent to serve them (see README). Text content only - binary files (favicon.ico, images) are not supported because std.fileread truncates at the first NUL byte. A content change rolls the pods (`checksum/static`), because std.fileread caches file content for the varnishd process lifetime and is NOT refreshed by a VCL reload. |
 | staticFiles.enabled | bool | `false` | Render the static-files ConfigMap, volume and mount. When false nothing is added and the chart renders exactly as before. |
@@ -286,12 +286,12 @@ template delimiters), not to Helm:
 | values | list | `[]` | ConfigMaps to watch for template values (repeatable). Each entry: { name, configmap } Generates --values=name:configmap |
 | valuesDirPollInterval | string | `""` | Poll interval for the values-dir directories (empty = app default 5s). Only effective when valuesDirWatch is enabled. |
 | valuesDirWatch | bool | `false` | Watch the values-dir directories for changes and reload VCL on change, INDEPENDENT of vcl.fileWatch (which governs the VCL template). Off by default. Set true to auto-reload on values-dir changes; empty inherits vcl.fileWatch. When off, values-dir changes are not auto-applied - restart pods to pick them up (the values-dir ConfigMap is externally referenced, so there is no checksum annotation to roll pods automatically, unlike VCL/static files). |
-| valuesDirs | list | `[]` | Directories to poll for YAML template values (repeatable). Each entry: { name, path, configMap (optional - creates a volume from this ConfigMap) } Generates --values-dir=name:path |
+| valuesDirs | list | `[]` | Directories to poll for YAML template values (repeatable). Each entry: { name, path, configMap (optional) } Generates --values-dir=name:path With `configMap`, the chart adds a volume from that ConfigMap and mounts it read-only at `path`. Without it, only the flag is rendered and supplying the directory is up to you (extraVolumes + extraVolumeMounts, or baked into the image) - the chart adds no mount, because a mount without a matching volume makes the API server reject the whole workload. `name` doubles as the template key (`.Values.NAME.KEY` in the VCL) and is lowercased for the generated volume name, so two entries whose names differ only in case or in `-`/`_` would collide. |
 | varnish.adminTimeout | string | `""` | Max time to wait for the cache admin CLI to become ready (empty = app default 30s) |
 | varnish.varnishadmPath | string | `""` | Path to varnishadm binary (empty = auto-detect) |
 | varnish.varnishdPath | string | `""` | Path to varnishd binary (empty = auto-detect) |
 | varnish.varnishstatPath | string | `""` | Path to varnishstat binary (empty = auto-detect) |
-| varnishdExtraArgs | list | `[]` |  |
+| varnishdExtraArgs | list | `[]` | Extra arguments passed to varnishd after the `--` separator, e.g. ["-s", "default,1M", "-p", "default_grace=0"] |
 | varnishncsa.backend | bool | `false` | Log backend requests instead of client requests |
 | varnishncsa.enabled | bool | `false` | Enable varnishncsa access logging subprocess |
 | varnishncsa.format | string | `""` | Custom log format string (empty = app default) |
@@ -306,7 +306,7 @@ template delimiters), not to Helm:
 | vcl.shutdownTimeout | string | `""` | Time to wait for varnishd to exit before SIGKILL (empty = app default 30s) |
 | vcl.templateWatchInterval | string | `""` | Poll interval for VCL template file changes (empty = app default 5s) |
 | vclTemplate | string | `"/etc/k8s-httpcache/vcl.tmpl"` | Path to the VCL template inside the container |
-| vclTemplateContent | string | a round-robin VCL template (see values.yaml) | VCL template rendered into the ConfigMap. This default provides a simple round-robin setup that works out of the box. |
+| vclTemplateContent | string | a round-robin VCL template (see values.yaml) | VCL template rendered into the ConfigMap. This default provides a simple round-robin setup that works out of the box. The `purge` ACL lists loopback plus every cache pod IP (`.Frontends`), because Kubernetes does not SNAT pod-to-pod traffic: a PURGE fanned out by the broadcast server arrives with the SENDING pod's IP as client.ip - never 127.0.0.1, not even for the pod's own leg - so a loopback-only ACL rejects every broadcast invalidation with 405 while the broadcast server still answers 200. |
 | verticalPodAutoscaler.annotations | object | `{}` | Annotations for the VPA |
 | verticalPodAutoscaler.enabled | bool | `false` | Enable VerticalPodAutoscaler. Do not combine with autoscaling (HPA) on the same CPU/memory resource. |
 | verticalPodAutoscaler.resourcePolicy | object | `{}` | Per-container resource policy (minAllowed/maxAllowed/controlledResources) |

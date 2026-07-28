@@ -7,7 +7,7 @@ updates:
 # varnish6: patch-only (6.0.x is the final 6.x minor release)
 # varnish7: minor + patch
 # varnish8: minor + patch
-# varnish9: minor + patch
+# varnish9: minor + patch, covering both the plain and the race-detector leg
 - package-ecosystem: docker
   directory: /.github/test/varnish6
   schedule:
@@ -42,12 +42,26 @@ updates:
     update-types:
     - "version-update:semver-major"
 
+# varnish9-race re-runs the varnish9 E2E leg under the race detector, so it is
+# only a valid mirror while both run the identical varnish image (enforced by
+# .github/test/script-selftest.sh). It also has its own golang build stage.
+# Both directories therefore share one entry, and group-by: dependency-name
+# makes dependabot raise a single PR per dependency across them, so the two
+# varnish pins can never drift apart. Listing only /.github/test/varnish9 left
+# the race leg's base images frozen forever.
 - package-ecosystem: docker
-  directory: /.github/test/varnish9
+  directories:
+  - /.github/test/varnish9
+  - /.github/test/varnish9-race
   schedule:
     interval: weekly
   cooldown:
     default-days: 7  # wait a week before adopting a fresh release (supply-chain hygiene)
+  groups:
+    varnish9:
+      patterns:
+      - "*"
+      group-by: dependency-name
   ignore:
   - dependency-name: varnish
     update-types:

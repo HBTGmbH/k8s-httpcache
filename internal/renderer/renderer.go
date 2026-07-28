@@ -213,12 +213,14 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 		if annotations == nil {
 			annotations = make(map[string]string)
 		}
+		// Copy before splitting so local/remote share the render-local copy.
+		endpoints := copyEndpoints(bg.Endpoints)
 		var local, remote []watcher.Endpoint
 		if r.localZone != "" {
-			local, remote = splitEndpointsByZone(bg.Endpoints, r.localZone)
+			local, remote = splitEndpointsByZone(endpoints, r.localZone)
 		}
 		backendsAny[name] = templateBackendGroup{
-			Endpoints:       bg.Endpoints,
+			Endpoints:       endpoints,
 			Labels:          toAnyMap(labels),
 			Annotations:     toAnyMap(annotations),
 			LocalEndpoints:  local,
@@ -229,7 +231,7 @@ func (r *Renderer) Render(frontends []watcher.Frontend, backends map[string]Back
 	var buf bytes.Buffer
 
 	err := r.tmpl.Execute(&buf, templateData{
-		Frontends: frontends,
+		Frontends: copyEndpoints(frontends),
 		Backends:  backendsAny,
 		Values:    deepCopyTemplateMap(values),
 		Secrets:   deepCopyTemplateMap(secrets),
@@ -334,6 +336,21 @@ var importStdRe = regexp.MustCompile(`(?m)^[\t ]*import\s+std\s*;\s*\n?`)
 // line boundary (the patterns are anchored with (?m)^), so pos never falls in
 // the middle of a token or string.
 func inCommentOrLongString(vcl string, pos int) bool {
+	return inCommentOrLongStringAt(vcl, []int{pos})[0]
+}
+
+// inCommentOrLongStringAt answers [inCommentOrLongString] for every offset in
+// positions - which must be in ascending order, as regexp FindAllStringIndex
+// returns them - in a single left-to-right scan, and returns the answers in the
+// same order.
+//
+// Answering each offset with its own scan from 0 is quadratic in callers that
+// filter many matches: backendBlockEnds has one match per rendered backend, so
+// a Service with a few thousand endpoints made injectDrainVCL scan hundreds of
+// megabytes and block the controller's single event loop - which also drives
+// watcher draining, the debounce timers and the SIGTERM/drain handoff - for
+// seconds per render.
+func inCommentOrLongStringAt(vcl string, positions []int) []bool {
 	const (
 		stNormal     = iota
 		stBlock      // inside /* */
@@ -341,9 +358,16 @@ func inCommentOrLongString(vcl string, pos int) bool {
 		stString     // inside "..."
 		stLongString // inside {"..."}
 	)
+	answers := make([]bool, len(positions))
+	next := 0
 	state := stNormal
-	limit := min(pos, len(vcl))
-	for i := 0; i < limit; i++ {
+	for i := 0; i < len(vcl) && next < len(positions); i++ {
+		// The state now reflects the bytes before i, which is exactly the
+		// answer for every offset at or before i not answered yet.
+		for next < len(positions) && positions[next] <= i {
+			answers[next] = state == stBlock || state == stLongString
+			next++
+		}
 		switch state {
 		case stNormal:
 			switch {
@@ -381,8 +405,12 @@ func inCommentOrLongString(vcl string, pos int) bool {
 			}
 		}
 	}
+	// Offsets at or past the end of vcl take the final state.
+	for ; next < len(positions); next++ {
+		answers[next] = state == stBlock || state == stLongString
+	}
 
-	return state == stBlock || state == stLongString
+	return answers
 }
 
 // importStdPositions returns the [start, end) byte offsets of all top-level
@@ -439,10 +467,21 @@ var backendBlockRe = regexp.MustCompile(`(?m)^[\t ]*backend\s+[\w-]+\s*\{`)
 // behaviour of backendBlocksEnd.
 func backendBlockEnds(vcl string) []int {
 	locs := backendBlockRe.FindAllStringIndex(vcl, -1)
+	if len(locs) == 0 {
+		return nil
+	}
+	// One shared comment scan for all matches: a per-match scan is quadratic in
+	// the number of backends (see inCommentOrLongStringAt).
+	starts := make([]int, len(locs))
+	for i, loc := range locs {
+		starts[i] = loc[0]
+	}
+	commented := inCommentOrLongStringAt(vcl, starts)
+
 	var ends []int
-	for _, loc := range locs {
+	for i, loc := range locs {
 		// Skip matches inside /* */ block comments.
-		if inCommentOrLongString(vcl, loc[0]) {
+		if commented[i] {
 			continue
 		}
 
@@ -521,7 +560,13 @@ func backendBlockEnds(vcl string) []int {
 // backendBlocksEnd returns the byte offset just past the last backend block in
 // vcl, or 0 if there are none.
 func backendBlocksEnd(vcl string) int {
-	ends := backendBlockEnds(vcl)
+	return lastBackendBlockEnd(backendBlockEnds(vcl))
+}
+
+// lastBackendBlockEnd returns the largest offset in ends (as returned by
+// [backendBlockEnds]), or 0 if there are none. It takes the already-computed
+// ends so callers that need several derived offsets scan the VCL only once.
+func lastBackendBlockEnd(ends []int) int {
 	last := 0
 	for _, end := range ends {
 		if end > last {
@@ -530,17 +575,6 @@ func backendBlocksEnd(vcl string) int {
 	}
 
 	return last
-}
-
-// firstBackendBlockEnd returns the byte offset just past the first backend
-// block in vcl, or 0 if there are none.
-func firstBackendBlockEnd(vcl string) int {
-	ends := backendBlockEnds(vcl)
-	if len(ends) == 0 {
-		return 0
-	}
-
-	return ends[0]
 }
 
 // subVCLDeliverRe matches the start of a top-level "sub vcl_deliver {"
@@ -603,7 +637,11 @@ sub vcl_deliver {
 // end-of-backends placement; only a vcl_deliver declared among/before the
 // backends needs the prepend path.
 func injectDrainVCL(vcl, backendName string) (string, bool) {
-	backendsEnd := backendBlocksEnd(vcl)
+	// Scanning the backend blocks dominates the cost of injection at a few
+	// thousand backends, so it happens exactly once here and the offsets every
+	// path below needs are derived from that one result.
+	ends := backendBlockEnds(vcl)
+	backendsEnd := lastBackendBlockEnd(ends)
 	deliverStart := firstSubVCLDeliverStart(vcl)
 
 	// User declares sub vcl_deliver before the last backend: the historical
@@ -611,7 +649,10 @@ func injectDrainVCL(vcl, backendName string) (string, bool) {
 	// the user's vcl_deliver, anchoring the drain backend after the first user
 	// backend (so it stays non-default and is declared before the sub).
 	if deliverStart >= 0 && deliverStart < backendsEnd {
-		firstBackendEnd := firstBackendBlockEnd(vcl)
+		firstBackendEnd := 0
+		if len(ends) > 0 {
+			firstBackendEnd = ends[0]
+		}
 		if firstBackendEnd > 0 && firstBackendEnd <= deliverStart {
 			return injectDrainPrepended(vcl, backendName, firstBackendEnd, deliverStart), false
 		}
@@ -619,10 +660,10 @@ func injectDrainVCL(vcl, backendName string) (string, bool) {
 		// The user's vcl_deliver precedes every backend, so there is no backend
 		// to declare the drain backend after while keeping it before the sub.
 		// Keep the historical placement and signal the caller to warn.
-		return injectDrainVCLLegacy(vcl, backendName), true
+		return injectDrainVCLLegacy(vcl, backendName, backendsEnd), true
 	}
 
-	return injectDrainVCLLegacy(vcl, backendName), false
+	return injectDrainVCLLegacy(vcl, backendName, backendsEnd), false
 }
 
 // injectDrainPrepended inserts the drain sub vcl_deliver immediately before the
@@ -676,9 +717,11 @@ func injectDrainPrepended(vcl, backendName string, firstBackendEnd, deliverStart
 // "import std;" is only injected (at the top) when the user VCL does not
 // already provide one before the drain insertion point. User "import std;"
 // lines that would end up after the injected vcl_deliver are commented out.
-func injectDrainVCLLegacy(vcl, backendName string) string {
+//
+// backendsEnd must be [backendBlocksEnd] of the vcl passed in; the caller
+// already computed it and passes it down so the scan is not repeated.
+func injectDrainVCLLegacy(vcl, backendName string, backendsEnd int) string {
 	versionEnd := vclVersionEnd(vcl)
-	backendsEnd := backendBlocksEnd(vcl)
 	imports := importStdPositions(vcl)
 
 	drainVCL := drainBackendBlock(backendName) + drainDeliverSub(backendName)

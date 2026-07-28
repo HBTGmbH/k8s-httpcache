@@ -1635,3 +1635,134 @@ func TestCanonicalizeEndpointsTiebreakers(t *testing.T) {
 		})
 	}
 }
+
+// TestEndpointsWithoutTargetRefGetUniqueNames pins that endpoints carrying no
+// targetRef still receive distinct, non-empty names.
+//
+// Endpoint.Name feeds the VCL backend name (`backend be-{{ .Name }}`) and keys
+// the broadcast fan-out's per-pod result map. Every nameless endpoint used to
+// collapse to "", and canonicalizeEndpoints dedups on (Host, Port) only, so the
+// duplicates survived: the rendered VCL declared two backends with the same
+// name and failed to compile - the exact duplicate-name condition the
+// dual-stack handling documents as breaking vcl.load - while the fan-out's
+// map[name]result silently dropped all but one pod from its JSON body.
+// EndpointSlices without targetRef are produced by selector-less Services with
+// manually managed or mirrored slices.
+func TestEndpointsWithoutTargetRefGetUniqueNames(t *testing.T) {
+	t.Parallel()
+
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{
+			{Addresses: []string{"10.0.0.1"}, Conditions: discoveryv1.EndpointConditions{Ready: new(true)}},
+			{Addresses: []string{"10.0.0.2"}, Conditions: discoveryv1.EndpointConditions{Ready: new(true)}},
+		},
+		[]discoveryv1.EndpointPort{{Name: new("http"), Port: new(int32(8080))}},
+	)
+
+	w := New(fake.NewClientset(slice), "default", "svc", "")
+	go func() { _ = w.Run(t.Context()) }()
+
+	eps := readChanges(t, w)
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 endpoints, got %d: %v", len(eps), eps)
+	}
+
+	seen := make(map[string]string, len(eps))
+	for _, ep := range eps {
+		if ep.Name == "" {
+			t.Errorf("endpoint %s:%d has an empty .Name; VCL backend names are derived from it", ep.Host, ep.Port)
+
+			continue
+		}
+		if prev, dup := seen[ep.Name]; dup {
+			t.Errorf("endpoints %s and %s:%d share .Name %q; duplicate backend names break vcl.load",
+				prev, ep.Host, ep.Port, ep.Name)
+		}
+		seen[ep.Name] = ep.Host
+	}
+
+	// The synthesized name must be a legal VCL identifier: letters, digits,
+	// underscore and hyphen only (a raw IPv4/IPv6 address is not).
+	for _, ep := range eps {
+		for _, r := range ep.Name {
+			ok := r == '_' || r == '-' ||
+				(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+			if !ok {
+				t.Errorf("endpoint name %q contains %q, which is not valid in a VCL identifier", ep.Name, r)
+
+				break
+			}
+		}
+	}
+}
+
+// TestSyncPortZeroWithoutOverrideWarns closes the silent half of the port-0
+// diagnostic. A headless Service declared without ports is accepted by the API
+// server and the stock EndpointSlice controller publishes `ports: null` slices
+// for it; with no port override resolvePort then returns 0 and every endpoint
+// is emitted with Port 0, rendering `.port = "0"` backends that Varnish
+// compiles happily but can never connect to. The warning was gated on
+// portOverride != "", so exactly the case its own comment exists to eliminate
+// ("warn once instead of silently rendering backends on port 0") stayed
+// silent: 503s with nothing in the controller log at any level.
+func TestSyncPortZeroWithoutOverrideWarns(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{{
+			Addresses:  []string{"10.0.0.1"},
+			Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
+			TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+		}},
+		nil, // portless Service: the EndpointSlice controller emits ports: null
+	)
+
+	w := New(fake.NewClientset(), "default", "svc", "") // no port override
+	w.log = slog.New(slog.NewTextHandler(&buf, nil))
+	lister := &staticSliceLister{items: []*discoveryv1.EndpointSlice{slice}}
+
+	w.sync(lister)
+
+	eps := readChanges(t, w)
+	if len(eps) != 1 || eps[0].Port != 0 {
+		t.Fatalf("precondition: expected one endpoint resolved to port 0, got %v", eps)
+	}
+	if !strings.Contains(buf.String(), "port 0") {
+		t.Fatalf("expected a port-0 warning for a slice that declares no ports, got log: %q", buf.String())
+	}
+
+	buf.Reset()
+	w.sync(lister)
+	if strings.Contains(buf.String(), "port 0") {
+		t.Errorf("port-0 warning must be logged only once, got repeat: %q", buf.String())
+	}
+}
+
+// TestSyncPortZeroWarnsOnlyForEmittedEndpoints keeps the widened port-0
+// warning from becoming noise: a slice that declares no ports but contributes
+// no endpoint at all (none ready, none serving-and-terminating) renders no
+// backend, so there is nothing that could be dead on port 0 and nothing to
+// warn about.
+func TestSyncPortZeroWarnsOnlyForEmittedEndpoints(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	slice := makeEndpointSlice("svc-abc",
+		discoveryv1.AddressTypeIPv4,
+		[]discoveryv1.Endpoint{{
+			Addresses:  []string{"10.0.0.1"},
+			Conditions: discoveryv1.EndpointConditions{Ready: new(false)},
+			TargetRef:  &corev1.ObjectReference{Name: "pod-a"},
+		}},
+		nil, // no ports at all
+	)
+
+	w := New(fake.NewClientset(), "default", "svc", "")
+	w.log = slog.New(slog.NewTextHandler(&buf, nil))
+	w.sync(&staticSliceLister{items: []*discoveryv1.EndpointSlice{slice}})
+
+	if strings.Contains(buf.String(), "port 0") {
+		t.Errorf("no endpoint is emitted, so no port-0 warning may be logged; got: %q", buf.String())
+	}
+}
