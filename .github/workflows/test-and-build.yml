@@ -9,7 +9,14 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Supersede stale runs for the same ref. Branch pushes are included because an
+  # amended force-push to main otherwise queues behind the run for the commit it
+  # replaced, so the E2E matrix burns ~25 minutes on a commit no ref points at
+  # before the real one starts. Tag refs are excluded: their run pushes the
+  # semver images and cuts the GitHub release, which must never be interrupted.
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request' ||
+    (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
 
 permissions:
   contents: read
