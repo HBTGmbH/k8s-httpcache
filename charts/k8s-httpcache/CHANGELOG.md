@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.2.1...k8s-httpcache-v1.2.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* correctness defects across the controller, chart and CI ([4830f00](https://github.com/HBTGmbH/k8s-httpcache/commit/4830f004afe0d3b3db616b0ac2779c7720111742))
+
 ## [1.2.1](https://github.com/HBTGmbH/k8s-httpcache/compare/k8s-httpcache-v1.2.0...k8s-httpcache-v1.2.1) (2026-07-15)
 
 
