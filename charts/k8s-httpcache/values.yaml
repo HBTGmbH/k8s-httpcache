@@ -1004,4 +1004,4 @@ tests:
   # -- Image (pinned, not :latest) for the kubectl-based RBAC `helm test` pod.
   # Uses a shell-capable image with pinnable tags (registry.k8s.io/kubectl is
   # distroless with no shell; bitnami/kubectl no longer publishes version tags).
-  kubectlImage: alpine/kubectl:1.36.2
+  kubectlImage: alpine/kubectl:1.36.3
