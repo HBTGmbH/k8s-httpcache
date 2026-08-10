@@ -352,7 +352,7 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.md == 'true'
-      uses: crate-ci/typos@bee27e3a4fd1ea2111cf90ab89cd076c870fce14  # v1.48.0
+      uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f  # v1.49.0
     - name: Restore hadolint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -927,7 +927,7 @@ jobs:
         driver-opts: image=moby/buildkit:v0.32.0@sha256:1f8167fcb0eca5b7126353d35299386945cbb8949cc516c592a49f80cfce4fa2
         cache-binary: false
     - name: Docker Login
-      uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c  # v4.5.2
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
       if: github.event_name != 'pull_request'
       with:
         registry: ghcr.io
