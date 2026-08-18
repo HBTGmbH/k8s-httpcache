@@ -2,7 +2,7 @@
 # dynamically linked and must match the runtime image's glibc. Compile it in the
 # same Debian bookworm as the varnish:9 base, then run it there. Built only by
 # the race leg of the integration-test matrix in test-and-build.yml.
-FROM golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113 AS build
+FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS build
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=1 go build -race -trimpath -o /k8s-httpcache .
