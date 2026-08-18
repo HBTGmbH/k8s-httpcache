@@ -109,10 +109,17 @@ func (r *Renderer) SetLocalZone(zone string) {
 	r.localZone = zone
 }
 
+// Template function library names accepted by [New], mirroring the values
+// --template-funcs validates in internal/config.
+const (
+	funcsSprig  = "sprig"
+	funcsSprout = "sprout"
+)
+
 // buildFuncMap returns the template function map for the given library name.
 func buildFuncMap(templateFuncs string) template.FuncMap {
 	switch templateFuncs {
-	case "sprout":
+	case funcsSprout:
 		handler := sprout.New(sprout.WithGroups(all.RegistryGroup()))
 
 		return handler.Build()

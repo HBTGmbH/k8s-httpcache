@@ -1212,7 +1212,7 @@ func TestRender_SproutFunctions(t *testing.T) {
 
 func TestRender_SproutGetTypedMap(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< (get .Backends "api").Labels >>`
+	tmpl := `<< (get "api" .Backends).Labels >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprout")
 	if err != nil {
@@ -1235,7 +1235,7 @@ func TestRender_SproutGetTypedMap(t *testing.T) {
 
 func TestRender_SproutGetTypedMapMissing(t *testing.T) {
 	t.Parallel()
-	tmpl := `[<< get .Backends "missing" >>]`
+	tmpl := `[<< get "missing" .Backends >>]`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprout")
 	if err != nil {
@@ -1278,7 +1278,7 @@ func TestRender_SproutValuesTypedMap(t *testing.T) {
 
 func TestRender_SproutPickTypedMap(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $k, $v := pick .Backends "api" >><< $k >><< end >>`
+	tmpl := `<< range $k, $v := pick "api" .Backends >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprout")
 	if err != nil {
@@ -1305,7 +1305,7 @@ func TestRender_SproutPickTypedMap(t *testing.T) {
 
 func TestRender_SproutOmitTypedMap(t *testing.T) {
 	t.Parallel()
-	tmpl := `<< range $k, $v := omit .Backends "worker" >><< $k >><< end >>`
+	tmpl := `<< range $k, $v := omit "worker" .Backends >><< $k >><< end >>`
 	path := writeTempTemplate(t, tmpl)
 	r, err := New(path, "<<", ">>", "sprout")
 	if err != nil {
@@ -1341,43 +1341,43 @@ func TestRender_SproutDictEdgeCases(t *testing.T) {
 	}{
 		{
 			name:   "get_nil_value",
-			tmpl:   `[<< get .Values.data "k" >>]`,
+			tmpl:   `[<< get "k" .Values.data >>]`,
 			values: map[string]map[string]any{"data": {"k": nil}},
 			want:   `[<no value>]`,
 		},
 		{
 			name:   "get_missing_key",
-			tmpl:   `[<< get .Values.data "missing" >>]`,
+			tmpl:   `[<< get "missing" .Values.data >>]`,
 			values: map[string]map[string]any{"data": {"a": 1}},
 			want:   `[]`,
 		},
 		{
 			name:   "hasKey_nil_value",
-			tmpl:   `<< hasKey .Values.data "k" >>`,
+			tmpl:   `<< hasKey "k" .Values.data >>`,
 			values: map[string]map[string]any{"data": {"k": nil}},
 			want:   `true`,
 		},
 		{
 			name:   "pick_nonexistent_key",
-			tmpl:   `<< len (pick .Values.data "missing") >>`,
+			tmpl:   `<< len (pick "missing" .Values.data) >>`,
 			values: map[string]map[string]any{"data": {"a": 1}},
 			want:   `0`,
 		},
 		{
 			name:   "pick_duplicate_keys",
-			tmpl:   `<< len (pick .Values.data "a" "a") >>`,
+			tmpl:   `<< len (pick "a" "a" .Values.data) >>`,
 			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
 			want:   `1`,
 		},
 		{
 			name:   "omit_all_keys",
-			tmpl:   `<< len (omit .Values.data "a" "b") >>`,
+			tmpl:   `<< len (omit "a" "b" .Values.data) >>`,
 			values: map[string]map[string]any{"data": {"a": 1, "b": 2}},
 			want:   `0`,
 		},
 		{
 			name:   "omit_nonexistent_key",
-			tmpl:   `<< len (omit .Values.data "missing") >>`,
+			tmpl:   `<< len (omit "missing" .Values.data) >>`,
 			values: map[string]map[string]any{"data": {"a": 1}},
 			want:   `1`,
 		},
@@ -4296,7 +4296,7 @@ func TestDrainTokensInsideLongStringsIgnored(t *testing.T) {
 // funcLibs lists the template function libraries [New] accepts. Behaviour that
 // must hold for both (both ship in-place-mutating helpers) is table-driven
 // over it.
-var funcLibs = []string{"sprig", "sprout"}
+var funcLibs = []string{funcsSprig, funcsSprout}
 
 // pristineMutationValues builds the input for the mutating-template tests
 // fresh on every call, so post-render state can be compared against an
@@ -4317,16 +4317,27 @@ func TestRender_MutatingTemplateDoesNotCorruptInputs(t *testing.T) {
 	// loop's latestValues/latestSecrets, so mutations must never leak back:
 	// identical inputs must render identical output, and the inputs must be
 	// untouched afterwards.
-	tmpl := `<< $c := index .Values "cfg" >>` +
-		`<< $n := add (default 0 (get $c "count")) 1 >>` +
-		`<< $_ := set $c "count" $n >>` +
-		`<< $_ := set (index $c "list" 0) "seen" "yes" >>` +
-		`<< $_ := set (index .Secrets "creds") "leaked" "x" >>` +
-		`count=<< $n >>`
+	// sprig takes the dict first (`get $c "count"`); sprout has taken it last
+	// since v1.1.0 (`get "count" $c`), so the two libraries need their own
+	// spelling of the same template.
+	tmpls := map[string]string{
+		funcsSprig: `<< $c := index .Values "cfg" >>` +
+			`<< $n := add (default 0 (get $c "count")) 1 >>` +
+			`<< $_ := set $c "count" $n >>` +
+			`<< $_ := set (index $c "list" 0) "seen" "yes" >>` +
+			`<< $_ := set (index .Secrets "creds") "leaked" "x" >>` +
+			`count=<< $n >>`,
+		funcsSprout: `<< $c := index .Values "cfg" >>` +
+			`<< $n := add (default 0 (get "count" $c)) 1 >>` +
+			`<< $_ := set "count" $n $c >>` +
+			`<< $_ := set "seen" "yes" (index $c "list" 0) >>` +
+			`<< $_ := set "leaked" "x" (index .Secrets "creds") >>` +
+			`count=<< $n >>`,
+	}
 	for _, funcs := range funcLibs {
 		t.Run(funcs, func(t *testing.T) {
 			t.Parallel()
-			path := writeTempTemplate(t, tmpl)
+			path := writeTempTemplate(t, tmpls[funcs])
 			r, err := New(path, "<<", ">>", funcs)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)

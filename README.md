@@ -369,7 +369,7 @@ curl -s http://localhost:9101/status | jq .
 ```json
 {
   "version": "v0.1.0",
-  "goVersion": "go1.26.1",
+  "goVersion": "go1.26.6",
   "varnishMajorVersion": 8,
   "serviceName": "k8s-httpcache",
   "serviceNamespace": "default",
@@ -1106,7 +1106,17 @@ Each `Frontend` / `Endpoint` has:
 
 All [Sprig](https://masterminds.github.io/sprig/) template functions are available by default (the same library used by Helm). Alternatively, pass `--template-funcs=sprout` to use [Sprout](https://docs.atom.codes/sprout), a modernized fork with additional registries. Note that some function names differ in Sprout (e.g. `toUpper`/`toLower` instead of `upper`/`lower`); see the [Sprout documentation](https://docs.atom.codes/sprout) for details.
 
-A few commonly useful template functions for VCL templates:
+> **Breaking change for `--template-funcs=sprout`.** Sprout 1.1.0 removed its tolerance for the Sprig argument order. Ten functions — `get`, `set`, `unset`, `hasKey`, `pick`, `omit`, `append`, `prepend`, `slice`, `without` — now take the map or list as their **last** argument and return an error when called the Sprig way. Templates that worked on earlier releases must be migrated:
+>
+> ```text
+> << get .Backends "api" >>          # Sprig order: still correct under --template-funcs=sprig
+> << get "api" .Backends >>          # Sprout order, or equivalently:
+> << .Backends | get "api" >>
+> ```
+>
+> The default `sprig` library is unaffected. See the [Sprout migration guide](https://docs.atom.codes/sprout/migration-from-sprig) for the full table.
+
+A few commonly useful template functions for VCL templates (examples use the default Sprig argument order; under `--template-funcs=sprout` the map argument moves last, as described above):
 
 | Function | Description |
 |----------|-------------|
