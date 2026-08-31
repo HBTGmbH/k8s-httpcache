@@ -70,7 +70,7 @@ jobs:
       if: steps.should-run.outputs.skip != 'true' && matrix.language == 'go'
       with:
         go-version-file: go.mod
-    - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
+    - uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
       if: steps.should-run.outputs.skip != 'true'
       with:
         languages: ${{ matrix.language }}
@@ -78,9 +78,9 @@ jobs:
         # The 'actions' language stays on its default suite - zizmor and actionlint
         # already cover workflow security in depth.
         queries: ${{ matrix.language == 'go' && 'security-and-quality' || '' }}
-    - uses: github/codeql-action/autobuild@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
+    - uses: github/codeql-action/autobuild@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
       if: steps.should-run.outputs.skip != 'true' && matrix.language == 'go'
-    - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
+    - uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
       if: steps.should-run.outputs.skip != 'true'
       with:
         category: /language:${{ matrix.language }}
