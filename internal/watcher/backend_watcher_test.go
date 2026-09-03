@@ -131,10 +131,8 @@ func TestBackendWatcher_ForwardingDropsStaleChildSend(t *testing.T) {
 
 func makeService(serviceType corev1.ServiceType, externalName string) *corev1.Service {
 	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "svc",
-			Namespace: "default",
-		},
+		Name:      "svc",
+		Namespace: "default",
 		Spec: corev1.ServiceSpec{
 			Type: serviceType,
 		},

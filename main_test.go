@@ -46,7 +46,6 @@ import (
 	"go.uber.org/goleak"
 	"k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
@@ -3908,7 +3907,7 @@ func TestWarnOnceEventSinkLogsForbiddenOnce(t *testing.T) {
 	inner := &fakeEventSink{createErr: newForbiddenErr()}
 	sink := &warnOnceEventSink{inner: inner}
 
-	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	ev := &v1.Event{Name: "test"}
 
 	// First call triggers the warning (via sync.Once).
 	_, err := sink.Create(ev)
@@ -3933,7 +3932,7 @@ func TestWarnOnceEventSinkPassesThroughOnSuccess(t *testing.T) {
 	inner := &fakeEventSink{}
 	sink := &warnOnceEventSink{inner: inner}
 
-	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	ev := &v1.Event{Name: "test"}
 
 	_, err := sink.Create(ev)
 	if err != nil {
@@ -3949,7 +3948,7 @@ func TestWarnOnceEventSinkNonForbiddenErrorDoesNotWarn(t *testing.T) {
 	inner := &fakeEventSink{createErr: serverErr}
 	sink := &warnOnceEventSink{inner: inner}
 
-	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	ev := &v1.Event{Name: "test"}
 
 	_, err := sink.Create(ev)
 	if !apierrors.IsInternalError(err) {
@@ -3981,7 +3980,7 @@ func TestWarnOnceEventSinkPatchForbidden(t *testing.T) {
 	inner := &fakeEventSink{patchErr: newForbiddenErr()}
 	sink := &warnOnceEventSink{inner: inner}
 
-	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	ev := &v1.Event{Name: "test"}
 
 	_, err := sink.Patch(ev, []byte(`{}`))
 	if !apierrors.IsForbidden(err) {
@@ -4004,7 +4003,7 @@ func TestWarnOnceEventSinkUpdateForbidden(t *testing.T) {
 	inner := &fakeEventSink{updateErr: newForbiddenErr()}
 	sink := &warnOnceEventSink{inner: inner}
 
-	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	ev := &v1.Event{Name: "test"}
 
 	_, err := sink.Update(ev)
 	if !apierrors.IsForbidden(err) {
@@ -4026,7 +4025,7 @@ func TestWarnOnceEventSinkWarnsOnceAcrossMethods(t *testing.T) {
 	}
 	sink := &warnOnceEventSink{inner: inner}
 
-	ev := &v1.Event{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+	ev := &v1.Event{Name: "test"}
 
 	// Create triggers the Once.
 	_, _ = sink.Create(ev)
@@ -5769,10 +5768,8 @@ func TestDetectLocalZone_NodeNameNotSet(t *testing.T) {
 func TestDetectLocalZone_NodeWithZoneLabel(t *testing.T) {
 	t.Parallel()
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "node-1",
-			Labels: map[string]string{"topology.kubernetes.io/zone": "europe-west3-a"},
-		},
+		Name:   "node-1",
+		Labels: map[string]string{"topology.kubernetes.io/zone": "europe-west3-a"},
 	}
 	cs := fake.NewClientset(node)
 	zone := detectLocalZone(t.Context(), slog.New(slog.DiscardHandler), cs, "node-1")
@@ -5784,9 +5781,7 @@ func TestDetectLocalZone_NodeWithZoneLabel(t *testing.T) {
 func TestDetectLocalZone_NodeWithoutZoneLabel(t *testing.T) {
 	t.Parallel()
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "node-2",
-		},
+		Name: "node-2",
 	}
 	cs := fake.NewClientset(node)
 	zone := detectLocalZone(t.Context(), slog.New(slog.DiscardHandler), cs, "node-2")

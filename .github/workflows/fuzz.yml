@@ -1,8 +1,12 @@
 name: Fuzz
 
 on:
-  schedule:
-    - cron: "0 3 * * *"  # nightly, 03:00 UTC (off the codeql/scorecard/trivy slots)
+  # Fuzzing is change-driven, not scheduled: a nightly run over an unchanged
+  # tree only burns runners, so the targets run when the code they cover moves.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       fuzztime:
@@ -12,16 +16,48 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  # Supersede stale PR runs; never interrupt a run on main or a manual long run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changes
+    if: >-
+      github.event_name != 'push' ||
+      (!startsWith(github.event.head_commit.message, 'docs:') &&
+      !startsWith(github.event.head_commit.message, 'docs('))
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 20
+    - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4.0.3
+      id: filter
+      with:
+        # Any Go change can reach a fuzz target: the fuzzed packages import each
+        # other (renderer -> watcher, varnish -> redact/telemetry), so gating per
+        # package would silently skip targets whose transitive deps moved.
+        filters: |
+          go:
+            - '**/*.go'
+            - 'go.mod'
+            - 'go.sum'
+            - '.github/workflows/fuzz.yml'
+
   fuzz:
     # Go fuzzing runs one target per invocation, so fan out over every Fuzz*
     # function. Keep this list in sync when adding fuzz tests.
     name: Fuzz ${{ matrix.func }}
+    needs: [changes]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -63,7 +99,8 @@ jobs:
         go-version-file: go.mod
     - name: Fuzz
       # Matrix values pass through env (not interpolated into the shell) so the
-      # run block has no ${{ }} expansion. FUZZTIME falls back to 3m on schedule.
+      # run block has no ${{ }} expansion. FUZZTIME falls back to 3m when the run
+      # was not started manually.
       env:
         PKG: ${{ matrix.pkg }}
         FUNC: ${{ matrix.func }}

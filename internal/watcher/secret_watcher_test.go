@@ -36,11 +36,9 @@ func assertNoSecretChanges(t *testing.T, w *SecretWatcher, timeout time.Duration
 
 func makeSecret(name string, data map[string][]byte) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "default",
-		},
-		Data: data,
+		Name:      name,
+		Namespace: "default",
+		Data:      data,
 	}
 }
 

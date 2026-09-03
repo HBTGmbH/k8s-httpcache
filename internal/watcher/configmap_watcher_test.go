@@ -37,11 +37,9 @@ func assertNoConfigMapChanges(t *testing.T, w *ConfigMapWatcher, timeout time.Du
 
 func makeConfigMap(name string, data map[string]string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "default",
-		},
-		Data: data,
+		Name:      name,
+		Namespace: "default",
+		Data:      data,
 	}
 }
 

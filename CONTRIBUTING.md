@@ -4,7 +4,7 @@ Thanks for your interest in contributing! This document covers everything you ne
 
 ## Prerequisites
 
-- [Go 1.26+](https://go.dev/dl/)
+- [Go 1.27+](https://go.dev/dl/)
 - [Docker](https://docs.docker.com/get-docker/)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [golangci-lint](https://golangci-lint.run/welcome/install/)

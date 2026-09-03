@@ -234,8 +234,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusBadRequest
 		msg := "failed to read request body"
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
+		if maxErr, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			status = http.StatusRequestEntityTooLarge
 			msg = fmt.Sprintf("request body exceeds %d bytes", maxErr.Limit)
 		}

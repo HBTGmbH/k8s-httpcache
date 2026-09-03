@@ -369,12 +369,10 @@ func TestDebugLoggingDisabled(t *testing.T) {
 // makeEndpointSlice builds a discoveryv1.EndpointSlice for testing.
 func makeEndpointSlice(name string, addressType discoveryv1.AddressType, endpoints []discoveryv1.Endpoint, ports []discoveryv1.EndpointPort) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "default",
-			Labels: map[string]string{
-				discoveryv1.LabelServiceName: "svc",
-			},
+		Name:      name,
+		Namespace: "default",
+		Labels: map[string]string{
+			discoveryv1.LabelServiceName: "svc",
 		},
 		AddressType: addressType,
 		Endpoints:   endpoints,

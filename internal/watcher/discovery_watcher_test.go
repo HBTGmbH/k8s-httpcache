@@ -23,11 +23,9 @@ import (
 
 func makeDiscoverableService(namespace, name string, lbls map[string]string) *corev1.Service {
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			Labels:    lbls,
-		},
+		Name:      name,
+		Namespace: namespace,
+		Labels:    lbls,
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
 		},
@@ -36,12 +34,10 @@ func makeDiscoverableService(namespace, name string, lbls map[string]string) *co
 
 func makeDiscoverableEndpointSlice(namespace, serviceName, sliceName, ip string, port int32) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      sliceName,
-			Namespace: namespace,
-			Labels: map[string]string{
-				discoveryv1.LabelServiceName: serviceName,
-			},
+		Name:      sliceName,
+		Namespace: namespace,
+		Labels: map[string]string{
+			discoveryv1.LabelServiceName: serviceName,
 		},
 		AddressType: discoveryv1.AddressTypeIPv4,
 		Endpoints: []discoveryv1.Endpoint{
@@ -399,11 +395,9 @@ func TestDiscoveryWatcher_PortOverride(t *testing.T) {
 	svc := makeDiscoverableService("default", "web", map[string]string{"app": "web"})
 	// EndpointSlice with two ports: "http" on 8080 and "metrics" on 9090.
 	slice := &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "web-abc",
-			Namespace: "default",
-			Labels:    map[string]string{discoveryv1.LabelServiceName: "web"},
-		},
+		Name:        "web-abc",
+		Namespace:   "default",
+		Labels:      map[string]string{discoveryv1.LabelServiceName: "web"},
 		AddressType: discoveryv1.AddressTypeIPv4,
 		Endpoints: []discoveryv1.Endpoint{{
 			Addresses:  []string{"10.0.0.1"},
@@ -736,11 +730,9 @@ func TestDiscoveryWatcher_AnnotationUpdateInForwardingPath(t *testing.T) {
 func TestDiscoveryWatcher_ExternalNameService(t *testing.T) {
 	t.Parallel()
 	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ext",
-			Namespace: "default",
-			Labels:    map[string]string{"app": "ext"},
-		},
+		Name:      "ext",
+		Namespace: "default",
+		Labels:    map[string]string{"app": "ext"},
 		Spec: corev1.ServiceSpec{
 			Type:         corev1.ServiceTypeExternalName,
 			ExternalName: "example.com",
@@ -782,11 +774,9 @@ func TestDiscoveryWatcher_ExternalNameService(t *testing.T) {
 func TestDiscoveryWatcher_ExternalNameEmpty(t *testing.T) {
 	t.Parallel()
 	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ext",
-			Namespace: "default",
-			Labels:    map[string]string{"app": "ext"},
-		},
+		Name:      "ext",
+		Namespace: "default",
+		Labels:    map[string]string{"app": "ext"},
 		Spec: corev1.ServiceSpec{
 			Type:         corev1.ServiceTypeExternalName,
 			ExternalName: "",
@@ -1199,11 +1189,9 @@ func TestDiscoveryWatcher_ExternalNameToClusterIPTransition(t *testing.T) {
 	t.Parallel()
 	// Start with an ExternalName service.
 	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "api",
-			Namespace: "default",
-			Labels:    map[string]string{"app": "api"},
-		},
+		Name:      "api",
+		Namespace: "default",
+		Labels:    map[string]string{"app": "api"},
 		Spec: corev1.ServiceSpec{
 			Type:         corev1.ServiceTypeExternalName,
 			ExternalName: "api.example.com",
@@ -1273,11 +1261,9 @@ func TestDiscoveryWatcher_InitialSnapshotMixedTypes(t *testing.T) {
 
 	// ExternalName service.
 	extSvc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "cdn",
-			Namespace: "default",
-			Labels:    map[string]string{"tier": "app"},
-		},
+		Name:      "cdn",
+		Namespace: "default",
+		Labels:    map[string]string{"tier": "app"},
 		Spec: corev1.ServiceSpec{
 			Type:         corev1.ServiceTypeExternalName,
 			ExternalName: "cdn.example.com",
