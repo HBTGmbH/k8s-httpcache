@@ -7,7 +7,7 @@ require (
 	github.com/go-sprout/sprout v1.1.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
-	github.com/urfave/cli/v3 v3.11.0
+	github.com/urfave/cli/v3 v3.12.0
 	go.uber.org/goleak v1.3.0
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0
