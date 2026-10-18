@@ -912,12 +912,15 @@ sub vcl_synth {
     set resp.reason = "OK";
     if (req.url == "/robots.txt") {
       set resp.http.Content-Type = "text/plain; charset=utf-8";
-      synthetic(std.fileread("/etc/k8s-httpcache-static/robots.txt"));
+      set resp.body = std.fileread("/etc/k8s-httpcache-static/robots.txt");
     }
     return (deliver);
   }
 }
 ```
+
+Set the body with `set resp.body = ...;`, not `synthetic(...)`: Varnish 9.1
+removed `synthetic()`, while `set resp.body` works on every supported version.
 
 Defining `sub vcl_synth` only *prepends* to Varnish's built-in handler, so synth
 responses whose reason is not `"static"` (readiness, PURGE, errors) fall through
@@ -930,10 +933,10 @@ sub vcl_synth {
     set resp.reason = "OK";
     if (req.url == "/robots.txt") {
       set resp.http.Content-Type = "text/plain; charset=utf-8";
-      synthetic(std.fileread("/etc/k8s-httpcache-static/robots.txt"));
+      set resp.body = std.fileread("/etc/k8s-httpcache-static/robots.txt");
     } else if (req.url == "/health.json") {
       set resp.http.Content-Type = "application/json";
-      synthetic(std.fileread("/etc/k8s-httpcache-static/health.json"));
+      set resp.body = std.fileread("/etc/k8s-httpcache-static/health.json");
     }
     return (deliver);
   }

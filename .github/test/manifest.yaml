@@ -559,7 +559,7 @@ data:
         set resp.reason = "OK";
         if (req.url == "/robots.txt") {
           set resp.http.Content-Type = "text/plain; charset=utf-8";
-          synthetic(std.fileread("/etc/k8s-httpcache-static/robots.txt"));
+          set resp.body = std.fileread("/etc/k8s-httpcache-static/robots.txt");
         }
         return (deliver);
       }
