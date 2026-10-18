@@ -249,11 +249,41 @@ jobs:
           echo "::error::deadcode found unreachable code"
           exit 1
         fi
+    - name: Restore ShellCheck
+      if: >-
+        startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      id: shellcheck
+      with:
+        path: ~/tools/shellcheck
+        key: shellcheck-0.11.0-linux-amd64
+    - name: Install ShellCheck
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.shellcheck.outputs.cache-hit != 'true'
+      # Pinned rather than the runner image's apt package (0.9.0 on
+      # ubuntu-24.04), which lags the release contributors run locally.
+      run: |
+        mkdir -p ~/tools
+        curl -sfL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz \
+          | tar -xz -C ~/tools --strip-components=1 shellcheck-v0.11.0/shellcheck
+        chmod +x ~/tools/shellcheck
+    - name: Save ShellCheck
+      if: >-
+        (startsWith(github.ref, 'refs/tags/') ||
+        needs.changes.outputs.ci == 'true') &&
+        steps.shellcheck.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ~/tools/shellcheck
+        key: shellcheck-0.11.0-linux-amd64
     - name: ShellCheck
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.ci == 'true'
-      run: shellcheck .github/test/*.sh
+      run: ~/tools/shellcheck .github/test/*.sh
     - name: shfmt (shell format)
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -293,7 +323,9 @@ jobs:
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
         needs.changes.outputs.ci == 'true'
-      run: ~/tools/actionlint -color
+      # actionlint shellchecks run: blocks with whatever shellcheck is on PATH
+      # (the runner's); point it at the pinned binary instead.
+      run: ~/tools/actionlint -color -shellcheck ~/tools/shellcheck
     - name: Install yamllint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||

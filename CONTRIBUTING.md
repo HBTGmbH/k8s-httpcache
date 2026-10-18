@@ -16,6 +16,7 @@ Thanks for your interest in contributing! This document covers everything you ne
 - [helm-docs](https://github.com/norwoodj/helm-docs) for regenerating the chart README from values.yaml comments
 - [pint](https://cloudflare.github.io/pint/) for linting the chart's Prometheus alert rules
 - [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning
+- [ShellCheck](https://www.shellcheck.net/) for shell script linting
 - [shfmt](https://github.com/mvdan/sh) for shell script formatting
 - [typos](https://github.com/crate-ci/typos) for spell checking across all file types
 - [hurl](https://hurl.dev/) for E2E test assertions
