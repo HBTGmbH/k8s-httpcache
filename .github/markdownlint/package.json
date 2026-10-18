@@ -2,8 +2,13 @@
   "name": "markdownlint-runner",
   "version": "0.0.0",
   "private": true,
-  "description": "Pinned markdownlint-cli used by the Markdown lint CI step (see ../workflows/test-and-build.yml). Install with `npm ci`.",
+  "description": "Pinned markdownlint-cli used by the Markdown lint CI step (see ../workflows/test-and-build.yml). Install with `npm ci`. The overrides lift transitive deps past markdownlint-cli 0.49.1's ranges to patched releases (GHSA-r3ph-w7gj-g6xm, GHSA-r4xh-jqrq-34v2, GHSA-238p-pmpm-9mq7); drop them once markdownlint-cli allows these versions itself.",
   "devDependencies": {
     "markdownlint-cli": "0.49.1"
+  },
+  "overrides": {
+    "js-yaml": "^5.4.1",
+    "smol-toml": "^1.9.0",
+    "katex": "^0.18.2"
   }
 }
