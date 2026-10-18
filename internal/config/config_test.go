@@ -2682,7 +2682,7 @@ func TestParseValuesDirWatchInheritsFileWatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			args := append(append([]string{}, base...), tc.extra...)
+			args := slices.Concat(base, tc.extra)
 			cfg, err := Parse("", args)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)

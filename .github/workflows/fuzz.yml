@@ -110,7 +110,7 @@ jobs:
       # On a crash, Go writes the failing input under testdata/fuzz/<Func>/; keep
       # it so the reproducer can be committed to the seed corpus.
       if: failure()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
       with:
         name: fuzz-crashers-${{ matrix.func }}
         path: ${{ matrix.pkg }}/testdata/fuzz/${{ matrix.func }}/

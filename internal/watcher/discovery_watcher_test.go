@@ -919,10 +919,8 @@ func TestDiscoveryWatcher_ShutdownRaceNoNilMapPanic(t *testing.T) {
 	// Run many concurrent iterations to exercise the race.
 	const iterations = 20
 	var wg sync.WaitGroup
-	wg.Add(iterations)
 	for range iterations {
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			dw := NewBackendDiscoveryWatcher(clientset, "default", false, sel, "", nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan struct{})
@@ -945,7 +943,7 @@ func TestDiscoveryWatcher_ShutdownRaceNoNilMapPanic(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Error("timeout waiting for Run to return")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

@@ -34,7 +34,7 @@ func FuzzCollect(f *testing.F) {
 		c := NewVarnishstatCollector(func() (string, int, error) { return data, major, nil }, nil)
 		ch := make(chan prometheus.Metric)
 		go func() {
-			for range ch { //nolint:revive // drain only
+			for range ch { // drain only
 			}
 		}()
 		c.Collect(ch) // must never panic

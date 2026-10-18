@@ -759,13 +759,13 @@ func (m *Manager) monitorNCSA() {
 		case <-m.ncsaStop:
 			_ = p.Signal(syscall.SIGTERM)
 			select {
-			case <-waitDone:
+			case <-waitDone: //nolint:errcheck // exit status after our own SIGTERM is expected
 			case <-time.After(m.NCSAStopTimeout):
 				m.log.Warn("varnishncsa did not exit after SIGTERM, forcing", "timeout", m.NCSAStopTimeout)
 				_ = p.Signal(syscall.SIGKILL)
 				// SIGKILL cannot be ignored; wait for the exit so the child
 				// is reaped before StopNCSA returns.
-				<-waitDone
+				<-waitDone //nolint:errcheck // exit status after our own SIGKILL is expected
 			}
 			m.flushNCSAWriters()
 			m.ncsaMu.Lock()

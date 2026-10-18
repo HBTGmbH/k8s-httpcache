@@ -3895,7 +3895,7 @@ func (f *fakeEventSink) getCalls() int {
 }
 
 func newForbiddenErr() error {
-	return apierrors.NewForbidden(
+	return apierrors.NewForbidden( //nolint:wrapcheck // fixture: callers classify the bare StatusError
 		schema.GroupResource{Resource: "events"},
 		"",
 		errors.New("RBAC: access denied"),

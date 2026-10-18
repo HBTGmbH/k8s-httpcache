@@ -599,9 +599,10 @@ func TestDrainTimeoutWithHeldConnection(t *testing.T) {
 	// Drain with a short timeout - should timeout, not hang.
 	drainTimeout := 200 * time.Millisecond
 	start := time.Now()
-	done := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
-		done <- s.Drain(drainTimeout)
+		_ = s.Drain(drainTimeout)
+		close(done)
 	}()
 
 	select {
@@ -1476,8 +1477,11 @@ func TestDrainWaitsAfterEarlierIdlePeriod(t *testing.T) {
 
 	const drainTimeout = 400 * time.Millisecond
 	start := time.Now()
-	done := make(chan error, 1)
-	go func() { done <- s.Drain(drainTimeout) }()
+	done := make(chan struct{})
+	go func() {
+		_ = s.Drain(drainTimeout)
+		close(done)
+	}()
 
 	select {
 	case <-done:
