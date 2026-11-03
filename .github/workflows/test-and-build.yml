@@ -739,14 +739,11 @@ jobs:
       id: test-tools
       with:
         path: ~/tools
-        key: test-tools-hurl-8.0.1-oha-1.16.0
+        key: test-tools-oha-1.16.0
     - name: Install tools
       if: steps.test-tools.outputs.cache-hit != 'true'
       run: |
         mkdir -p ~/tools
-        curl -sfL -o /tmp/hurl.deb https://github.com/Orange-OpenSource/hurl/releases/download/8.0.1/hurl_8.0.1_amd64.deb
-        dpkg-deb -x /tmp/hurl.deb /tmp/hurl
-        cp /tmp/hurl/usr/bin/* ~/tools/
         curl -sfL -o ~/tools/oha https://github.com/hatoo/oha/releases/download/v1.16.0/oha-linux-amd64
         chmod +x ~/tools/oha
     - name: Save test tools
@@ -754,7 +751,25 @@ jobs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools
-        key: test-tools-hurl-8.0.1-oha-1.16.0
+        key: test-tools-oha-1.16.0
+    - name: Install hurl
+      # The hurl .deb/.tar.gz builds link libxml2.so.2, which ubuntu-26.04 no
+      # longer ships (only libxml2.so.16, and no compat package), so run the
+      # official musl-based image behind a ~/tools/hurl wrapper instead. Host
+      # networking reaches the kind port mappings and port-forwards on
+      # localhost; cwd is bind-mounted so .hurl inputs and --report-junit output
+      # resolve as before. Written after "Save test tools" so it is never cached.
+      env:
+        HURL_IMAGE: ghcr.io/orange-opensource/hurl:8.1.0@sha256:f8aed33658ba793ed53c5a5b2e57cadd9ec9322c8b56c550652c1f4cbaa241c5
+      run: |
+        mkdir -p ~/tools
+        docker pull -q "$HURL_IMAGE"
+        cat > ~/tools/hurl <<EOF
+        #!/bin/sh
+        exec docker run --rm --network host --user "\$(id -u):\$(id -g)" -v "\$PWD:\$PWD" -w "\$PWD" $HURL_IMAGE "\$@"
+        EOF
+        chmod +x ~/tools/hurl
+        ~/tools/hurl --version
     - name: Add tools to PATH
       run: echo "$HOME/tools" >> "$GITHUB_PATH"
     - name: Build test image
