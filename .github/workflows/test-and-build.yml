@@ -114,16 +114,16 @@ jobs:
       id: go-test-coverage
       with:
         path: ~/go/bin/go-test-coverage
-        key: go-test-coverage-2.20.0
+        key: go-test-coverage-2.21.0
     - name: Install go-test-coverage
       if: steps.go-test-coverage.outputs.cache-hit != 'true'
-      run: go install github.com/vladopajic/go-test-coverage/v2@v2.20.0
+      run: go install github.com/vladopajic/go-test-coverage/v2@v2.21.0
     - name: Save go-test-coverage
       if: steps.go-test-coverage.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/go/bin/go-test-coverage
-        key: go-test-coverage-2.20.0
+        key: go-test-coverage-2.21.0
     - name: Run tests with coverage
       run: gotestsum --junitfile unit-tests.xml --format testdox -- -race -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
     - name: Display coverage
@@ -384,7 +384,7 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.md == 'true'
-      uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b  # v1.51.1
+      uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85  # v1.52.0
     - name: Restore hadolint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -533,7 +533,7 @@ jobs:
       id: pint
       with:
         path: ~/tools/pint
-        key: pint-0.89.2-linux-amd64
+        key: pint-0.89.4-linux-amd64
     - name: Install pint
       if: >-
         (startsWith(github.ref, 'refs/tags/') ||
@@ -542,7 +542,7 @@ jobs:
         steps.pint.outputs.cache-hit != 'true'
       run: |
         mkdir -p ~/tools
-        curl -sfL https://github.com/cloudflare/pint/releases/download/v0.89.2/pint-0.89.2-linux-amd64.tar.gz \
+        curl -sfL https://github.com/cloudflare/pint/releases/download/v0.89.4/pint-0.89.4-linux-amd64.tar.gz \
           | tar -xz -C ~/tools pint-linux-amd64
         mv ~/tools/pint-linux-amd64 ~/tools/pint
         chmod +x ~/tools/pint
@@ -555,7 +555,7 @@ jobs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/tools/pint
-        key: pint-0.89.2-linux-amd64
+        key: pint-0.89.4-linux-amd64
     - name: Pint (Prometheus rules)
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -970,11 +970,11 @@ jobs:
     - name: Setup BuildKit
       uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
       with:
-        version: v0.38.0
-        driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+        version: v0.38.1
+        driver-opts: image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
         cache-binary: false
     - name: Docker Login
-      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+      uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
       if: github.event_name != 'pull_request'
       with:
         registry: ghcr.io

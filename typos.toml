@@ -9,6 +9,11 @@ extend-exclude = [
   ".github/markdownlint/node_modules/",
 ]
 
+[default]
+# Go module pseudo-versions end in a timestamp and a 12-char commit hash (e.g.
+# v0.0.0-20261023123148-ca04ba58ecab) whose hex fragments can read as typos.
+extend-ignore-re = ['\d{14}-[0-9a-f]{12}\b']
+
 [default.extend-words]
 # Varnish/varnishstat counter abbreviation, e.g. MAIN.n_wrk = worker threads.
 wrk = "wrk"
