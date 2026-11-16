@@ -384,7 +384,7 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.md == 'true'
-      uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85  # v1.52.0
+      uses: crate-ci/typos@2611abd15acb0c2e317fb9e45855aabb8b35a414  # v1.52.1
     - name: Restore hadolint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
@@ -788,7 +788,7 @@ jobs:
             -t localhost/k8s-httpcache:test .docker-context
         fi
     - name: Create kind cluster
-      uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa  # v1.15.1
+      uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376  # v1.15.2
       with:
         cluster_name: test
         config: .github/test/kind-config.yaml
@@ -974,7 +974,7 @@ jobs:
         driver-opts: image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
         cache-binary: false
     - name: Docker Login
-      uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
       if: github.event_name != 'pull_request'
       with:
         registry: ghcr.io
