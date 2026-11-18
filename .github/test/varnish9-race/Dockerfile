@@ -2,7 +2,7 @@
 # dynamically linked and must match the runtime image's glibc. Compile it in the
 # same Debian trixie as the varnish:9 base, then run it there. Built only by
 # the race leg of the integration-test matrix in test-and-build.yml.
-FROM golang:1.27.3-trixie@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 AS build
+FROM golang:1.27.4-trixie@sha256:f18c3d73a184fb0582828510722e723b63a93f7188d11dd223d9be6f6880e65d AS build
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=1 go build -race -trimpath -o /k8s-httpcache .
