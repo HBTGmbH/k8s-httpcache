@@ -384,7 +384,7 @@ jobs:
         needs.changes.outputs.helm == 'true' ||
         needs.changes.outputs.yaml == 'true' ||
         needs.changes.outputs.md == 'true'
-      uses: crate-ci/typos@2611abd15acb0c2e317fb9e45855aabb8b35a414  # v1.52.1
+      uses: crate-ci/typos@276087d9a4f06398b3e04825487805e2d7375888  # v1.52.2
     - name: Restore hadolint
       if: >-
         startsWith(github.ref, 'refs/tags/') ||
